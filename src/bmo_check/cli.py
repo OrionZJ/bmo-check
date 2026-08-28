@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import subprocess
 import sys
 from pathlib import Path
+from time import monotonic
 
 from bmo_check.analysis import analyze_shared_state, extract_memory_events
 from bmo_check.binary.dependency_closure import build_program_manifest
@@ -12,16 +14,30 @@ from bmo_check.binary.symbols import function_symbols
 from bmo_check.config import load_contract_version
 from bmo_check.controlflow import recover_control_flow
 from bmo_check.model import (
+    AblationMeasurement,
+    BenchmarkMeasurement,
     CheckerLimits,
+    EvaluationReport,
+    EvaluationStatus,
     ExecutionScope,
     FingerprintReport,
+    NativeRunMeasurement,
+    PhaseTimings,
     PortabilityCertificate,
     ProgramManifest,
     ProgramRecoveryReport,
     ProgramSliceReport,
+    RiskScreeningStatus,
     StrictModel,
     UnknownFact,
     UnknownKind,
+)
+from bmo_check.evaluation import (
+    ABLATION_LEVELS,
+    ablate_shared_state,
+    find_publication_risks,
+    load_evaluation_suite,
+    run_native_benchmark,
 )
 from bmo_check.proof import explain_certificate, verify_portability
 from bmo_check.synchronization import analyze_pthread_synchronization
@@ -156,7 +172,11 @@ def _build_recovery(args: argparse.Namespace) -> ProgramRecoveryReport:
     )
     synchronization = []
     recovery_unknowns: list[UnknownFact] = []
-    pthread_names = {"pthread_spin_unlock", "pthread_mutex_lock", "pthread_once"}
+    called_pthread_apis = {
+        call.target_symbol
+        for call in control_flow.call_sites
+        if call.target_symbol is not None and call.target_symbol.startswith("pthread_")
+    }
     for library in manifest.libraries:
         try:
             names = {symbol.name for symbol in function_symbols(library)}
@@ -170,7 +190,8 @@ def _build_recovery(args: argparse.Namespace) -> ProgramRecoveryReport:
                 )
             )
             continue
-        if not names.intersection(pthread_names):
+        implemented_apis = names.intersection(called_pthread_apis)
+        if not implemented_apis:
             continue
         try:
             synchronization.append(
@@ -178,6 +199,7 @@ def _build_recovery(args: argparse.Namespace) -> ProgramRecoveryReport:
                     library,
                     args.pthread_spec,
                     args.dbt_contract,
+                    requested_apis=implemented_apis,
                 )
             )
         except Exception as error:
@@ -281,6 +303,354 @@ def _explain(args: argparse.Namespace) -> int:
     return 0
 
 
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _evaluate(args: argparse.Namespace) -> int:
+    if args.in_process:
+        try:
+            import resource
+
+            limit = args.analysis_memory_limit_mb * 1024 * 1024
+            resource.setrlimit(resource.RLIMIT_AS, (limit, limit))
+        except (ImportError, OSError, ValueError):
+            # 非 WSL 平台不能设置地址空间上限时，父进程仍保留墙钟超时和退出码。
+            pass
+    try:
+        suite = load_evaluation_suite(args.suite)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(str(error)) from error
+    requested = set(args.benchmark)
+    available = {item.id for item in suite.benchmarks}
+    missing = requested - available
+    if missing:
+        raise argparse.ArgumentTypeError(
+            f"suite has no benchmark IDs: {', '.join(sorted(missing))}"
+        )
+    definitions = tuple(
+        item for item in suite.benchmarks if not requested or item.id in requested
+    )
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+    limits = _checker_limits(args)
+    suite_started = monotonic()
+    measurements: list[BenchmarkMeasurement] = []
+
+    for definition in definitions:
+        threads = args.threads_override or definition.threads
+        argv = tuple(item.replace("{threads}", str(threads)) for item in definition.argv)
+        executable = (args.parsec_root / definition.executable).resolve()
+        pipeline_args = argparse.Namespace(
+            executable=executable,
+            library_root=args.library_root,
+            argv_json=argv,
+            threads=(threads, threads),
+            environment=args.environment,
+            dbt_contract=args.dbt_contract,
+            dbt_revision=args.dbt_revision,
+            dbt_root=args.dbt_root,
+            pthread_spec=args.pthread_spec,
+        )
+
+        recovery_started = monotonic()
+        recovery = _build_recovery(pipeline_args)
+        recovery_seconds = monotonic() - recovery_started
+        event_seconds = 0.0
+        shared_state_seconds = 0.0
+        memory_events = None
+        shared_state = None
+        module = recovery.manifest.executable
+        if (
+            module is not None
+            and recovery.control_flow is not None
+            and recovery.thread_roles is not None
+        ):
+            event_started = monotonic()
+            memory_events = extract_memory_events(
+                module,
+                recovery.control_flow,
+                recovery.thread_roles,
+                recovery.synchronization,
+            )
+            event_seconds = monotonic() - event_started
+            shared_started = monotonic()
+            shared_state = analyze_shared_state(
+                module,
+                recovery.control_flow,
+                recovery.thread_roles,
+                memory_events,
+            )
+            shared_state_seconds = monotonic() - shared_started
+
+        ablations: list[AblationMeasurement] = []
+        for level in ABLATION_LEVELS:
+            slice_started = monotonic()
+            if memory_events is not None and shared_state is not None:
+                level_state = ablate_shared_state(memory_events, shared_state, level)
+                shared_slice = build_shared_memory_slice(
+                    memory_events, level_state, recovery.thread_roles
+                )
+                program_report = ProgramSliceReport(
+                    recovery=recovery,
+                    memory_events=memory_events,
+                    shared_state=level_state,
+                    shared_slice=shared_slice,
+                    unknowns=recovery.unknowns,
+                )
+            else:
+                shared_slice = None
+                program_report = ProgramSliceReport(
+                    recovery=recovery,
+                    unknowns=recovery.manifest.unknowns + recovery.unknowns,
+                )
+            slice_seconds = monotonic() - slice_started
+
+            checker_started = monotonic()
+            certificate = verify_portability(
+                program_report,
+                limits,
+                analysis_options={"pruning_level": level.value},
+            )
+            checker_seconds = monotonic() - checker_started
+            screening_started = monotonic()
+            findings = (
+                find_publication_risks(shared_slice)
+                if shared_slice is not None
+                else ()
+            )
+            screening_seconds = monotonic() - screening_started
+            if certificate.verdict.value == "SAFE":
+                screening_status = RiskScreeningStatus.PROVED_SAFE
+            elif certificate.verdict.value == "COUNTEREXAMPLE":
+                screening_status = RiskScreeningStatus.CONFIRMED_COUNTEREXAMPLE
+            elif findings:
+                screening_status = RiskScreeningStatus.POTENTIAL_RISK
+            else:
+                screening_status = RiskScreeningStatus.NO_RISK_FOUND
+            certificate_path = (
+                args.output_dir / definition.id / f"{level.value}.certificate.json"
+            )
+            _write_json(certificate, certificate_path)
+            pruning_counts = certificate.coverage.pruning_counts
+            ablations.append(
+                AblationMeasurement(
+                    level=level,
+                    timings=PhaseTimings(
+                        recovery_seconds=recovery_seconds,
+                        event_seconds=event_seconds,
+                        shared_state_seconds=shared_state_seconds,
+                        slice_seconds=slice_seconds,
+                        checker_seconds=checker_seconds,
+                        screening_seconds=screening_seconds,
+                    ),
+                    total_events=(
+                        shared_slice.coverage.total_events if shared_slice else 0
+                    ),
+                    remaining_events=(
+                        shared_slice.coverage.remaining_shared_events
+                        if shared_slice
+                        else 0
+                    ),
+                    conflict_candidates=(
+                        len(shared_slice.conflicts) if shared_slice else 0
+                    ),
+                    pruning_counts=pruning_counts,
+                    checker_executions=certificate.checker.examined_executions,
+                    verdict=certificate.verdict,
+                    relevant_unknowns=len(certificate.relevant_unknowns),
+                    screening_status=screening_status,
+                    risk_findings=findings,
+                    certificate_file=str(
+                        certificate_path.relative_to(args.output_dir).as_posix()
+                    ),
+                    certificate_sha256=_file_sha256(certificate_path),
+                )
+            )
+
+        native = NativeRunMeasurement()
+        if args.run_native:
+            native = run_native_benchmark(
+                definition,
+                args.parsec_root,
+                argv,
+                args.native_timeout_seconds,
+            )
+        measurements.append(
+            BenchmarkMeasurement(
+                benchmark_id=definition.id,
+                executable=str(executable),
+                executable_sha256=(module.sha256 if module is not None else None),
+                argv=argv,
+                threads=threads,
+                ablations=tuple(ablations),
+                native_run=native,
+            )
+        )
+
+    report = EvaluationReport(
+        suite_name=suite.name,
+        parsec_root=str(args.parsec_root.resolve()),
+        library_roots=tuple(str(path.resolve()) for path in args.library_root),
+        dbt_contract=str(args.dbt_contract.resolve()),
+        dbt_revision=args.dbt_revision or _git_revision(args.dbt_root),
+        benchmarks=tuple(measurements),
+        total_seconds=monotonic() - suite_started,
+    )
+    _write_json(report, args.output_dir / "evaluation.json")
+    return 0
+
+
+def _evaluation_worker_command(
+    args: argparse.Namespace, benchmark_id: str
+) -> list[str]:
+    command = [
+        sys.executable,
+        "-m",
+        "bmo_check.cli",
+        "evaluate",
+        "--suite",
+        str(args.suite),
+        "--parsec-root",
+        str(args.parsec_root),
+        "--benchmark",
+        benchmark_id,
+        "--dbt-contract",
+        str(args.dbt_contract),
+        "--pthread-spec",
+        str(args.pthread_spec),
+        "--output-dir",
+        str(args.output_dir),
+        "--analysis-memory-limit-mb",
+        str(args.analysis_memory_limit_mb),
+        "--analysis-timeout-seconds",
+        str(args.analysis_timeout_seconds),
+        "--max-events",
+        str(args.max_events),
+        "--max-threads",
+        str(args.max_threads),
+        "--max-executions",
+        str(args.max_executions),
+        "--checker-timeout-ms",
+        str(args.checker_timeout_ms),
+        "--in-process",
+    ]
+    for root in args.library_root:
+        command.extend(("--library-root", str(root)))
+    for item in args.environment:
+        command.extend(("--environment", item))
+    if args.threads_override is not None:
+        command.extend(("--threads-override", str(args.threads_override)))
+    if args.dbt_revision:
+        command.extend(("--dbt-revision", args.dbt_revision))
+    if args.dbt_root:
+        command.extend(("--dbt-root", str(args.dbt_root)))
+    if args.run_native:
+        command.append("--run-native")
+        command.extend(
+            ("--native-timeout-seconds", str(args.native_timeout_seconds))
+        )
+    return command
+
+
+def _evaluate_isolated(args: argparse.Namespace) -> int:
+    if args.in_process:
+        return _evaluate(args)
+    try:
+        suite = load_evaluation_suite(args.suite)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(str(error)) from error
+    requested = set(args.benchmark)
+    available = {item.id for item in suite.benchmarks}
+    missing = requested - available
+    if missing:
+        raise argparse.ArgumentTypeError(
+            f"suite has no benchmark IDs: {', '.join(sorted(missing))}"
+        )
+    definitions = tuple(
+        item for item in suite.benchmarks if not requested or item.id in requested
+    )
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+    started = monotonic()
+    measurements: list[BenchmarkMeasurement] = []
+    worker_report = args.output_dir / "evaluation.json"
+    for definition in definitions:
+        worker_report.unlink(missing_ok=True)
+        status = EvaluationStatus.FAILED
+        failure = "evaluation worker did not produce a report"
+        try:
+            completed = subprocess.run(
+                _evaluation_worker_command(args, definition.id),
+                capture_output=True,
+                text=True,
+                timeout=args.analysis_timeout_seconds,
+                check=False,
+            )
+            if completed.returncode == 0 and worker_report.is_file():
+                partial = EvaluationReport.model_validate_json(
+                    worker_report.read_text(encoding="utf-8")
+                )
+                measurements.append(partial.benchmarks[0])
+                continue
+            if completed.returncode < 0 or "MemoryError" in completed.stderr:
+                status = EvaluationStatus.RESOURCE_LIMIT
+                failure = (
+                    f"worker exited {completed.returncode} under the "
+                    f"{args.analysis_memory_limit_mb} MiB memory limit"
+                )
+            else:
+                failure = (
+                    completed.stderr.strip()[-2000:]
+                    or f"worker exited {completed.returncode} without a report"
+                )
+        except subprocess.TimeoutExpired:
+            status = EvaluationStatus.TIMEOUT
+            failure = (
+                f"analysis exceeded {args.analysis_timeout_seconds} seconds"
+            )
+
+        threads = args.threads_override or definition.threads
+        argv = tuple(item.replace("{threads}", str(threads)) for item in definition.argv)
+        executable = (args.parsec_root / definition.executable).resolve()
+        native = NativeRunMeasurement()
+        if args.run_native:
+            native = run_native_benchmark(
+                definition,
+                args.parsec_root,
+                argv,
+                args.native_timeout_seconds,
+            )
+        measurements.append(
+            BenchmarkMeasurement(
+                benchmark_id=definition.id,
+                executable=str(executable),
+                executable_sha256=(
+                    _file_sha256(executable) if executable.is_file() else None
+                ),
+                argv=argv,
+                threads=threads,
+                status=status,
+                failure=failure,
+                native_run=native,
+            )
+        )
+
+    report = EvaluationReport(
+        suite_name=suite.name,
+        parsec_root=str(args.parsec_root.resolve()),
+        library_roots=tuple(str(path.resolve()) for path in args.library_root),
+        dbt_contract=str(args.dbt_contract.resolve()),
+        dbt_revision=args.dbt_revision or _git_revision(args.dbt_root),
+        benchmarks=tuple(measurements),
+        total_seconds=monotonic() - started,
+    )
+    _write_json(report, worker_report)
+    return 0
+
+
 def _add_input_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--executable", "--exe", type=Path, required=True)
     parser.add_argument(
@@ -357,6 +727,40 @@ def build_parser() -> argparse.ArgumentParser:
     )
     explain.add_argument("certificate", type=Path)
     explain.set_defaults(handler=_explain)
+
+    evaluate = subcommands.add_parser(
+        "evaluate", help="run reproducible PARSEC analysis and pruning ablations"
+    )
+    evaluate.add_argument("--suite", type=Path, required=True)
+    evaluate.add_argument("--parsec-root", type=Path, required=True)
+    evaluate.add_argument(
+        "--benchmark", action="append", default=[], metavar="ID"
+    )
+    evaluate.add_argument(
+        "--library-root", type=Path, action="append", default=[], required=True
+    )
+    evaluate.add_argument("--threads-override", type=_positive_int)
+    evaluate.add_argument("--environment", action="append", default=[])
+    evaluate.add_argument("--dbt-contract", type=Path, required=True)
+    evaluate.add_argument("--dbt-revision")
+    evaluate.add_argument("--dbt-root", type=Path)
+    evaluate.add_argument(
+        "--pthread-spec", type=Path, default=Path("specs/pthread-api.yaml")
+    )
+    evaluate.add_argument("--output-dir", type=Path, required=True)
+    evaluate.add_argument("--run-native", action="store_true")
+    evaluate.add_argument(
+        "--native-timeout-seconds", type=_positive_int, default=300
+    )
+    evaluate.add_argument(
+        "--analysis-memory-limit-mb", type=_positive_int, default=4096
+    )
+    evaluate.add_argument(
+        "--analysis-timeout-seconds", type=_positive_int, default=900
+    )
+    evaluate.add_argument("--in-process", action="store_true", help=argparse.SUPPRESS)
+    _add_checker_arguments(evaluate)
+    evaluate.set_defaults(handler=_evaluate_isolated)
     return parser
 
 
@@ -372,3 +776,5 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+    NativeRunMeasurement,
+    PhaseTimings,

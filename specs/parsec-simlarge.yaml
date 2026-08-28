@@ -1,0 +1,33 @@
+schema: 1
+name: parsec-3.0-simlarge-amd64-linux.gcc
+
+# id 只用于选择报告行。verdict 只读取 binary facts、proof object 和 checker 结果。
+benchmarks:
+  - id: blackscholes
+    executable: pkgs/apps/blackscholes/inst/amd64-linux.gcc/bin/blackscholes
+    run_directory: pkgs/apps/blackscholes/run
+    argv: ["{threads}", "in_64K.txt", "prices.txt"]
+    threads: 4
+    input_files: ["in_64K.txt"]
+    output_files: ["prices.txt"]
+
+  - id: swaptions
+    executable: pkgs/apps/swaptions/inst/amd64-linux.gcc/bin/swaptions
+    run_directory: pkgs/apps/swaptions/run
+    argv: ["-ns", "64", "-sm", "40000", "-nt", "{threads}"]
+    threads: 4
+
+  - id: dedup
+    executable: pkgs/kernels/dedup/inst/amd64-linux.gcc/bin/dedup
+    run_directory: pkgs/kernels/dedup/run
+    argv: ["-c", "-p", "-v", "-t", "{threads}", "-i", "media.dat", "-o", "output.dat.ddp"]
+    threads: 4
+    input_files: ["media.dat"]
+    output_files: ["output.dat.ddp"]
+
+  - id: canneal
+    executable: pkgs/kernels/canneal/inst/amd64-linux.gcc/bin/canneal
+    run_directory: pkgs/kernels/canneal/run
+    argv: ["{threads}", "15000", "2000", "400000.nets", "128"]
+    threads: 4
+    input_files: ["400000.nets"]

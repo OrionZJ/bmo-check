@@ -303,6 +303,25 @@ def test_relevant_unknown_blocks_checker_and_safe() -> None:
     assert certificate.checker.examined_executions == 0
 
 
+def test_opaque_event_does_not_duplicate_its_extraction_unknown() -> None:
+    event = _event("t0:call", "t0", 0x3000, EventKind.OPAQUE_CALL)
+    unknown = UnknownFact(
+        kind=UnknownKind.UNKNOWN_MEMORY_EFFECT,
+        reason="call 'helper' has no complete memory-effect summary",
+        impact="the call may read or write any shared object",
+        module="/bin/litmus",
+        pc=event.pc,
+        details={"event_id": event.id},
+    )
+
+    certificate = verify_portability(
+        _report((event,), (), conflicts=False, unknowns=(unknown,))
+    )
+
+    assert certificate.verdict == Verdict.UNKNOWN
+    assert certificate.relevant_unknowns == (unknown,)
+
+
 def test_event_bound_is_unknown_not_safe() -> None:
     events, edges = _message_passing_events()
     certificate = verify_portability(

@@ -44,6 +44,10 @@ class ProofReason(str, Enum):
     READ_ONLY_AFTER_CREATE = "ReadOnlyAfterCreate"
     # DISJOINT_AFFINE 依赖有界仿射集合的 Z3 不相交证明。
     DISJOINT_AFFINE = "DisjointAffine"
+    # ATOMIC_COVERED 只用于普通通信已被具体 aq/rl 或 fence 边覆盖的证明。
+    ATOMIC_COVERED = "AtomicCovered"
+    # SEQUENTIAL_BEFORE_CREATE 表示事件发生时还没有 worker 可以并发访问。
+    SEQUENTIAL_BEFORE_CREATE = "SequentialBeforeCreate"
 
 
 class AliasRelation(str, Enum):

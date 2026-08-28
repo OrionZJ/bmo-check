@@ -23,10 +23,18 @@ from .encoding import BACKEND_NAME, BACKEND_VERSION, check_finite_portability
 
 
 def _deduplicate_unknowns(unknowns: list[UnknownFact]) -> tuple[UnknownFact, ...]:
-    seen: set[str] = set()
+    seen: set[tuple[object, ...]] = set()
     result: list[UnknownFact] = []
     for fact in unknowns:
-        key = fact.model_dump_json()
+        # details 常含派生 edge/event ID；根因相同不能膨胀成几十个 proof obligation。
+        key = (
+            fact.kind,
+            fact.reason,
+            fact.impact,
+            fact.module,
+            fact.pc,
+            fact.function,
+        )
         if key not in seen:
             seen.add(key)
             result.append(fact)
@@ -38,22 +46,7 @@ def _collect_unknowns(report: ProgramSliceReport) -> tuple[UnknownFact, ...]:
     unknowns = list(recovery.manifest.unknowns)
     unknowns.extend(recovery.unknowns)
     unknowns.extend(report.unknowns)
-    if recovery.control_flow is not None:
-        unknowns.extend(recovery.control_flow.unknowns)
-        if recovery.control_flow.coverage.incomplete_indirect_sites:
-            unknowns.append(
-                UnknownFact(
-                    kind=UnknownKind.INCOMPLETE_INDIRECT_TARGET,
-                    reason="control-flow recovery contains incomplete indirect target sets",
-                    impact="unseen paths may add shared-memory communication",
-                    module=recovery.control_flow.module_path,
-                    details={
-                        "incomplete_indirect_sites": recovery.control_flow.coverage.incomplete_indirect_sites
-                    },
-                )
-            )
     if recovery.thread_roles is not None:
-        unknowns.extend(recovery.thread_roles.unknowns)
         for role in recovery.thread_roles.roles:
             if not role.complete:
                 unknowns.append(
@@ -66,39 +59,41 @@ def _collect_unknowns(report: ProgramSliceReport) -> tuple[UnknownFact, ...]:
                         details={"thread_role": role.id},
                     )
                 )
-    for synchronization in recovery.synchronization:
-        unknowns.extend(synchronization.unknowns)
-        for summary in synchronization.summaries:
-            unknowns.extend(summary.unknowns)
-            if not summary.complete:
-                unknowns.append(
-                    UnknownFact(
-                        kind=UnknownKind.UNKNOWN_SYNCHRONIZATION,
-                        reason=summary.reason or "synchronization summary is incomplete",
-                        impact="the checker cannot use this API as a closed ordering boundary",
-                        module=summary.module_path,
-                        pc=summary.function_pc,
-                        function=summary.api,
-                    )
-                )
-    if report.memory_events is not None:
-        unknowns.extend(report.memory_events.unknowns)
-    if report.shared_state is not None:
-        unknowns.extend(report.shared_state.unknowns)
-        for shared_object in report.shared_state.objects:
-            if shared_object.sharing == SharingClass.SHARED_UNKNOWN:
-                unknowns.append(
-                    UnknownFact(
-                        kind=UnknownKind.UNKNOWN_SHARED_ADDRESS,
-                        reason="shared object has no closed address/escape classification",
-                        impact="alias candidates may be missing from the portability model",
-                        details={"shared_object": shared_object.id},
-                    )
-                )
     if report.shared_slice is not None:
-        unknowns.extend(report.shared_slice.unknowns)
+        removed_ids = {
+            event_id
+            for proof in report.shared_slice.proof_objects
+            for event_id in proof.event_ids
+        }
+        explained_event_ids: set[str] = set()
+        for fact in report.shared_slice.unknowns:
+            event_id = fact.details.get("event_id")
+            event_ids = fact.details.get("event_ids")
+            if isinstance(event_id, str) and event_id in removed_ids:
+                continue
+            if (
+                isinstance(event_ids, list)
+                and event_ids
+                and all(
+                    isinstance(item, str) and item in removed_ids
+                    for item in event_ids
+                )
+            ):
+                continue
+            unknowns.append(fact)
+            if isinstance(event_id, str):
+                explained_event_ids.add(event_id)
+            if isinstance(event_ids, list):
+                explained_event_ids.update(
+                    item for item in event_ids if isinstance(item, str)
+                )
         for event in report.shared_slice.events:
-            if event.kind.value in {"OpaqueCall", "Syscall", "UnknownMemoryEffect"}:
+            if (
+                event.kind.value in {"OpaqueCall", "Syscall", "UnknownMemoryEffect"}
+                and event.id not in explained_event_ids
+            ):
+                # 提取阶段通常已给未知 effect 绑定根因。这里只为没有诊断的哨兵补缺，
+                # 否则同一个 call 会同时变成“缺少摘要”和“OpaqueCall remains”。
                 unknowns.append(
                     UnknownFact(
                         kind=UnknownKind.UNKNOWN_MEMORY_EFFECT,
@@ -151,17 +146,24 @@ def _collect_unknowns(report: ProgramSliceReport) -> tuple[UnknownFact, ...]:
 
 
 def _analysis_config_sha256(
-    manifest: ProgramManifest, limits: CheckerLimits
+    manifest: ProgramManifest,
+    limits: CheckerLimits,
+    analysis_options: dict[str, object] | None = None,
 ) -> str:
     material = {
         "execution": manifest.execution.model_dump(mode="json"),
         "checker_limits": limits.model_dump(mode="json"),
+        "analysis_options": analysis_options or {},
     }
     encoded = json.dumps(material, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()
 
 
-def _scope(manifest: ProgramManifest, limits: CheckerLimits) -> CertificateScope:
+def _scope(
+    manifest: ProgramManifest,
+    limits: CheckerLimits,
+    analysis_options: dict[str, object] | None = None,
+) -> CertificateScope:
     executable = manifest.executable
     executable_hash = executable.sha256 if executable is not None else ""
     modules = []
@@ -194,7 +196,9 @@ def _scope(manifest: ProgramManifest, limits: CheckerLimits) -> CertificateScope
         argv=manifest.execution.argv,
         thread_count_min=manifest.execution.thread_count_min,
         thread_count_max=manifest.execution.thread_count_max,
-        analysis_config_sha256=_analysis_config_sha256(manifest, limits),
+        analysis_config_sha256=_analysis_config_sha256(
+            manifest, limits, analysis_options
+        ),
     )
 
 
@@ -339,12 +343,13 @@ def _checker_unknown(checker: CheckerReport) -> UnknownFact:
 def verify_portability(
     report: ProgramSliceReport,
     limits: CheckerLimits | None = None,
+    analysis_options: dict[str, object] | None = None,
 ) -> PortabilityCertificate:
     """这是唯一把分析事实映射为最终 verdict 的入口。"""
 
     limits = limits or CheckerLimits()
     manifest = report.recovery.manifest
-    scope = _scope(manifest, limits)
+    scope = _scope(manifest, limits, analysis_options)
     coverage = _coverage(report)
     unknowns = _collect_unknowns(report)
     proof_objects = (
@@ -414,10 +419,11 @@ def verify_certificate_scope(
     certificate: PortabilityCertificate,
     manifest: ProgramManifest,
     limits: CheckerLimits,
+    analysis_options: dict[str, object] | None = None,
 ) -> tuple[UnknownFact, ...]:
     """复用前重新计算 scope；任何差异都把证书降为 stale。"""
 
-    expected = _scope(manifest, limits)
+    expected = _scope(manifest, limits, analysis_options)
     if certificate.scope == expected:
         return ()
     return (

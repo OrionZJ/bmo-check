@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 from bmo_check.cli import main
@@ -223,3 +224,71 @@ def test_analyze_and_explain_cli_emit_unknown_certificate(
     assert explain_result == 0
     assert "verdict: UNKNOWN" in explanation
     assert "unknown" in explanation
+
+
+def test_evaluate_cli_writes_ablation_report(
+    elf_fixture, tmp_path: Path, monkeypatch
+) -> None:
+    parsec_root = tmp_path / "parsec"
+    binary_directory = parsec_root / "fixture" / "bin"
+    binary_directory.mkdir(parents=True)
+    executable = binary_directory / "sample-app"
+    shutil.copy2(elf_fixture.executable, executable)
+    (parsec_root / "fixture" / "run").mkdir()
+    suite = tmp_path / "suite.yaml"
+    suite.write_text(
+        "schema: 1\n"
+        "name: fixture-suite\n"
+        "benchmarks:\n"
+        "  - id: fixture\n"
+        "    executable: fixture/bin/sample-app\n"
+        "    run_directory: fixture/run\n"
+        "    argv: []\n"
+        "    threads: 2\n",
+        encoding="utf-8",
+    )
+    contract = tmp_path / "contract.yaml"
+    contract.write_text(
+        "schema: 1\ncontract_version: test-contract-v1\n", encoding="utf-8"
+    )
+    pthread_spec = tmp_path / "pthread.yaml"
+    pthread_spec.write_text("schema: 1\napis: {}\n", encoding="utf-8")
+    output = tmp_path / "evaluation"
+    roots = [
+        value
+        for root in (elf_fixture.library_root,) + elf_fixture.system_roots
+        for value in ("--library-root", str(root))
+    ]
+    monkeypatch.setattr("bmo_check.cli.function_symbols", lambda _: ())
+
+    result = main(
+        [
+            "evaluate",
+            "--suite",
+            str(suite),
+            "--parsec-root",
+            str(parsec_root),
+            *roots,
+            "--dbt-contract",
+            str(contract),
+            "--pthread-spec",
+            str(pthread_spec),
+            "--dbt-revision",
+            "a" * 40,
+            "--output-dir",
+            str(output),
+        ]
+    )
+    payload = json.loads((output / "evaluation.json").read_text(encoding="utf-8"))
+    ablations = payload["benchmarks"][0]["ablations"]
+
+    assert result == 0
+    assert [item["level"] for item in ablations] == [
+        "none",
+        "thread-local",
+        "read-only",
+        "disjoint",
+        "atomic-covered",
+    ]
+    assert all(item["certificate_sha256"] for item in ablations)
+    assert payload["benchmarks"][0]["native_run"]["attempted"] is False

@@ -194,6 +194,7 @@ def analyze_pthread_synchronization(
     library: ModuleFingerprint,
     pthread_spec_path: Path,
     dbt_contract_path: Path,
+    requested_apis: set[str] | None = None,
 ) -> SynchronizationReport:
     pthread_spec = _load_yaml(pthread_spec_path)
     contract = _load_yaml(dbt_contract_path)
@@ -210,6 +211,8 @@ def analyze_pthread_synchronization(
     report_unknowns: list[UnknownFact] = list(instruction_report.unknowns)
 
     for api, kind in _KIND_BY_API.items():
+        if requested_apis is not None and api not in requested_apis:
+            continue
         entry = api_entries.get(api, {})
         entry = entry if isinstance(entry, dict) else {}
         required = _ORDERING_BY_NAME.get(

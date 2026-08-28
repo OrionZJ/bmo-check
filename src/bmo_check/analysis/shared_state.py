@@ -372,6 +372,33 @@ def analyze_shared_state(
         )
 
     event_ids = {event.id for event in memory_events.events}
+    creates = [
+        event for event in memory_events.events if event.kind == EventKind.THREAD_CREATE
+    ]
+    if creates:
+        order_edges: dict[str, set[str]] = defaultdict(set)
+        for edge in memory_events.program_order:
+            order_edges[edge.source_event].add(edge.target_event)
+        sequential = tuple(
+            event.id
+            for event in memory_events.events
+            if event.thread_role == "main"
+            and event.id not in removed
+            and all(_path_exists(order_edges, event.id, create.id) for create in creates)
+        )
+        if sequential:
+            proofs.append(
+                ProofObject(
+                    id="proof:sequential-before-create",
+                    reason=ProofReason.SEQUENTIAL_BEFORE_CREATE,
+                    event_ids=sequential,
+                    supporting_facts=(
+                        "every event reaches every pthread_create in main program order",
+                        "no worker thread exists before its pthread_create call",
+                    ),
+                )
+            )
+            removed.update(sequential)
     kept = tuple(sorted(event_ids - removed))
     return SharedStateReport(
         objects=tuple(objects),

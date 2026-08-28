@@ -187,6 +187,7 @@ def build_shared_memory_slice(
             proof_counts[ProofReason.TLS_STORAGE]
             + proof_counts[ProofReason.UNESCAPED_STACK]
             + proof_counts[ProofReason.SINGLE_MAIN_ROLE]
+            + proof_counts[ProofReason.SEQUENTIAL_BEFORE_CREATE]
         ),
         readonly_removed=proof_counts[ProofReason.READ_ONLY_AFTER_CREATE],
         disjoint_removed=proof_counts[ProofReason.DISJOINT_AFFINE],

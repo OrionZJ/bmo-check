@@ -221,7 +221,8 @@ def extract_memory_events(
                 roles_by_function.setdefault(function_pc, set()).add(role)
 
         events: list[MemoryEvent] = []
-        unknowns: list[UnknownFact] = list(instruction_report.unknowns)
+        # InstructionModuleFacts 还包含不可达函数的解码缺口；这里只传播线程可达事实。
+        unknowns: list[UnknownFact] = []
         block_events: dict[tuple[str, int], list[MemoryEvent]] = {}
 
         def append_event(event: MemoryEvent) -> None:
@@ -266,6 +267,7 @@ def extract_memory_events(
             roles = roles_by_function.get(function_pc, set())
             if not roles:
                 continue
+            unknowns.extend(fact.unknowns)
             source_ordering, target_ordering = _event_ordering(fact)
             for role in sorted(roles):
                 for operand in fact.memory_operands:
