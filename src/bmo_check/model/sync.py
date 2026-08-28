@@ -20,11 +20,22 @@ class Ordering(str, Enum):
     ACQ_REL = "AcqRel"
     # FULL 表示显式双向完整屏障。
     FULL = "Full"
+    # TSO 表示普通 x86 访存受 source memory model 约束。
+    TSO = "TSO"
+    # FenceXY 保存显式 fence 的精确 predecessor/successor 集合。
+    FENCE_RR = "FenceRR"
+    FENCE_RW = "FenceRW"
+    FENCE_WW = "FenceWW"
+    FENCE_WR = "FenceWR"
     # UNKNOWN 表示实际实现或路径尚未封闭。
     UNKNOWN = "Unknown"
 
 
 class SynchronizationKind(str, Enum):
+    # THREAD_CREATE 发布父线程在创建前完成的初始化。
+    THREAD_CREATE = "thread_create"
+    # THREAD_JOIN 在返回前汇合目标线程的完成状态。
+    THREAD_JOIN = "thread_join"
     # ACQUIRE 对应 lock 成功后的进入边界。
     ACQUIRE = "acquire"
     # RELEASE 对应 unlock 前的发布边界。

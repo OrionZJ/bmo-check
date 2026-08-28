@@ -38,6 +38,12 @@ class UnknownKind(str, Enum):
     REACHING_DEFINITION_FAILURE = "ReachingDefinitionFailure"
     # pthread handle 无法唯一映射到已恢复的 child role。
     UNKNOWN_JOIN_RELATION = "UnknownJoinRelation"
+    # 事件提取失败后不能用空事件集继续剪枝。
+    MEMORY_EVENT_RECOVERY_FAILURE = "MemoryEventRecoveryFailure"
+    # 一个函数可由零个或多个线程角色到达，事件归属无法唯一确定。
+    UNKNOWN_THREAD_ROLE = "UnknownThreadRole"
+    # 地址已恢复为仿射式，但缺少线程或循环 bounds。
+    UNKNOWN_AFFINE_BOUNDS = "UnknownAffineBounds"
 
 
 class UnknownFact(StrictModel):

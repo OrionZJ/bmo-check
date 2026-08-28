@@ -136,3 +136,42 @@ def test_recover_cli_emits_cfg_and_thread_layers(
     assert payload["control_flow"]["coverage"]["functions"] > 0
     assert payload["thread_roles"]["roles"][0]["id"] == "main"
     assert payload["synchronization"] == []
+
+
+def test_slice_cli_emits_proof_carrying_shared_slice(
+    elf_fixture, capsys, tmp_path: Path, monkeypatch
+) -> None:
+    contract = tmp_path / "contract.yaml"
+    contract.write_text(
+        "schema: 1\ncontract_version: test-contract-v1\n", encoding="utf-8"
+    )
+    pthread_spec = tmp_path / "pthread.yaml"
+    pthread_spec.write_text("schema: 1\napis: {}\n", encoding="utf-8")
+    roots = [
+        value
+        for root in (elf_fixture.library_root,) + elf_fixture.system_roots
+        for value in ("--library-root", str(root))
+    ]
+    monkeypatch.setattr("bmo_check.cli.function_symbols", lambda _: ())
+
+    result = main(
+        [
+            "slice",
+            "--exe",
+            str(elf_fixture.executable),
+            *roots,
+            "--dbt-contract",
+            str(contract),
+            "--pthread-spec",
+            str(pthread_spec),
+            "--dbt-revision",
+            "a" * 40,
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert result == 0
+    assert payload["memory_events"] is not None
+    assert payload["shared_state"] is not None
+    assert payload["shared_slice"]["coverage"]["total_events"] > 0
+    assert "verdict" not in payload

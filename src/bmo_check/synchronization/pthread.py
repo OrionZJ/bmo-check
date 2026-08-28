@@ -32,6 +32,8 @@ _ORDERING_BY_NAME = {
 }
 
 _KIND_BY_API = {
+    "pthread_create": SynchronizationKind.THREAD_CREATE,
+    "pthread_join": SynchronizationKind.THREAD_JOIN,
     "pthread_mutex_lock": SynchronizationKind.ACQUIRE,
     "pthread_mutex_unlock": SynchronizationKind.RELEASE,
     "pthread_spin_lock": SynchronizationKind.ACQUIRE,
@@ -41,6 +43,11 @@ _KIND_BY_API = {
     "pthread_cond_broadcast": SynchronizationKind.CONDITION_BROADCAST,
     "pthread_barrier_wait": SynchronizationKind.BARRIER,
     "pthread_once": SynchronizationKind.ONCE,
+}
+
+_REQUIRED_DEFAULT = {
+    "pthread_create": Ordering.RELEASE,
+    "pthread_join": Ordering.ACQUIRE,
 }
 
 
@@ -206,7 +213,8 @@ def analyze_pthread_synchronization(
         entry = api_entries.get(api, {})
         entry = entry if isinstance(entry, dict) else {}
         required = _ORDERING_BY_NAME.get(
-            str(entry.get("required_ordering", "unknown")), Ordering.UNKNOWN
+            str(entry.get("required_ordering", "unknown")),
+            _REQUIRED_DEFAULT.get(api, Ordering.UNKNOWN),
         )
         symbols = {symbol.pc: symbol for symbol in symbols_by_name.get(api, [])}
         if not symbols:

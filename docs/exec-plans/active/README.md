@@ -6,7 +6,7 @@
 |---|---|
 | 00 foundation + binary facts | COMPLETE |
 | 01 program recovery + synchronization | COMPLETE |
-| 02 shared state + communication slicing | PENDING |
+| 02 shared state + communication slicing | COMPLETE |
 | 03 portability proof + verdict | PENDING |
 | 04 PARSEC evaluation | PENDING |
 

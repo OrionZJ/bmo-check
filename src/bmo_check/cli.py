@@ -6,6 +6,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from bmo_check.analysis import analyze_shared_state, extract_memory_events
 from bmo_check.binary.dependency_closure import build_program_manifest
 from bmo_check.binary.symbols import function_symbols
 from bmo_check.config import load_contract_version
@@ -15,11 +16,13 @@ from bmo_check.model import (
     FingerprintReport,
     ProgramManifest,
     ProgramRecoveryReport,
+    ProgramSliceReport,
     StrictModel,
     UnknownFact,
     UnknownKind,
 )
 from bmo_check.synchronization import analyze_pthread_synchronization
+from bmo_check.slicing import build_shared_memory_slice
 from bmo_check.threading import discover_pthread_threads
 
 
@@ -129,11 +132,10 @@ def _fingerprint(args: argparse.Namespace) -> int:
     return 0 if manifest.closure_complete else 1
 
 
-def _recover(args: argparse.Namespace) -> int:
+def _build_recovery(args: argparse.Namespace) -> ProgramRecoveryReport:
     manifest = _build_manifest(args)
     if manifest.executable is None:
-        _write_json(ProgramRecoveryReport(manifest=manifest), args.output)
-        return 1
+        return ProgramRecoveryReport(manifest=manifest)
 
     control_flow = recover_control_flow(manifest.executable, manifest)
     threads = discover_pthread_threads(
@@ -175,17 +177,64 @@ def _recover(args: argparse.Namespace) -> int:
                     module=library.path,
                 )
             )
+    return ProgramRecoveryReport(
+        manifest=manifest,
+        control_flow=control_flow,
+        thread_roles=threads,
+        synchronization=tuple(synchronization),
+        unknowns=tuple(recovery_unknowns),
+    )
+
+
+def _recover(args: argparse.Namespace) -> int:
+    recovery = _build_recovery(args)
+    _write_json(recovery, args.output)
+    return 0 if recovery.manifest.closure_complete else 1
+
+
+def _slice(args: argparse.Namespace) -> int:
+    recovery = _build_recovery(args)
+    module = recovery.manifest.executable
+    if (
+        module is None
+        or recovery.control_flow is None
+        or recovery.thread_roles is None
+    ):
+        _write_json(
+            ProgramSliceReport(
+                recovery=recovery,
+                unknowns=recovery.manifest.unknowns + recovery.unknowns,
+            ),
+            args.output,
+        )
+        return 1
+
+    events = extract_memory_events(
+        module,
+        recovery.control_flow,
+        recovery.thread_roles,
+        recovery.synchronization,
+    )
+    shared_state = analyze_shared_state(
+        module,
+        recovery.control_flow,
+        recovery.thread_roles,
+        events,
+    )
+    shared_slice = build_shared_memory_slice(
+        events, shared_state, recovery.thread_roles
+    )
     _write_json(
-        ProgramRecoveryReport(
-            manifest=manifest,
-            control_flow=control_flow,
-            thread_roles=threads,
-            synchronization=tuple(synchronization),
-            unknowns=tuple(recovery_unknowns),
+        ProgramSliceReport(
+            recovery=recovery,
+            memory_events=events,
+            shared_state=shared_state,
+            shared_slice=shared_slice,
+            unknowns=recovery.unknowns,
         ),
         args.output,
     )
-    return 0 if manifest.closure_complete else 1
+    return 0 if recovery.manifest.closure_complete else 1
 
 
 def _add_input_arguments(parser: argparse.ArgumentParser) -> None:
@@ -228,6 +277,17 @@ def build_parser() -> argparse.ArgumentParser:
         default=Path("specs/pthread-api.yaml"),
     )
     recover.set_defaults(handler=_recover)
+
+    slice_command = subcommands.add_parser(
+        "slice", help="build a proof-carrying shared-memory slice"
+    )
+    _add_input_arguments(slice_command)
+    slice_command.add_argument(
+        "--pthread-spec",
+        type=Path,
+        default=Path("specs/pthread-api.yaml"),
+    )
+    slice_command.set_defaults(handler=_slice)
     return parser
 
 

@@ -1,0 +1,168 @@
+from __future__ import annotations
+
+import shutil
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from bmo_check.analysis import analyze_shared_state, extract_memory_events
+from bmo_check.binary.dependency_closure import build_program_manifest
+from bmo_check.controlflow import recover_control_flow
+from bmo_check.model import (
+    AddressKind,
+    ExecutionScope,
+    ProofReason,
+    Ordering,
+    SynchronizationKind,
+    SynchronizationReport,
+    SynchronizationSummary,
+    SharingClass,
+    UnknownKind,
+)
+from bmo_check.slicing import build_shared_memory_slice
+from bmo_check.threading import discover_pthread_threads
+
+
+def _compile(tmp_path: Path, name: str, source_text: str) -> Path:
+    gcc = shutil.which("gcc")
+    if gcc is None:
+        pytest.fail("gcc is required for shared-state integration tests")
+    source = tmp_path / f"{name}.c"
+    source.write_text(source_text, encoding="utf-8")
+    executable = tmp_path / name
+    subprocess.run(
+        [
+            gcc,
+            "-O1",
+            "-fno-inline",
+            "-fno-stack-protector",
+            "-o",
+            str(executable),
+            str(source),
+            "-pthread",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return executable
+
+
+def _pipeline(executable: Path, *, create_release: bool = False):
+    roots = tuple(
+        path
+        for path in (
+            Path("/lib64"),
+            Path("/lib/x86_64-linux-gnu"),
+            Path("/usr/lib/x86_64-linux-gnu"),
+        )
+        if path.is_dir()
+    )
+    manifest = build_program_manifest(
+        executable,
+        roots,
+        ExecutionScope(thread_count_min=2, thread_count_max=4),
+        "dbt6-mo-off-v1",
+        "test-revision",
+    )
+    assert manifest.executable is not None
+    cfg = recover_control_flow(manifest.executable, manifest)
+    threads = discover_pthread_threads(manifest.executable, manifest, cfg)
+    synchronization = ()
+    if create_release:
+        synchronization = (
+            SynchronizationReport(
+                contract_version="dbt6-mo-off-v1",
+                library_path="libpthread-fixture.so",
+                library_sha256="b" * 64,
+                summaries=(
+                    SynchronizationSummary(
+                        api="pthread_create",
+                        kind=SynchronizationKind.THREAD_CREATE,
+                        required_ordering=Ordering.RELEASE,
+                        module_path="libpthread-fixture.so",
+                        module_sha256="b" * 64,
+                        function_pc=0x1000,
+                        function_size=1,
+                        target_ordering=Ordering.RELEASE,
+                        complete=True,
+                    ),
+                ),
+            ),
+        )
+    events = extract_memory_events(
+        manifest.executable, cfg, threads, synchronization
+    )
+    state = analyze_shared_state(manifest.executable, cfg, threads, events)
+    shared_slice = build_shared_memory_slice(events, state, threads)
+    return events, state, shared_slice
+
+
+def test_tls_and_readonly_after_create_are_pruned_with_proofs(tmp_path: Path) -> None:
+    executable = _compile(
+        tmp_path,
+        "tls-readonly",
+        "#include <pthread.h>\n"
+        "static volatile int shared_data;\n"
+        "static __thread volatile int local_tls;\n"
+        "static void *worker(void *arg) { local_tls = shared_data; return 0; }\n"
+        "int main(void) { pthread_t t; shared_data = 7; "
+        "pthread_create(&t, 0, worker, 0); pthread_join(t, 0); return 0; }\n",
+    )
+    _, state, shared_slice = _pipeline(executable, create_release=True)
+
+    reasons = {proof.reason for proof in state.proofs}
+    assert ProofReason.TLS_STORAGE in reasons
+    assert ProofReason.READ_ONLY_AFTER_CREATE in reasons
+    assert any(obj.address.kind == AddressKind.TLS for obj in state.objects)
+    assert any(obj.sharing == SharingClass.READ_ONLY_AFTER_CREATE for obj in state.objects)
+    assert shared_slice.coverage.thread_local_removed > 0
+    assert shared_slice.coverage.readonly_removed > 0
+
+
+def test_unescaped_stack_is_local_but_passed_stack_pointer_is_unknown(
+    tmp_path: Path,
+) -> None:
+    local = _compile(
+        tmp_path,
+        "local-stack",
+        "int main(void) { volatile int value = 3; return value; }\n",
+    )
+    _, local_state, _ = _pipeline(local)
+    assert any(
+        proof.reason == ProofReason.UNESCAPED_STACK for proof in local_state.proofs
+    )
+
+    escaped = _compile(
+        tmp_path,
+        "escaped-stack",
+        "#include <pthread.h>\n"
+        "static void *worker(void *arg) { return (void *)(long)*(volatile int *)arg; }\n"
+        "int main(void) { pthread_t t; volatile int value = 3; "
+        "pthread_create(&t, 0, worker, (void *)&value); pthread_join(t, 0); return 0; }\n",
+    )
+    _, escaped_state, escaped_slice = _pipeline(escaped)
+    assert any(
+        item.kind == UnknownKind.UNKNOWN_ESCAPE for item in escaped_state.unknowns
+    )
+    stack_event_ids = {
+        event_id
+        for obj in escaped_state.objects
+        if obj.address.kind == AddressKind.STACK
+        for event_id in obj.event_ids
+    }
+    assert stack_event_ids.intersection(escaped_state.kept_event_ids)
+    assert any(event.id in stack_event_ids for event in escaped_slice.events)
+
+    opaque = _compile(
+        tmp_path,
+        "opaque-stack",
+        "static void (*volatile sink)(void *);\n"
+        "int main(void) { volatile int value = 3; "
+        "if (sink) sink((void *)&value); return value; }\n",
+    )
+    opaque_events, opaque_state, opaque_slice = _pipeline(opaque)
+    assert any(event.kind.value == "OpaqueCall" for event in opaque_events.events)
+    assert any(item.kind == UnknownKind.UNKNOWN_ESCAPE for item in opaque_state.unknowns)
+    assert opaque_slice.coverage.unknown_events > 0

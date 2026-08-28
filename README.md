@@ -102,10 +102,12 @@ docs/12-validation-plan.md
 ```text
 Milestone 00 — Foundation and Binary Facts
 Milestone 01 — Program Recovery and Synchronization
+Milestone 02 — Shared State and Communication Slicing
 ```
 
-它们负责恢复 executable、实际动态库闭包、x86 原始指令、CFG、pthread 线程角色和
-实际动态库同步摘要。当前仍不生成 MemoryEvent，也不进行 SAFE 判定。
+它们负责恢复 executable、实际动态库闭包、x86 原始指令、CFG、pthread 线程角色、
+实际动态库同步摘要、MemoryEvent 和带剪枝证明的 shared-memory slice。当前仍不进行
+portability check，也不生成 SAFE 判定。
 
 WSL 环境使用独立 Python 3.12：
 
@@ -146,5 +148,21 @@ cd /path/to/bmo-check
 ```
 
 `complete=false` 和报告中的 Unknown 表示控制流、线程或同步事实仍有缺口。它们不能被解释为程序不需要 Fence。
+
+生成 Milestone 2 shared-memory slice：
+
+```bash
+~/.local/bin/uv run bmo-check slice \
+  --exe /path/to/x86-program \
+  --library-root /path/to/x86-libraries \
+  --threads 4 \
+  --dbt-contract specs/dbt6-mo-off.yaml \
+  --pthread-spec specs/pthread-api.yaml \
+  --dbt-root /path/to/dbt6 \
+  --output shared-slice.json
+```
+
+`slice` 输出事件、program-order、alias/conflict、同步候选、Unknown 和每个被剪除事件的
+ProofObject。它不是最终安全证书。
 
 Python 包使用 `bmo_check` namespace，命令行入口统一为 `bmo-check`。

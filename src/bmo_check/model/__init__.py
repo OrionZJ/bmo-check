@@ -31,7 +31,22 @@ from .instruction import (
     MemoryOperandFact,
 )
 from .memory_event import AbstractAddress, AddressKind, EventKind, MemoryEvent
+from .memory_event import MemoryEventReport, ProgramOrderEdge
 from .recovery import ProgramRecoveryReport
+from .sharing import (
+    AliasRelation,
+    ConflictCandidate,
+    EscapeKind,
+    ProofObject,
+    ProofReason,
+    PruningCoverage,
+    SharedMemorySlice,
+    SharedObject,
+    SharedStateReport,
+    SharingClass,
+    SynchronizationEdge,
+)
+from .slicing import ProgramSliceReport
 from .symbol import FunctionSymbolFact, RelocationFact
 from .sync import (
     Ordering,
@@ -74,18 +89,32 @@ __all__ = [
     "InstructionModuleFacts",
     "MemoryAccessKind",
     "MemoryEvent",
+    "MemoryEventReport",
     "MemoryOperandFact",
     "ModuleFingerprint",
     "ModuleRole",
     "Ordering",
     "ProgramManifest",
     "ProgramRecoveryReport",
+    "ProgramSliceReport",
+    "ProgramOrderEdge",
+    "ProofObject",
+    "ProofReason",
+    "PruningCoverage",
     "RelocationFact",
     "SynchronizationKind",
     "SynchronizationReport",
     "SynchronizationSummary",
     "SyncInstructionEvidence",
     "StrictModel",
+    "SharedMemorySlice",
+    "SharedObject",
+    "SharedStateReport",
+    "SharingClass",
+    "EscapeKind",
+    "AliasRelation",
+    "ConflictCandidate",
+    "SynchronizationEdge",
     "ThreadCreateFact",
     "ThreadDiscoveryReport",
     "ThreadJoinFact",
