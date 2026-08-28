@@ -136,3 +136,28 @@ matching SAFE certificate
 otherwise
     -> DBT6 mo-fsm
 ```
+
+---
+
+## 8. 当前 verdict 门禁
+
+最终 verdict 只能由 `proof/verifier.py` 创建：
+
+```text
+无 relevant Unknown
++ 无跨线程 conflict
++ 每个被剪除事件都有 proof object
+    -> SAFE（结构证明，不依赖 bound）
+
+target SAT
++ 同一 rf/co 下 source UNSAT
+    -> COUNTEREXAMPLE
+
+其他情况
+    -> UNKNOWN
+```
+
+certificate validator 会拒绝把 bounded checker 结果包装为 `SAFE`。
+
+`analysis_config_sha256` 绑定执行参数、线程范围和 checker limits。复用证书前还要比较 executable、
+interpreter、全部 library、DBT contract 和 DBT revision；任一项不同都返回 `StaleCertificate`。

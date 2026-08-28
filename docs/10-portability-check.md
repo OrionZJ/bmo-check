@@ -142,3 +142,41 @@ UNKNOWN
 certificate 必须显式写 bound。
 
 不能把 bounded no-counterexample 自动包装成 unconditional SAFE。
+
+---
+
+## 10. 当前有限模型
+
+首版使用 Z3：
+
+```text
+target solver
+  枚举 rf + coherence
+  检查 RVWMO + DBT6 ordering 无环
+
+source solver
+  固定同一 rf + coherence
+  检查 x86-TSO preserved order 无环
+```
+
+x86-TSO 保留：
+
+```text
+L→L
+L→S
+S→S
+```
+
+并放松普通 `S→L`。RVWMO 侧保留同地址顺序、已恢复依赖、AcqRel、显式 Fence 和完整同步边。
+
+首版支持集：
+
+```text
+finite linear event graph
+exact Global alias class
+aligned 1/2/4/8-byte Load/Store
+AcqRel RMW
+LFENCE/SFENCE/MFENCE lowering
+```
+
+mixed-size、misaligned、Unknown address、循环事件图、开放控制流和超界输入返回 `UNKNOWN`。

@@ -175,3 +175,51 @@ def test_slice_cli_emits_proof_carrying_shared_slice(
     assert payload["shared_state"] is not None
     assert payload["shared_slice"]["coverage"]["total_events"] > 0
     assert "verdict" not in payload
+
+
+def test_analyze_and_explain_cli_emit_unknown_certificate(
+    elf_fixture, capsys, tmp_path: Path, monkeypatch
+) -> None:
+    contract = tmp_path / "contract.yaml"
+    contract.write_text(
+        "schema: 1\ncontract_version: test-contract-v1\n", encoding="utf-8"
+    )
+    pthread_spec = tmp_path / "pthread.yaml"
+    pthread_spec.write_text("schema: 1\napis: {}\n", encoding="utf-8")
+    certificate_path = tmp_path / "certificate.json"
+    roots = [
+        value
+        for root in (elf_fixture.library_root,) + elf_fixture.system_roots
+        for value in ("--library-root", str(root))
+    ]
+    monkeypatch.setattr("bmo_check.cli.function_symbols", lambda _: ())
+
+    result = main(
+        [
+            "analyze",
+            "--exe",
+            str(elf_fixture.executable),
+            *roots,
+            "--dbt-contract",
+            str(contract),
+            "--pthread-spec",
+            str(pthread_spec),
+            "--dbt-revision",
+            "a" * 40,
+            "--output",
+            str(certificate_path),
+        ]
+    )
+    payload = json.loads(certificate_path.read_text(encoding="utf-8"))
+
+    assert result == 1
+    assert payload["verdict"] == "UNKNOWN"
+    assert payload["scope"]["executable_sha256"]
+    assert payload["scope"]["modules"]
+    assert payload["relevant_unknowns"]
+
+    explain_result = main(["explain", str(certificate_path)])
+    explanation = capsys.readouterr().out
+    assert explain_result == 0
+    assert "verdict: UNKNOWN" in explanation
+    assert "unknown" in explanation

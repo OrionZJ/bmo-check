@@ -8,7 +8,12 @@ from .binary import (
     ModuleRole,
     ProgramManifest,
 )
-from .certificate import CertificateScope
+from .certificate import (
+    CertificateCoverage,
+    CertificateModule,
+    CertificateScope,
+    PortabilityCertificate,
+)
 from .common import StrictModel
 from .controlflow import (
     BasicBlockFact,
@@ -62,7 +67,16 @@ from .thread import (
     ThreadRole,
 )
 from .unknown import UnknownFact, UnknownKind
-from .verdict import Verdict
+from .verdict import (
+    CheckerConclusion,
+    CheckerLimits,
+    CheckerReport,
+    CoherenceChoice,
+    CounterexampleEvent,
+    CounterexampleTrace,
+    ReadFromChoice,
+    Verdict,
+)
 
 __all__ = [
     "AbstractAddress",
@@ -72,10 +86,18 @@ __all__ = [
     "CallKind",
     "CallSite",
     "CFGCoverage",
+    "CertificateCoverage",
+    "CertificateModule",
     "CertificateScope",
+    "CheckerConclusion",
+    "CheckerLimits",
+    "CheckerReport",
     "CodeLocation",
     "ControlFlowKind",
     "ControlFlowReport",
+    "CoherenceChoice",
+    "CounterexampleEvent",
+    "CounterexampleTrace",
     "ElfMetadata",
     "EventKind",
     "ExecutionScope",
@@ -95,6 +117,7 @@ __all__ = [
     "ModuleRole",
     "Ordering",
     "ProgramManifest",
+    "PortabilityCertificate",
     "ProgramRecoveryReport",
     "ProgramSliceReport",
     "ProgramOrderEdge",
@@ -102,6 +125,7 @@ __all__ = [
     "ProofReason",
     "PruningCoverage",
     "RelocationFact",
+    "ReadFromChoice",
     "SynchronizationKind",
     "SynchronizationReport",
     "SynchronizationSummary",

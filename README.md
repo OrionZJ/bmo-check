@@ -103,11 +103,12 @@ docs/12-validation-plan.md
 Milestone 00 — Foundation and Binary Facts
 Milestone 01 — Program Recovery and Synchronization
 Milestone 02 — Shared State and Communication Slicing
+Milestone 03 — Portability Proof, Verdict and Certificate
 ```
 
 它们负责恢复 executable、实际动态库闭包、x86 原始指令、CFG、pthread 线程角色、
-实际动态库同步摘要、MemoryEvent 和带剪枝证明的 shared-memory slice。当前仍不进行
-portability check，也不生成 SAFE 判定。
+实际动态库同步摘要、MemoryEvent、带剪枝证明的 shared-memory slice，以及有限的
+x86-TSO / DBT6 `mo-off + RVWMO` 可移植性检查和证书。
 
 WSL 环境使用独立 Python 3.12：
 
@@ -164,5 +165,28 @@ cd /path/to/bmo-check
 
 `slice` 输出事件、program-order、alias/conflict、同步候选、Unknown 和每个被剪除事件的
 ProofObject。它不是最终安全证书。
+
+执行 Milestone 3 分析：
+
+```bash
+~/.local/bin/uv run bmo-check analyze \
+  --exe /path/to/x86-program \
+  --library-root /path/to/x86-libraries \
+  --threads 4 \
+  --dbt-contract specs/dbt6-mo-off.yaml \
+  --pthread-spec specs/pthread-api.yaml \
+  --dbt-root /path/to/dbt6 \
+  --output certificate.json
+```
+
+解释证书：
+
+```bash
+~/.local/bin/uv run bmo-check explain certificate.json
+```
+
+`SAFE` 只来自无 Unknown 的结构性通信消除证明。有限 checker 找不到反例时输出
+`UNKNOWN`，不会把 bounded no-counterexample 当成 `SAFE`；找到同一 rf/co 执行在
+RVWMO 可行而 x86-TSO 不可行时输出 `COUNTEREXAMPLE`。
 
 Python 包使用 `bmo_check` namespace，命令行入口统一为 `bmo-check`。

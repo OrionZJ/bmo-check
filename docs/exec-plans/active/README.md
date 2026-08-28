@@ -7,7 +7,7 @@
 | 00 foundation + binary facts | COMPLETE |
 | 01 program recovery + synchronization | COMPLETE |
 | 02 shared state + communication slicing | COMPLETE |
-| 03 portability proof + verdict | PENDING |
+| 03 portability proof + verdict | COMPLETE |
 | 04 PARSEC evaluation | PENDING |
 
 一次只实现一个 milestone。完成当前阶段的测试和 acceptance 后，才能进入下一阶段。

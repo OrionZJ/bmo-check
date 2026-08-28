@@ -44,6 +44,14 @@ class UnknownKind(str, Enum):
     UNKNOWN_THREAD_ROLE = "UnknownThreadRole"
     # 地址已恢复为仿射式，但缺少线程或循环 bounds。
     UNKNOWN_AFFINE_BOUNDS = "UnknownAffineBounds"
+    # checker 不支持该事件、地址形态或执行结构。
+    UNSUPPORTED_PORTABILITY_INPUT = "UnsupportedPortabilityInput"
+    # solver 或整个有限执行搜索超过显式时间上限。
+    PORTABILITY_CHECK_TIMEOUT = "PortabilityCheckTimeout"
+    # target 执行枚举达到上限，剩余关系尚未检查。
+    PORTABILITY_CHECK_BOUND = "PortabilityCheckBound"
+    # certificate 的 binary、DBT 或 config 指纹与当前输入不同。
+    STALE_CERTIFICATE = "StaleCertificate"
 
 
 class UnknownFact(StrictModel):
