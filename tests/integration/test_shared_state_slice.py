@@ -139,8 +139,8 @@ def test_unescaped_stack_is_local_but_passed_stack_pointer_is_unknown(
         "escaped-stack",
         "#include <pthread.h>\n"
         "static void *worker(void *arg) { return (void *)(long)*(volatile int *)arg; }\n"
-        "int main(void) { pthread_t t; volatile int value = 3; "
-        "pthread_create(&t, 0, worker, (void *)&value); pthread_join(t, 0); return 0; }\n",
+        "int main(void) { pthread_t t; volatile int value = 3; volatile int local = 4; "
+        "pthread_create(&t, 0, worker, (void *)&value); pthread_join(t, 0); return local; }\n",
     )
     _, escaped_state, escaped_slice = _pipeline(escaped)
     assert any(
@@ -154,6 +154,10 @@ def test_unescaped_stack_is_local_but_passed_stack_pointer_is_unknown(
     }
     assert stack_event_ids.intersection(escaped_state.kept_event_ids)
     assert any(event.id in stack_event_ids for event in escaped_slice.events)
+    assert any(
+        proof.reason == ProofReason.UNESCAPED_STACK
+        for proof in escaped_state.proofs
+    )
 
     opaque = _compile(
         tmp_path,
@@ -166,3 +170,25 @@ def test_unescaped_stack_is_local_but_passed_stack_pointer_is_unknown(
     assert any(event.kind.value == "OpaqueCall" for event in opaque_events.events)
     assert any(item.kind == UnknownKind.UNKNOWN_ESCAPE for item in opaque_state.unknowns)
     assert opaque_slice.coverage.unknown_events > 0
+
+
+def test_dynamic_stack_escape_does_not_poison_fixed_frame_slots(
+    tmp_path: Path,
+) -> None:
+    executable = _compile(
+        tmp_path,
+        "dynamic-stack",
+        "#include <pthread.h>\n"
+        "static void *worker(void *arg) { ((volatile int *)arg)[0] = 7; return 0; }\n"
+        "int main(int argc, char **argv) { pthread_t t; volatile int fixed = argc; "
+        "volatile int values[argc + 2]; pthread_create(&t, 0, worker, (void *)values); "
+        "pthread_join(t, 0); return fixed + (argv != 0); }\n",
+    )
+    _, state, _ = _pipeline(executable)
+
+    # VLA 会跨线程，但编译器为它下移 rsp；这不能污染上方的固定栈槽。
+    assert any(
+        proof.reason == ProofReason.UNESCAPED_STACK
+        and any("never materialized" in fact for fact in proof.supporting_facts)
+        for proof in state.proofs
+    )

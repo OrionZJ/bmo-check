@@ -51,6 +51,9 @@ class ProgramManifest(StrictModel):
     execution: ExecutionScope = Field(default_factory=ExecutionScope)
     dbt_contract_version: str
     dbt_revision: str | None = None
+    # function_effect_contract_version/sha256 绑定外部函数 effect 假设。
+    function_effect_contract_version: str | None = None
+    function_effect_contract_sha256: str | None = None
     closure_complete: bool
     unknowns: tuple[UnknownFact, ...] = ()
 

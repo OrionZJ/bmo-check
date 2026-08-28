@@ -25,10 +25,27 @@ from bmo_check.model import (
     UnknownKind,
 )
 
+from .address_provenance import recover_block_local_addresses
+
 
 _ACQUIRE_APIS = {"pthread_mutex_lock", "pthread_spin_lock"}
 _RELEASE_APIS = {"pthread_mutex_unlock", "pthread_spin_unlock"}
 _BARRIER_APIS = {"pthread_barrier_wait"}
+
+
+def _ordering_covers(actual: Ordering, required: Ordering) -> bool:
+    directions = {
+        Ordering.RELAXED: frozenset(),
+        Ordering.ACQUIRE: frozenset({"acquire"}),
+        Ordering.RELEASE: frozenset({"release"}),
+        Ordering.ACQ_REL: frozenset({"acquire", "release"}),
+        Ordering.FULL: frozenset({"acquire", "release"}),
+    }
+    return required in directions and directions[required] <= directions.get(
+        actual, frozenset()
+    )
+
+
 def _function_graph(report: ControlFlowReport) -> dict[int, set[int]]:
     function_pcs = {item.location.pc for item in report.functions}
     graph: dict[int, set[int]] = {}
@@ -172,17 +189,44 @@ def _memory_kinds(
 
 def _summary_ordering(
     symbol: str, reports: tuple[SynchronizationReport, ...]
-) -> Ordering | None:
+) -> tuple[Ordering | None, str | None]:
     summaries = [
         summary
         for report in reports
         for summary in report.summaries
         if summary.api == symbol
     ]
-    if not summaries or any(not summary.complete for summary in summaries):
-        return None
+    if not summaries:
+        return None, "no concrete library summary was found"
+    incomplete = [summary for summary in summaries if not summary.complete]
+    if incomplete:
+        reasons = sorted(
+            {summary.reason or "return paths are incomplete" for summary in incomplete}
+        )
+        return None, "; ".join(reasons)
+    weak = [
+        summary
+        for summary in summaries
+        if not _ordering_covers(
+            summary.target_ordering, summary.required_ordering
+        )
+    ]
+    if weak:
+        # API 名称只说明 source 需要什么。实际库路径达不到该强度时，
+        # 后续层必须看到 Unknown，不能把“分析完整但过弱”当成同步边界。
+        return None, "; ".join(
+            sorted(
+                {
+                    f"target {summary.target_ordering.value} does not cover required "
+                    f"{summary.required_ordering.value}"
+                    for summary in weak
+                }
+            )
+        )
     orderings = {summary.target_ordering for summary in summaries}
-    return next(iter(orderings)) if len(orderings) == 1 else None
+    if len(orderings) != 1:
+        return None, "versioned implementations have different target orderings"
+    return next(iter(orderings)), None
 
 
 def _call_event_kind(symbol: str, ordering: Ordering | None) -> EventKind:
@@ -206,15 +250,21 @@ def extract_memory_events(
     control_flow: ControlFlowReport,
     threads: ThreadDiscoveryReport,
     synchronization: tuple[SynchronizationReport, ...] = (),
+    *,
+    function_effects: dict[str, str] | None = None,
 ) -> MemoryEventReport:
     try:
         if not control_flow.functions or not control_flow.basic_blocks:
             raise RuntimeError("CFG contains no recoverable functions or basic blocks")
         instruction_report = collect_instruction_facts(module)
+        provenance_addresses = recover_block_local_addresses(
+            module, control_flow, instruction_report.facts
+        )
         instruction_to_block, block_to_function, function_names = _block_maps(
             control_flow
         )
         role_functions = _role_functions(control_flow, threads)
+        effect_contract = function_effects or {}
         roles_by_function: dict[int, set[str]] = {}
         for role, functions in role_functions.items():
             for function_pc in functions:
@@ -271,7 +321,9 @@ def extract_memory_events(
             source_ordering, target_ordering = _event_ordering(fact)
             for role in sorted(roles):
                 for operand in fact.memory_operands:
-                    address = _address(module, fact, operand, function_pc)
+                    address = provenance_addresses.get(
+                        (fact.pc, operand.operand_index)
+                    ) or _address(module, fact, operand, function_pc)
                     for effect_index, kind in enumerate(_memory_kinds(fact, operand)):
                         event_id = (
                             f"{role}:0x{fact.pc:x}:m{operand.operand_index}:{effect_index}"
@@ -305,7 +357,7 @@ def extract_memory_events(
                             },
                         )
                         append_event(event)
-                        if address.kind in {AddressKind.UNKNOWN, AddressKind.AFFINE}:
+                        if address.kind == AddressKind.UNKNOWN:
                             unknowns.append(
                                 UnknownFact(
                                     kind=UnknownKind.UNKNOWN_SHARED_ADDRESS,
@@ -375,10 +427,49 @@ def extract_memory_events(
             if not external_or_incomplete:
                 continue
             symbol = call.target_symbol or "<indirect>"
-            ordering = _summary_ordering(symbol, synchronization)
+            contracted_effect = effect_contract.get(symbol)
+            ordering, summary_reason = _summary_ordering(symbol, synchronization)
             kind = _call_event_kind(symbol, ordering)
             for role in sorted(roles):
                 event_id = f"{role}:0x{call.location.pc:x}:call"
+                if contracted_effect == "thread_local":
+                    # libm 可能更新 errno/fenv；把它保留为 TLS 读写，而不是假装无 effect。
+                    # 后续只有在 TLS 地址没有逃逸时才能剪除这两个事件。
+                    for suffix, effect_kind in (
+                        ("tls-read", EventKind.LOAD),
+                        ("tls-write", EventKind.STORE),
+                    ):
+                        append_event(
+                            MemoryEvent(
+                                id=f"{event_id}:{suffix}",
+                                module=module.path,
+                                module_sha256=module.sha256,
+                                pc=call.location.pc,
+                                block_pc=call.block_pc,
+                                function=function_names.get(
+                                    call.containing_function_pc
+                                ),
+                                function_pc=call.containing_function_pc,
+                                kind=effect_kind,
+                                address=AbstractAddress(
+                                    kind=AddressKind.TLS,
+                                    base=f"function-effect:{symbol}",
+                                    offset=0,
+                                    provenance={
+                                        "contracted_effect": contracted_effect,
+                                        "target_symbol": symbol,
+                                    },
+                                ),
+                                source_ordering=Ordering.TSO,
+                                target_ordering=Ordering.RELAXED,
+                                thread_role=role,
+                                provenance={
+                                    "target_symbol": symbol,
+                                    "contracted_effect": contracted_effect,
+                                },
+                            )
+                        )
+                    continue
                 address = (
                     AbstractAddress(kind=AddressKind.UNKNOWN)
                     if kind == EventKind.OPAQUE_CALL
@@ -404,6 +495,7 @@ def extract_memory_events(
                             "target_symbol": call.target_symbol,
                             "target_set_complete": call.targets.complete,
                             "target_evidence": list(call.targets.evidence),
+                            "summary_reason": summary_reason,
                         },
                     )
                 )
@@ -411,7 +503,10 @@ def extract_memory_events(
                     unknowns.append(
                         UnknownFact(
                             kind=UnknownKind.UNKNOWN_MEMORY_EFFECT,
-                            reason=f"call {symbol!r} has no complete memory-effect summary",
+                            reason=(
+                                f"call {symbol!r} has no usable memory-effect summary: "
+                                f"{summary_reason or 'unknown reason'}"
+                            ),
                             impact="the call may read or write any shared object",
                             module=module.path,
                             pc=call.location.pc,

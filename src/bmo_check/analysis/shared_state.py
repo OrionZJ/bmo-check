@@ -42,6 +42,59 @@ _READ_KINDS = {
 }
 
 
+def _register_names(instruction: object) -> list[str]:
+    return [
+        instruction.reg_name(operand.reg)
+        for operand in instruction.operands
+        if operand.type == X86_OP_REG
+    ]
+
+
+def _frame_stack_value_pcs(instructions: list[object]) -> set[int]:
+    exempt: set[int] = set()
+    for index, instruction in enumerate(instructions):
+        names = _register_names(instruction)
+        if instruction.mnemonic != "mov" or len(names) < 2 or names[1] != "rsp":
+            continue
+
+        # 编译器在 alloca/VLA 后读取 rsp，得到的是新分配区域的基址。
+        # 该对象可能逃逸，但它不代表原有 rbp 固定栈槽一起逃逸。
+        if index > 0:
+            previous = instructions[index - 1]
+            previous_names = _register_names(previous)
+            if (
+                int(previous.address) + int(previous.size) == int(instruction.address)
+                and previous.mnemonic == "sub"
+                and previous_names[:1] == ["rsp"]
+            ):
+                exempt.add(int(instruction.address))
+                continue
+
+        # 有些函数保存入口 rsp，退出前再恢复。只有保存寄存器在中间未被
+        # 当作普通值使用时才认可该模式，防止漏掉真正传出的栈地址。
+        if index + 1 >= len(instructions):
+            continue
+        copy = instructions[index + 1]
+        copy_names = _register_names(copy)
+        if (
+            int(instruction.address) + int(instruction.size) != int(copy.address)
+            or copy.mnemonic != "mov"
+            or len(copy_names) < 2
+            or copy_names[1] != names[0]
+        ):
+            continue
+        saved = copy_names[0]
+        for candidate in instructions[index + 2 :]:
+            candidate_names = _register_names(candidate)
+            if candidate.mnemonic == "mov" and candidate_names[:2] == ["rsp", saved]:
+                exempt.add(int(instruction.address))
+                exempt.add(int(candidate.address))
+                break
+            if saved in candidate_names:
+                break
+    return exempt
+
+
 def _object_key(event: MemoryEvent) -> tuple[object, ...]:
     address = event.address
     if address is None:
@@ -69,28 +122,45 @@ def _stack_escape_by_function(
     module: ModuleFingerprint,
     control_flow: ControlFlowReport,
     relevant_functions: set[int],
-) -> tuple[dict[int, EscapeKind], dict[int, tuple[str, ...]], tuple[str, ...]]:
+) -> tuple[
+    dict[tuple[int, int | None], EscapeKind],
+    dict[tuple[int, int | None], tuple[str, ...]],
+    tuple[str, ...],
+]:
     try:
         context = load_cfg(module)
     except AngrBackendError:
         return (
-            {item.location.pc: EscapeKind.UNKNOWN for item in control_flow.functions},
+            {
+                (item.location.pc, None): EscapeKind.UNKNOWN
+                for item in control_flow.functions
+            },
             {},
             ("CFG backend failed while checking TLS address materialization",),
         )
-    escapes: dict[int, EscapeKind] = {}
-    evidence: dict[int, tuple[str, ...]] = {}
+    escapes: dict[tuple[int, int | None], EscapeKind] = {}
+    evidence_lists: dict[tuple[int, int | None], list[str]] = defaultdict(list)
     tls_escape_evidence: list[str] = []
     for function in control_flow.functions:
         if function.location.pc not in relevant_functions:
             continue
-        reasons: list[str] = []
+        function_instructions: list[object] = []
+        blocks: list[tuple[int, object]] = []
         for block_pc in function.block_pcs:
             try:
                 block = context.project.factory.block(context.to_rebased(block_pc))
             except Exception:
-                reasons.append(f"block 0x{block_pc:x} could not be inspected")
+                evidence_lists[(function.location.pc, None)].append(
+                    f"block 0x{block_pc:x} could not be inspected"
+                )
                 continue
+            blocks.append((block_pc, block))
+            function_instructions.extend(
+                wrapped.insn for wrapped in block.capstone.insns
+            )
+        function_instructions.sort(key=lambda item: int(item.address))
+        frame_stack_value_pcs = _frame_stack_value_pcs(function_instructions)
+        for _, block in blocks:
             for wrapped in block.capstone.insns:
                 instruction = wrapped.insn
                 operands = list(instruction.operands)
@@ -99,9 +169,19 @@ def _stack_escape_by_function(
                         base = instruction.reg_name(operand.mem.base)
                         segment = instruction.reg_name(operand.mem.segment)
                         if base in {"rsp", "rbp"} and instruction.mnemonic == "lea":
-                            reasons.append(
-                                f"0x{context.to_elf_pc(instruction.address):x}: stack address materialized by lea"
+                            destination = operands[0] if operands else None
+                            destination_name = (
+                                instruction.reg_name(destination.reg)
+                                if destination is not None
+                                and destination.type == X86_OP_REG
+                                else None
                             )
+                            if destination_name != "rsp":
+                                key = (function.location.pc, int(operand.mem.disp))
+                                evidence_lists[key].append(
+                                    f"0x{context.to_elf_pc(instruction.address):x}: "
+                                    "this stack slot address is materialized by lea"
+                                )
                         if segment in {"fs", "gs"} and (
                             instruction.mnemonic == "lea"
                             or (operand.mem.disp == 0 and operand.size >= 8)
@@ -125,18 +205,31 @@ def _stack_escape_by_function(
                         )
                         stack_adjust = op in {"add", "sub", "and"} and names[:1] == ["rsp"]
                         frame_control = op in {"push", "pop", "leave", "call", "ret"}
-                        if not (frame_setup or stack_adjust or frame_control):
-                            reasons.append(
+                        frame_stack_value = int(instruction.address) in frame_stack_value_pcs
+                        frame_adjust_lea = (
+                            op == "lea"
+                            and names[:1] == ["rsp"]
+                            and any(
+                                item.type == X86_OP_MEM
+                                and instruction.reg_name(item.mem.base) in {"rsp", "rbp"}
+                                for item in operands
+                            )
+                        )
+                        if not (
+                            frame_setup
+                            or stack_adjust
+                            or frame_control
+                            or frame_stack_value
+                            or frame_adjust_lea
+                        ):
+                            evidence_lists[(function.location.pc, None)].append(
                                 f"0x{context.to_elf_pc(instruction.address):x}: {register} used as a value by {op}"
                             )
-        if reasons:
-            escapes[function.location.pc] = EscapeKind.OPAQUE_ESCAPE
-            evidence[function.location.pc] = tuple(sorted(set(reasons)))
-        else:
-            escapes[function.location.pc] = EscapeKind.NO_ESCAPE
-            evidence[function.location.pc] = (
-                "all recovered uses of rsp/rbp are frame control or direct stack operands",
-            )
+    evidence = {
+        key: tuple(sorted(set(reasons)))
+        for key, reasons in evidence_lists.items()
+    }
+    escapes.update({key: EscapeKind.OPAQUE_ESCAPE for key in evidence})
     return escapes, evidence, tuple(sorted(set(tls_escape_evidence)))
 
 
@@ -282,7 +375,14 @@ def analyze_shared_state(
             )
         elif address.kind == AddressKind.STACK:
             function_pcs = {event.function_pc for event in events if event.function_pc is not None}
-            if function_pcs and all(stack_escape.get(pc) == EscapeKind.NO_ESCAPE for pc in function_pcs):
+            escaping_keys = {
+                (pc, offset)
+                for pc in function_pcs
+                for offset in (None, address.offset)
+                if stack_escape.get((pc, offset))
+                in {EscapeKind.OPAQUE_ESCAPE, EscapeKind.UNKNOWN}
+            }
+            if function_pcs and not escaping_keys:
                 sharing = SharingClass.THREAD_LOCAL
                 escape = EscapeKind.NO_ESCAPE
                 proof = ProofObject(
@@ -292,7 +392,10 @@ def analyze_shared_state(
                     supporting_facts=tuple(
                         fact
                         for pc in sorted(function_pcs)
-                        for fact in stack_evidence.get(pc, ())
+                        for fact in stack_evidence.get((pc, address.offset), ())
+                        or (
+                            "this slot is never materialized as an address",
+                        )
                     ),
                 )
             else:
@@ -305,7 +408,17 @@ def analyze_shared_state(
                         impact="stack events remain shared MayAlias candidates",
                         module=module.path,
                         pc=min(event.pc for event in events),
-                        details={"event_ids": [event.id for event in events]},
+                        details={
+                            "event_ids": [event.id for event in events],
+                            "escape_evidence": [
+                                fact
+                                for key in sorted(
+                                    escaping_keys,
+                                    key=lambda item: (item[0], item[1] is not None, item[1] or 0),
+                                )
+                                for fact in stack_evidence.get(key, ())
+                            ],
+                        },
                     )
                 )
         elif address.kind == AddressKind.GLOBAL:

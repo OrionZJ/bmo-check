@@ -31,7 +31,17 @@ def _compile_sync_library(tmp_path: Path) -> Path:
         "pthread_spin_unlock:\n"
         "  movl $1, (%rdi)\n"
         "  ret\n"
-        ".size pthread_spin_unlock, .-pthread_spin_unlock\n",
+        ".size pthread_spin_unlock, .-pthread_spin_unlock\n"
+        ".globl pthread_join\n"
+        ".type pthread_join,@function\n"
+        "pthread_join:\n"
+        "  jmp join_impl\n"
+        ".size pthread_join, .-pthread_join\n"
+        ".type join_impl,@function\n"
+        "join_impl:\n"
+        "  lock cmpxchg %edx, (%rdi)\n"
+        "  ret\n"
+        ".size join_impl, .-join_impl\n",
         encoding="utf-8",
     )
     library = tmp_path / "libpthread-fixture.so"
@@ -64,4 +74,9 @@ def test_summary_uses_actual_lock_and_plain_store_instructions(tmp_path: Path) -
     assert spin_unlock.required_ordering == Ordering.RELEASE
     assert spin_unlock.target_ordering == Ordering.RELAXED
     assert any(item.memory_access is not None for item in spin_unlock.evidence)
+
+    join = by_api["pthread_join"]
+    assert join.complete
+    assert join.target_ordering == Ordering.ACQ_REL
+    assert any(item.has_lock_prefix for item in join.evidence)
     assert any(item.kind == UnknownKind.MISSING_SYMBOL_IMPLEMENTATION for item in report.unknowns)

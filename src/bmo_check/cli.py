@@ -11,7 +11,7 @@ from time import monotonic
 from bmo_check.analysis import analyze_shared_state, extract_memory_events
 from bmo_check.binary.dependency_closure import build_program_manifest
 from bmo_check.binary.symbols import function_symbols
-from bmo_check.config import load_contract_version
+from bmo_check.config import load_contract_version, load_function_effect_contract
 from bmo_check.controlflow import recover_control_flow
 from bmo_check.model import (
     AblationMeasurement,
@@ -126,6 +126,7 @@ def _write_json(report: StrictModel, output: Path | None) -> None:
 
 def _build_manifest(args: argparse.Namespace) -> ProgramManifest:
     contract = load_contract_version(args.dbt_contract)
+    effect_contract = load_function_effect_contract(args.function_effects)
     thread_min: int | None = None
     thread_max: int | None = None
     if args.threads is not None:
@@ -145,11 +146,22 @@ def _build_manifest(args: argparse.Namespace) -> ProgramManifest:
         dbt_contract_version=contract.version,
         dbt_revision=revision,
     )
-    if contract.unknown is not None:
+    manifest = manifest.model_copy(
+        update={
+            "function_effect_contract_version": effect_contract.version,
+            "function_effect_contract_sha256": effect_contract.sha256 or None,
+        }
+    )
+    contract_unknowns = tuple(
+        item
+        for item in (contract.unknown, effect_contract.unknown)
+        if item is not None
+    )
+    if contract_unknowns:
         manifest = manifest.model_copy(
             update={
                 "closure_complete": False,
-                "unknowns": manifest.unknowns + (contract.unknown,),
+                "unknowns": manifest.unknowns + contract_unknowns,
             }
         )
     return manifest
@@ -245,6 +257,9 @@ def _build_slice_report(args: argparse.Namespace) -> ProgramSliceReport:
         recovery.control_flow,
         recovery.thread_roles,
         recovery.synchronization,
+        function_effects=load_function_effect_contract(
+            args.function_effects
+        ).effects,
     )
     shared_state = analyze_shared_state(
         module,
@@ -354,6 +369,7 @@ def _evaluate(args: argparse.Namespace) -> int:
             dbt_revision=args.dbt_revision,
             dbt_root=args.dbt_root,
             pthread_spec=args.pthread_spec,
+            function_effects=args.function_effects,
         )
 
         recovery_started = monotonic()
@@ -375,6 +391,9 @@ def _evaluate(args: argparse.Namespace) -> int:
                 recovery.control_flow,
                 recovery.thread_roles,
                 recovery.synchronization,
+                function_effects=load_function_effect_contract(
+                    args.function_effects
+                ).effects,
             )
             event_seconds = monotonic() - event_started
             shared_started = monotonic()
@@ -522,6 +541,8 @@ def _evaluation_worker_command(
         str(args.dbt_contract),
         "--pthread-spec",
         str(args.pthread_spec),
+        "--function-effects",
+        str(args.function_effects),
         "--output-dir",
         str(args.output_dir),
         "--analysis-memory-limit-mb",
@@ -668,6 +689,11 @@ def _add_input_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--dbt-contract", type=Path, required=True)
     parser.add_argument("--dbt-revision")
     parser.add_argument("--dbt-root", type=Path)
+    parser.add_argument(
+        "--function-effects",
+        type=Path,
+        default=Path("specs/library-effects.yaml"),
+    )
     parser.add_argument("--output", type=Path)
 
 
@@ -746,6 +772,11 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate.add_argument("--dbt-root", type=Path)
     evaluate.add_argument(
         "--pthread-spec", type=Path, default=Path("specs/pthread-api.yaml")
+    )
+    evaluate.add_argument(
+        "--function-effects",
+        type=Path,
+        default=Path("specs/library-effects.yaml"),
     )
     evaluate.add_argument("--output-dir", type=Path, required=True)
     evaluate.add_argument("--run-native", action="store_true")

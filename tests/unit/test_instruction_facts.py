@@ -39,6 +39,13 @@ def test_memory_and_register_xchg_are_distinct() -> None:
     assert not register.is_memory_xchg
 
 
+def test_movsxd_is_not_misclassified_as_string_memory() -> None:
+    extension = _one(bytes.fromhex("48 63 d2"))
+
+    assert extension.mnemonic == "movsxd"
+    assert not extension.memory_operands
+
+
 def test_explicit_fences() -> None:
     assert _one(bytes.fromhex("0f ae e8")).fence == FenceKind.LFENCE
     assert _one(bytes.fromhex("0f ae f8")).fence == FenceKind.SFENCE

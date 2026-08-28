@@ -12,7 +12,7 @@ from capstone import (
     CS_MODE_64,
     Cs,
 )
-from capstone.x86 import X86_OP_IMM, X86_OP_MEM, X86_PREFIX_LOCK
+from capstone.x86 import X86_OP_IMM, X86_OP_MEM, X86_OP_REG, X86_PREFIX_LOCK
 
 from bmo_check.model import (
     ControlFlowKind,
@@ -22,6 +22,8 @@ from bmo_check.model import (
     MemoryAccessKind,
     MemoryOperandFact,
     ModuleFingerprint,
+    ImmediateOperandFact,
+    RegisterOperandFact,
     UnknownFact,
     UnknownKind,
 )
@@ -63,15 +65,15 @@ def _access_kind(access: int) -> MemoryAccessKind:
 
 
 def _string_memory_access(mnemonic: str) -> MemoryAccessKind | None:
-    if mnemonic.startswith("movs"):
+    if mnemonic in {"movsb", "movsw", "movsd", "movsq"}:
         return MemoryAccessKind.READ_WRITE
-    if mnemonic.startswith("cmps"):
+    if mnemonic in {"cmpsb", "cmpsw", "cmpsd", "cmpsq"}:
         return MemoryAccessKind.READ
-    if mnemonic.startswith("lods") or mnemonic == "xlatb":
+    if mnemonic in {"lodsb", "lodsw", "lodsd", "lodsq", "xlatb"}:
         return MemoryAccessKind.READ
-    if mnemonic.startswith("stos"):
+    if mnemonic in {"stosb", "stosw", "stosd", "stosq"}:
         return MemoryAccessKind.WRITE
-    if mnemonic.startswith("scas"):
+    if mnemonic in {"scasb", "scasw", "scasd", "scasq"}:
         return MemoryAccessKind.READ
     return None
 
@@ -128,6 +130,45 @@ def _memory_operands(insn: object) -> tuple[MemoryOperandFact, ...]:
     return tuple(facts)
 
 
+def _address_operands(insn: object) -> tuple[MemoryOperandFact, ...]:
+    if insn.mnemonic.lower() != "lea":
+        return ()
+    return tuple(
+        MemoryOperandFact(
+            operand_index=index,
+            access=MemoryAccessKind.UNKNOWN,
+            size=int(operand.size),
+            segment=insn.reg_name(operand.mem.segment) or None,
+            base=insn.reg_name(operand.mem.base) or None,
+            index=insn.reg_name(operand.mem.index) or None,
+            scale=int(operand.mem.scale),
+            displacement=int(operand.mem.disp),
+        )
+        for index, operand in enumerate(insn.operands)
+        if operand.type == X86_OP_MEM
+    )
+
+
+def _register_operands(insn: object) -> tuple[RegisterOperandFact, ...]:
+    return tuple(
+        RegisterOperandFact(
+            operand_index=index,
+            register_name=insn.reg_name(operand.reg),
+            access=_access_kind(int(operand.access)),
+        )
+        for index, operand in enumerate(insn.operands)
+        if operand.type == X86_OP_REG
+    )
+
+
+def _immediate_operands(insn: object) -> tuple[ImmediateOperandFact, ...]:
+    return tuple(
+        ImmediateOperandFact(operand_index=index, value=int(operand.imm))
+        for index, operand in enumerate(insn.operands)
+        if operand.type == X86_OP_IMM
+    )
+
+
 def _control_flow(insn: object) -> tuple[ControlFlowKind | None, int | None]:
     direct_target: int | None = None
     first_operand = insn.operands[0] if insn.operands else None
@@ -178,6 +219,9 @@ def _fact_from_instruction(
         )
 
     memory_operands = _memory_operands(insn)
+    address_operands = _address_operands(insn)
+    register_operands = _register_operands(insn)
+    immediate_operands = _immediate_operands(insn)
     unknowns: list[UnknownFact] = []
     if any(item.access == MemoryAccessKind.UNKNOWN for item in memory_operands):
         unknowns.append(
@@ -202,6 +246,9 @@ def _fact_from_instruction(
         mnemonic=mnemonic,
         op_str=insn.op_str,
         memory_operands=memory_operands,
+        address_operands=address_operands,
+        register_operands=register_operands,
+        immediate_operands=immediate_operands,
         has_lock_prefix=X86_PREFIX_LOCK in tuple(insn.prefix),
         is_memory_xchg=mnemonic == "xchg" and bool(memory_operands),
         fence=_FENCES.get(mnemonic),

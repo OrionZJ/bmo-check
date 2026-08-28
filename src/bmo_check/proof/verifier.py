@@ -193,6 +193,12 @@ def _scope(
         modules=tuple(modules),
         dbt_contract_version=manifest.dbt_contract_version,
         dbt_revision=manifest.dbt_revision or "",
+        function_effect_contract_version=(
+            manifest.function_effect_contract_version
+        ),
+        function_effect_contract_sha256=(
+            manifest.function_effect_contract_sha256
+        ),
         argv=manifest.execution.argv,
         thread_count_min=manifest.execution.thread_count_min,
         thread_count_max=manifest.execution.thread_count_max,

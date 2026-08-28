@@ -1,0 +1,18 @@
+schema: 1
+contract_version: linux-libm-thread-effects-v2
+
+# 这些函数可以修改 errno 或浮点环境，但在 Linux pthread ABI 中二者都属于当前线程。
+# 契约只消除共享内存 effect；二进制模块仍由 manifest 的 SHA-256 单独绑定。
+functions:
+  exp:
+    effect: thread_local
+  expf:
+    effect: thread_local
+  log:
+    effect: thread_local
+  logf:
+    effect: thread_local
+  sqrt:
+    effect: thread_local
+  sqrtf:
+    effect: thread_local

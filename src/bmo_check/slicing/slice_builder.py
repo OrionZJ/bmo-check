@@ -113,6 +113,7 @@ def _lifecycle_edges(
         entries = [event for event in child_events if event.id not in incoming]
         for source in create_events:
             for target in entries:
+                summary_reason = source.provenance.get("summary_reason")
                 edges.append(
                     SynchronizationEdge(
                         source_event=source.id,
@@ -123,6 +124,8 @@ def _lifecycle_edges(
                         reason=(
                             None
                             if source.target_ordering != Ordering.UNKNOWN
+                            else summary_reason
+                            if isinstance(summary_reason, str)
                             else "pthread_create target ordering is not summarized from the concrete library"
                         ),
                     )
@@ -136,6 +139,14 @@ def _lifecycle_edges(
             exits = [event for event in child_events if event.id not in outgoing]
             for source in exits:
                 for target in join_events:
+                    summary_reason = target.provenance.get("summary_reason")
+                    incomplete_reason = (
+                        join.reason
+                        if not join.complete
+                        else summary_reason
+                        if isinstance(summary_reason, str)
+                        else "concrete target ordering is incomplete"
+                    )
                     edges.append(
                         SynchronizationEdge(
                             source_event=source.id,
@@ -154,7 +165,7 @@ def _lifecycle_edges(
                                 None
                                 if join.complete
                                 and target.target_ordering != Ordering.UNKNOWN
-                                else "join relation or concrete target ordering is incomplete"
+                                else incomplete_reason
                             ),
                         )
                     )

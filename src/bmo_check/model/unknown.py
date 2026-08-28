@@ -28,6 +28,8 @@ class UnknownKind(str, Enum):
     PORTABILITY_CHECK_INCOMPLETE = "PortabilityCheckIncomplete"
     MISSING_DBT_REVISION = "MissingDbtRevision"
     INVALID_DBT_CONTRACT = "InvalidDbtContract"
+    # 外部函数 effect 契约缺失或格式错误时不能删除 opaque call。
+    INVALID_FUNCTION_EFFECT_CONTRACT = "InvalidFunctionEffectContract"
     # angr 后端失败后没有可用 CFG，不能解释成零个可达函数。
     CFG_BACKEND_FAILURE = "CfgBackendFailure"
     # 间接目标只有候选但缺少封闭证据。

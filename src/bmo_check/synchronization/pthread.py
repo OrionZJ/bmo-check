@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from bisect import bisect_left
 from collections import deque
 from pathlib import Path
 
@@ -82,6 +83,16 @@ def _ordering(bits: int, full: bool = False) -> Ordering:
     }[bits]
 
 
+def _ordering_bits(ordering: Ordering) -> tuple[int, bool]:
+    return {
+        Ordering.RELAXED: (0, False),
+        Ordering.ACQUIRE: (0b01, False),
+        Ordering.RELEASE: (0b10, False),
+        Ordering.ACQ_REL: (0b11, False),
+        Ordering.FULL: (0b11, True),
+    }.get(ordering, (0, False))
+
+
 def _evidence(fact: InstructionFact) -> SyncInstructionEvidence | None:
     if not (
         fact.has_lock_prefix
@@ -111,72 +122,144 @@ def _evidence(fact: InstructionFact) -> SyncInstructionEvidence | None:
 
 
 def _return_path_orderings(
-    facts: tuple[InstructionFact, ...], function_start: int, function_end: int
-) -> tuple[tuple[Ordering, ...], bool, str | None]:
-    if not facts:
-        return (), False, "function range contains no decoded instructions"
-    by_pc = {fact.pc: index for index, fact in enumerate(facts)}
-    queue: deque[tuple[int, int, bool]] = deque([(0, 0, False)])
-    visited: set[tuple[int, int, bool]] = set()
-    returns: list[tuple[int, bool]] = []
-    complete = True
-    reasons: set[str] = set()
+    facts: tuple[InstructionFact, ...],
+    function_start: int,
+    function_end: int,
+    function_bodies: dict[int, tuple[int, tuple[InstructionFact, ...]]] | None = None,
+    syscall_ordering: Ordering = Ordering.UNKNOWN,
+) -> tuple[tuple[Ordering, ...], bool, str | None, tuple[int, ...]]:
+    bodies = dict(function_bodies or {})
+    bodies.setdefault(function_start, (function_end, facts))
+    cache: dict[int, tuple[tuple[tuple[int, bool], ...], bool, set[str], set[int]]] = {}
 
-    while queue:
-        index, bits, full = queue.popleft()
-        state = (index, bits, full)
-        if state in visited:
-            continue
-        visited.add(state)
-        if index < 0 or index >= len(facts):
-            complete = False
-            reasons.add("control flow leaves the decoded function range")
-            continue
-        fact = facts[index]
-        next_bits = bits | _effect_bits(fact)
-        next_full = full or fact.fence == FenceKind.MFENCE
-        if not fact.classification_complete:
-            complete = False
-            reasons.add("one or more instructions are not fully classified")
+    def walk(
+        start: int, active: frozenset[int]
+    ) -> tuple[tuple[tuple[int, bool], ...], bool, set[str], set[int]]:
+        cached = cache.get(start)
+        if cached is not None:
+            return cached
+        body = bodies.get(start)
+        if body is None or not body[1]:
+            return (), False, {f"function 0x{start:x} has no decoded body"}, set()
+        if start in active:
+            return (), False, {f"recursive call cycle reaches 0x{start:x}"}, set()
 
-        if fact.control_flow == ControlFlowKind.RETURN:
-            returns.append((next_bits, next_full))
-            continue
-        if fact.control_flow == ControlFlowKind.INDIRECT_JUMP:
-            complete = False
-            reasons.add("an indirect tail target is not summarized")
-            continue
-        if fact.control_flow == ControlFlowKind.INDIRECT_CALL:
-            complete = False
-            reasons.add("an indirect callee is not summarized")
-        if fact.control_flow == ControlFlowKind.DIRECT_CALL:
-            # 当前层只证明函数本体出现的 ordering；调用的 effect 留给后续摘要组合。
-            complete = False
-            reasons.add("a direct callee is not composed into this summary")
+        end, body_facts = body
+        by_pc = {fact.pc: index for index, fact in enumerate(body_facts)}
+        queue: deque[tuple[int, int, bool]] = deque([(0, 0, False)])
+        visited: set[tuple[int, int, bool]] = set()
+        visited_pcs: set[int] = set()
+        returns: list[tuple[int, bool]] = []
+        complete = True
+        reasons: set[str] = set()
+        next_active = active | {start}
 
-        fallthrough = index + 1
-        if fact.control_flow == ControlFlowKind.DIRECT_JUMP:
-            target = fact.direct_target
-            if target is None or not (function_start <= target < function_end):
+        while queue:
+            index, bits, full = queue.popleft()
+            state = (index, bits, full)
+            if state in visited:
+                continue
+            visited.add(state)
+            if index < 0 or index >= len(body_facts):
                 complete = False
-                reasons.add("a direct jump leaves the function range")
-            elif target in by_pc:
-                queue.append((by_pc[target], next_bits, next_full))
+                reasons.add("control flow leaves a decoded function range")
+                continue
+            fact = body_facts[index]
+            visited_pcs.add(fact.pc)
+            next_bits = bits | _effect_bits(fact)
+            next_full = full or fact.fence == FenceKind.MFENCE
+            if fact.is_syscall:
+                syscall_bits, syscall_full = _ordering_bits(syscall_ordering)
+                next_bits |= syscall_bits
+                next_full |= syscall_full
+                if syscall_ordering == Ordering.UNKNOWN:
+                    complete = False
+                    reasons.add(
+                        f"0x{fact.pc:x}: syscall target ordering is absent from the DBT contract"
+                    )
+            if not fact.classification_complete:
+                complete = False
+                reasons.add("one or more instructions are not fully classified")
+
+            if fact.control_flow == ControlFlowKind.RETURN:
+                returns.append((next_bits, next_full))
+                continue
+            if fact.control_flow == ControlFlowKind.INDIRECT_JUMP:
+                complete = False
+                reasons.add(f"0x{fact.pc:x}: indirect tail target is not summarized")
+                continue
+            if fact.control_flow == ControlFlowKind.INDIRECT_CALL:
+                complete = False
+                reasons.add(f"0x{fact.pc:x}: indirect callee is not summarized")
+
+            fallthrough = index + 1
+            if fact.control_flow == ControlFlowKind.DIRECT_CALL:
+                target = fact.direct_target
+                if target not in bodies:
+                    complete = False
+                    rendered = "unknown" if target is None else f"0x{target:x}"
+                    reasons.add(
+                        f"0x{fact.pc:x}: direct callee {rendered} has no closed local body"
+                    )
+                else:
+                    paths, callee_complete, callee_reasons, callee_pcs = walk(
+                        target, next_active
+                    )
+                    complete &= callee_complete
+                    reasons.update(callee_reasons)
+                    visited_pcs.update(callee_pcs)
+                    if paths and fallthrough < len(body_facts):
+                        for callee_bits, callee_full in paths:
+                            queue.append(
+                                (
+                                    fallthrough,
+                                    next_bits | callee_bits,
+                                    next_full or callee_full,
+                                )
+                            )
+                        continue
+
+            if fact.control_flow == ControlFlowKind.DIRECT_JUMP:
+                target = fact.direct_target
+                if target is not None and start <= target < end and target in by_pc:
+                    queue.append((by_pc[target], next_bits, next_full))
+                elif fact.mnemonic == "jmp" and target in bodies:
+                    # glibc 常用小型导出符号尾跳到同一 ELF 的真实实现。
+                    # 把目标的所有返回路径接到当前函数，避免把确定跳转误报成间接缺口。
+                    paths, callee_complete, callee_reasons, callee_pcs = walk(
+                        target, next_active
+                    )
+                    complete &= callee_complete
+                    reasons.update(callee_reasons)
+                    visited_pcs.update(callee_pcs)
+                    returns.extend(
+                        (next_bits | callee_bits, next_full or callee_full)
+                        for callee_bits, callee_full in paths
+                    )
+                else:
+                    complete = False
+                    rendered = "unknown" if target is None else f"0x{target:x}"
+                    reasons.add(
+                        f"0x{fact.pc:x}: direct jump target {rendered} has no closed local body"
+                    )
+                if fact.mnemonic == "jmp":
+                    continue
+            if fallthrough < len(body_facts):
+                queue.append((fallthrough, next_bits, next_full))
             else:
                 complete = False
-                reasons.add("a jump target is not an instruction boundary")
-            if fact.mnemonic == "jmp":
-                continue
-        if fallthrough < len(facts):
-            queue.append((fallthrough, next_bits, next_full))
-        else:
-            complete = False
-            reasons.add("function range ends without a return")
+                reasons.add(f"function 0x{start:x} ends without a return")
 
+        if not returns:
+            complete = False
+            reasons.add(f"function 0x{start:x} has no recovered return path")
+        result = tuple(returns), complete, reasons, visited_pcs
+        cache[start] = result
+        return result
+
+    returns, complete, reasons, visited_pcs = walk(function_start, frozenset())
     if not returns:
-        complete = False
-        reasons.add("no return path was recovered")
-        return (), complete, "; ".join(sorted(reasons))
+        return (), complete, "; ".join(sorted(reasons)), tuple(sorted(visited_pcs))
     intersection = returns[0][0]
     all_full = returns[0][1]
     for bits, full in returns[1:]:
@@ -187,7 +270,12 @@ def _return_path_orderings(
     path_orderings = (_ordering(intersection, all_full),) + tuple(
         item for item in path_orderings if item != _ordering(intersection, all_full)
     )
-    return path_orderings, complete, "; ".join(sorted(reasons)) or None
+    return (
+        path_orderings,
+        complete,
+        "; ".join(sorted(reasons)) or None,
+        tuple(sorted(visited_pcs)),
+    )
 
 
 def analyze_pthread_synchronization(
@@ -199,14 +287,42 @@ def analyze_pthread_synchronization(
     pthread_spec = _load_yaml(pthread_spec_path)
     contract = _load_yaml(dbt_contract_path)
     contract_version = str(contract.get("contract_version", "unknown"))
+    translation = contract.get("translation", {})
+    translation = translation if isinstance(translation, dict) else {}
+    syscall_entry = translation.get("syscall", {})
+    syscall_entry = syscall_entry if isinstance(syscall_entry, dict) else {}
+    syscall_ordering = _ORDERING_BY_NAME.get(
+        str(syscall_entry.get("target_ordering", "unknown")), Ordering.UNKNOWN
+    )
     api_entries = pthread_spec.get("apis", {})
     if not isinstance(api_entries, dict):
         raise ValueError("pthread API specification must contain an 'apis' mapping")
 
     instruction_report = collect_instruction_facts(library)
+    ordered_facts = tuple(sorted(instruction_report.facts, key=lambda item: item.pc))
+    fact_pcs = tuple(item.pc for item in ordered_facts)
+
+    def facts_in_range(start: int, end: int) -> tuple[InstructionFact, ...]:
+        first = bisect_left(fact_pcs, start)
+        last = bisect_left(fact_pcs, end)
+        return ordered_facts[first:last]
+
+    all_symbols = function_symbols(library)
     symbols_by_name: dict[str, list[object]] = {}
-    for symbol in function_symbols(library):
+    for symbol in all_symbols:
         symbols_by_name.setdefault(symbol.name, []).append(symbol)
+    bodies: dict[int, tuple[int, tuple[InstructionFact, ...]]] = {}
+    for symbol in all_symbols:
+        if symbol.size <= 0:
+            continue
+        previous = bodies.get(symbol.pc)
+        if previous is not None and previous[0] >= symbol.pc + symbol.size:
+            continue
+        end = symbol.pc + symbol.size
+        bodies[symbol.pc] = (
+            end,
+            facts_in_range(symbol.pc, end),
+        )
     summaries: list[SynchronizationSummary] = []
     report_unknowns: list[UnknownFact] = list(instruction_report.unknowns)
 
@@ -234,16 +350,16 @@ def analyze_pthread_synchronization(
         # 同名的版本化实现都进入报告；缺少 version binding 时任选一个会漏掉真实实现。
         for symbol in sorted(symbols.values(), key=lambda item: item.pc):
             end = symbol.pc + symbol.size
-            facts = tuple(
-                fact
-                for fact in instruction_report.facts
-                if symbol.pc <= fact.pc < end
+            facts = facts_in_range(symbol.pc, end)
+            path_orderings, complete, reason, evidence_pcs = _return_path_orderings(
+                facts, symbol.pc, end, bodies, syscall_ordering
             )
+            evidence_pc_set = set(evidence_pcs)
             evidence = tuple(
-                item for fact in facts if (item := _evidence(fact)) is not None
-            )
-            path_orderings, complete, reason = _return_path_orderings(
-                facts, symbol.pc, end
+                item
+                for fact in ordered_facts
+                if fact.pc in evidence_pc_set
+                if (item := _evidence(fact)) is not None
             )
             target = path_orderings[0] if path_orderings else Ordering.UNKNOWN
             local_unknowns: list[UnknownFact] = []

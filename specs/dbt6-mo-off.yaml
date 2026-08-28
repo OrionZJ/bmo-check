@@ -1,5 +1,5 @@
 schema: 1
-contract_version: dbt6-mo-off-v1
+contract_version: dbt6-mo-off-v2
 
 guest:
   arch: x86_64
@@ -21,6 +21,10 @@ translation:
 
   memory_xchg:
     target_ordering: acq_rel
+
+  # ECALL 前后没有生成 FENCE；内核路径不能替代 guest 可见的 ordering 证明。
+  syscall:
+    target_ordering: unknown
 
   lfence:
     target_fence: "r,r"

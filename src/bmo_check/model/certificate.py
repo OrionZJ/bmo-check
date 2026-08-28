@@ -27,6 +27,9 @@ class CertificateScope(StrictModel):
     # dbt_contract_version/dbt_revision 固定实际 lowering，而非抽象 RVWMO。
     dbt_contract_version: str
     dbt_revision: str
+    # function effect 契约会删除 opaque call，因此版本和内容 hash 都必须进入 scope。
+    function_effect_contract_version: str | None = None
+    function_effect_contract_sha256: str | None = None
     # argv 和 thread bounds 限定证书适用的执行范围。
     argv: tuple[str, ...] = ()
     thread_count_min: int | None = None

@@ -46,8 +46,10 @@ from .instruction import (
     FenceKind,
     InstructionFact,
     InstructionModuleFacts,
+    ImmediateOperandFact,
     MemoryAccessKind,
     MemoryOperandFact,
+    RegisterOperandFact,
 )
 from .memory_event import AbstractAddress, AddressKind, EventKind, MemoryEvent
 from .memory_event import MemoryEventReport, ProgramOrderEdge
@@ -129,10 +131,12 @@ __all__ = [
     "IndirectTargetSet",
     "InstructionFact",
     "InstructionModuleFacts",
+    "ImmediateOperandFact",
     "MemoryAccessKind",
     "MemoryEvent",
     "MemoryEventReport",
     "MemoryOperandFact",
+    "RegisterOperandFact",
     "ModuleFingerprint",
     "ModuleRole",
     "NativeRunMeasurement",
