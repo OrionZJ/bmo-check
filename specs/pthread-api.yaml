@@ -1,0 +1,39 @@
+schema: 1
+
+# 这里只描述 API 需要什么，不代表实际 target 已经满足。
+# 实际 target ordering 必须来自：
+# concrete library binary + DBT6 contract。
+
+apis:
+  pthread_create:
+    kind: thread_create
+
+  pthread_join:
+    kind: thread_join
+
+  pthread_mutex_lock:
+    required_ordering: acquire
+
+  pthread_mutex_unlock:
+    required_ordering: release
+
+  pthread_spin_lock:
+    required_ordering: acquire
+
+  pthread_spin_unlock:
+    required_ordering: release
+
+  pthread_cond_wait:
+    kind: condition_wait
+
+  pthread_cond_signal:
+    kind: condition_signal
+
+  pthread_cond_broadcast:
+    kind: condition_broadcast
+
+  pthread_barrier_wait:
+    kind: barrier
+
+  pthread_once:
+    kind: once

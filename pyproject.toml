@@ -1,0 +1,39 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "bmo-check"
+version = "0.1.0"
+description = "Binary-only, DBT-aware verifier for DBT6 mo-off execution"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "angr",
+    "capstone",
+    "networkx",
+    "pydantic>=2",
+    "pyelftools",
+    "PyYAML",
+    "z3-solver",
+]
+
+[project.scripts]
+bmo-check = "bmo_check.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "pytest-cov",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/bmo_check"]
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+testpaths = ["tests"]
+
+[tool.coverage.run]
+branch = true
+source = ["bmo_check"]

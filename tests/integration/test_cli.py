@@ -1,0 +1,138 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from bmo_check.cli import main
+
+
+def test_fingerprint_cli_outputs_round_trip_json(
+    elf_fixture, capsys, tmp_path: Path
+) -> None:
+    contract = tmp_path / "contract.yaml"
+    contract.write_text(
+        "schema: 1\ncontract_version: test-contract-v1\n", encoding="utf-8"
+    )
+    roots = [
+        value
+        for root in (elf_fixture.library_root,) + elf_fixture.system_roots
+        for value in ("--library-root", str(root))
+    ]
+    result = main(
+        [
+            "fingerprint",
+            "--exe",
+            str(elf_fixture.executable),
+            *roots,
+            "--argv-json",
+            '["sample-app", "4"]',
+            "--threads",
+            "4",
+            "--dbt-contract",
+            str(contract),
+            "--dbt-revision",
+            "a" * 40,
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert result == 0
+    assert payload["manifest"]["closure_complete"] is True
+    assert payload["manifest"]["execution"]["thread_count_min"] == 4
+
+
+def test_fingerprint_cli_returns_incomplete_for_missing_library(
+    elf_fixture, capsys, tmp_path: Path
+) -> None:
+    contract = tmp_path / "contract.yaml"
+    contract.write_text(
+        "schema: 1\ncontract_version: test-contract-v1\n", encoding="utf-8"
+    )
+    roots = [
+        value
+        for root in elf_fixture.system_roots
+        for value in ("--library-root", str(root))
+    ]
+    result = main(
+        [
+            "fingerprint",
+            "--exe",
+            str(elf_fixture.executable),
+            *roots,
+            "--dbt-contract",
+            str(contract),
+            "--dbt-revision",
+            "a" * 40,
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert result == 1
+    assert payload["manifest"]["closure_complete"] is False
+
+
+def test_invalid_contract_is_reported_as_unknown(
+    elf_fixture, capsys, tmp_path: Path
+) -> None:
+    contract = tmp_path / "invalid-contract.yaml"
+    contract.write_text("schema: 1\n", encoding="utf-8")
+    roots = [
+        value
+        for root in (elf_fixture.library_root,) + elf_fixture.system_roots
+        for value in ("--library-root", str(root))
+    ]
+    result = main(
+        [
+            "fingerprint",
+            "--exe",
+            str(elf_fixture.executable),
+            *roots,
+            "--dbt-contract",
+            str(contract),
+            "--dbt-revision",
+            "a" * 40,
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+    kinds = {
+        item["kind"] for item in payload["manifest"]["unknowns"]
+    }
+    assert result == 1
+    assert "InvalidDbtContract" in kinds
+
+
+def test_recover_cli_emits_cfg_and_thread_layers(
+    elf_fixture, capsys, tmp_path: Path, monkeypatch
+) -> None:
+    contract = tmp_path / "contract.yaml"
+    contract.write_text(
+        "schema: 1\ncontract_version: test-contract-v1\n", encoding="utf-8"
+    )
+    pthread_spec = tmp_path / "pthread.yaml"
+    pthread_spec.write_text("schema: 1\napis: {}\n", encoding="utf-8")
+    roots = [
+        value
+        for root in (elf_fixture.library_root,) + elf_fixture.system_roots
+        for value in ("--library-root", str(root))
+    ]
+    # 这个用例只检查 CLI 编排；同步库的真实指令摘要由独立集成测试覆盖。
+    monkeypatch.setattr("bmo_check.cli.function_symbols", lambda _: ())
+
+    result = main(
+        [
+            "recover",
+            "--exe",
+            str(elf_fixture.executable),
+            *roots,
+            "--dbt-contract",
+            str(contract),
+            "--pthread-spec",
+            str(pthread_spec),
+            "--dbt-revision",
+            "a" * 40,
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert result == 0
+    assert payload["control_flow"]["coverage"]["functions"] > 0
+    assert payload["thread_roles"]["roles"][0]["id"] == "main"
+    assert payload["synchronization"] == []

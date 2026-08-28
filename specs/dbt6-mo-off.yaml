@@ -1,0 +1,32 @@
+schema: 1
+contract_version: dbt6-mo-off-v1
+
+guest:
+  arch: x86_64
+  memory_model: x86_tso
+
+host:
+  arch: riscv64
+  memory_model: rvwmo
+
+translation:
+  plain_load:
+    target_ordering: relaxed
+
+  plain_store:
+    target_ordering: relaxed
+
+  lock_rmw:
+    target_ordering: acq_rel
+
+  memory_xchg:
+    target_ordering: acq_rel
+
+  lfence:
+    target_fence: "r,r"
+
+  sfence:
+    target_fence: "w,w"
+
+  mfence:
+    target_fence: "rw,rw"
