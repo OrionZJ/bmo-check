@@ -1,21 +1,10 @@
-# Active Milestones
+# Active dynamic milestones
 
-当前计划合并为五个阶段，按顺序执行：
+动态主线合并为四个 milestone：
 
-| Milestone | 状态 |
-|---|---|
-| 00 foundation + binary facts | COMPLETE |
-| 01 program recovery + synchronization | COMPLETE |
-| 02 shared state + communication slicing | COMPLETE |
-| 03 portability proof + verdict | COMPLETE |
-| 04 PARSEC evaluation | PENDING |
+1. D0 repository split and contracts
+2. D1 complete trace and streaming storage
+3. D2 communication and portability proof
+4. D3 campaigns and large-program evaluation
 
-一次只实现一个 milestone。完成当前阶段的测试和 acceptance 后，才能进入下一阶段。
-
-原 13 个细分计划保存在：
-
-```text
-docs/exec-plans/archive/pre-consolidation/
-```
-
-首版不实现 DBT launcher。证书驱动的 `mo-off/mo-fsm` 自动选择保留在 roadmap 中。
+每个阶段都以“不完整证据只能产生 UNKNOWN”为共同验收条件。

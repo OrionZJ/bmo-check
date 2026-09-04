@@ -1,0 +1,11 @@
+cmake_minimum_required(VERSION 3.16)
+project(bmo_trace LANGUAGES CXX)
+
+find_package(DynamoRIO CONFIG REQUIRED)
+add_library(bmo_trace SHARED client.cpp)
+target_compile_features(bmo_trace PRIVATE cxx_std_17)
+configure_DynamoRIO_client(bmo_trace)
+use_DynamoRIO_extension(bmo_trace drmgr)
+use_DynamoRIO_extension(bmo_trace drreg)
+use_DynamoRIO_extension(bmo_trace drutil)
+use_DynamoRIO_extension(bmo_trace drwrap)

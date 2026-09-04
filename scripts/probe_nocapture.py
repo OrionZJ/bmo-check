@@ -3,11 +3,11 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from bmo_check.analysis.escape_summary import prove_register_parameter_nocapture
-from bmo_check.binary.angr_backend import load_cfg
-from bmo_check.binary.dependency_closure import build_program_manifest
-from bmo_check.controlflow import recover_control_flow
-from bmo_check.model import ExecutionScope
+from bmo_check_static.analysis.escape_summary import prove_register_parameter_nocapture
+from bmo_check_static.binary.angr_backend import load_cfg
+from bmo_check_static.binary.dependency_closure import build_program_manifest
+from bmo_check_static.controlflow import recover_control_flow
+from bmo_check_static.model import ExecutionScope
 
 
 def main() -> int:

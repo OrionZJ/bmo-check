@@ -10,8 +10,8 @@
 
 ```text
 pyproject.toml
-src/bmo_check/model/
-src/bmo_check/certificate/
+src/bmo_check_static/model/
+src/bmo_check_static/certificate/
 tests/unit/
 CLI skeleton
 ```

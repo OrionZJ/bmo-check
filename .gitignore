@@ -8,3 +8,6 @@ dist/
 build/
 *.egg-info/
 artifacts/
+.bmo-check/
+*.duckdb
+src/bmo_check_dynamic/native/build/

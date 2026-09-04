@@ -1,192 +1,70 @@
 # BMoCheck
 
-[BMoCheck](https://gitee.com/OrionZJ/bmo-check) 是一个面向真实 x86-64 二进制的 DBT 内存序验证器。
+[BMoCheck](https://gitee.com/OrionZJ/bmo-check) 是面向 DBT6 `mo-off` 的二进制内存序验证器。项目现在以动态轨迹验证为主线，同时完整保留原来的静态验证器。
 
-它判断：
+## 结论边界
 
-> 一个具体程序能不能在 DBT6 的 `mo-off` 模式下运行，而不因为 RVWMO 比 x86-TSO 更弱而产生新的错误行为？
+动态验证器输出：
 
----
+- `TRACE_SAFE`：对证书绑定的已记录事件骨架，RVWMO 没有引入 x86-TSO 不允许的新执行。
+- `COUNTEREXAMPLE`：找到并验证了 target-only 执行。
+- `UNKNOWN`：轨迹不完整、事件不支持、资源超限，或候选反例无法验证。
 
-## 整体流程
+`TRACE_SAFE` 不是程序的无条件 `SAFE`。它不覆盖未执行路径、其他输入、不同地址轨迹或未来运行。工具禁止把“程序跑通”直接解释为安全证明。
 
-```text
-Real x86-64 ELF
-      +
-Concrete .so closure
-      +
-DBT6 translation contract
-      ↓
-Binary / Thread / Library analysis
-      ↓
-MemoryEvent IR
-      ↓
-删除或摘要：
-  - ThreadLocal
-  - ReadOnlyShared
-  - DisjointPartition
-  - 已被 atomic/fence 覆盖的同步
-      ↓
-Shared-memory slice
-      ↓
-PORTHOS-style portability check
-      ↓
-compare:
-
-x86-TSO
-   vs
-DBT6 mo-off + RVWMO
-      ↓
-target-only behavior?
-  /        |          \
-no      unknown       yes
-↓          ↓           ↓
-SAFE    UNKNOWN   COUNTEREXAMPLE
-↓          ↓           ↓
-mo-off     └──────→ mo-fsm
-```
-
----
-
-## 与 CrossMapping-like FSM 的关系
-
-Verifier：
+## 动态流程
 
 ```text
-这个程序是否需要 TSO 模拟？
+native x86-64 ELF under DynamoRIO
+             ↓
+complete per-thread binary trace
+             ↓
+streaming DuckDB normalization
+             ↓
+exact cross-thread overlapping accesses
+             ↓
+synchronization/component windows
+             ↓
+x86-TSO vs DBT6 mo-off + RVWMO
+             ↓
+TRACE_SAFE / COUNTEREXAMPLE / UNKNOWN
 ```
 
-FSM：
+动态分析使用实际执行的地址和间接跳转目标，因此不会因本次轨迹里的间接控制流无法静态恢复而变成 `UNKNOWN`。未执行目标仍然不在证书范围内。
 
-```text
-如果需要，Fence 应该放在哪、用什么类型？
-```
+## 使用
 
-所以两者是上下层关系，不是竞争方案。
-
----
-
-## 研究定位
-
-本项目不声称发明：
-
-- weak-memory portability checking；
-- FSM fence placement；
-- memory-model robustness。
-
-目标贡献是：
-
-> 把已有 portability checking 思路推进到真实 DBT binary 场景，解决 ELF、真实动态库、间接控制流、pthread 实际实现、DBT lowering、通信剪枝和 shared-memory slicing。
-
----
-
-## 第一阶段 benchmark
-
-- blackscholes
-- swaptions
-- dedup
-- canneal
-
-详见：
-
-```text
-docs/12-validation-plan.md
-```
-
----
-
-## 当前实施状态
-
-当前已实施：
-
-```text
-Milestone 00 — Foundation and Binary Facts
-Milestone 01 — Program Recovery and Synchronization
-Milestone 02 — Shared State and Communication Slicing
-Milestone 03 — Portability Proof, Verdict and Certificate
-```
-
-它们负责恢复 executable、实际动态库闭包、x86 原始指令、CFG、pthread 线程角色、
-实际动态库同步摘要、MemoryEvent、带剪枝证明的 shared-memory slice，以及有限的
-x86-TSO / DBT6 `mo-off + RVWMO` 可移植性检查和证书。
-
-WSL 环境使用独立 Python 3.12：
+先在 Linux 或 WSL2 安装 DynamoRIO，并构建追踪 client：
 
 ```bash
-cd /path/to/bmo-check
-~/.local/bin/uv python install 3.12
-~/.local/bin/uv sync --python 3.12 --group dev
+cmake -S src/bmo_check_dynamic/native \
+      -B src/bmo_check_dynamic/native/build \
+      -DDynamoRIO_DIR="$DYNAMORIO_HOME/cmake"
+cmake --build src/bmo_check_dynamic/native/build -j
 ```
 
-依赖准备完成后可运行：
+采集并分析：
 
 ```bash
-~/.local/bin/uv run pytest
+bmo-check capture --output trace/run-1 -- ./program arg
+bmo-check analyze trace/run-1 --output trace/run-1/certificate.json
+bmo-check run --trace trace/run-2 --output trace/run-2/certificate.json -- ./program arg
+bmo-check explain trace/run-1/certificate.json
 ```
 
-恢复本地 binary closure：
+多轮实验使用 `bmo-check campaign manifest.yaml --output results`。总体 `TRACE_SAFE` 只表示清单中的每条轨迹都为 `TRACE_SAFE`。
+
+旧静态分析入口保持为：
 
 ```bash
-~/.local/bin/uv run bmo-check fingerprint \
-  --exe /path/to/x86-program \
-  --library-root /mnt/d/CodeProjects/dbt6_workspace/x86lib \
-  --dbt-contract specs/dbt6-mo-off.yaml \
-  --dbt-root /mnt/d/CodeProjects/dbt6_workspace/dbt6
+bmo-check-static analyze ...
 ```
 
-输出中的 `closure_complete` 只表示 binary closure 是否完整，不是最终 SAFE verdict。
-
-恢复 Milestone 1 产物：
+## 开发
 
 ```bash
-~/.local/bin/uv run bmo-check recover \
-  --exe /path/to/x86-program \
-  --library-root /mnt/d/CodeProjects/dbt6_workspace/x86lib \
-  --dbt-contract specs/dbt6-mo-off.yaml \
-  --pthread-spec specs/pthread-api.yaml \
-  --dbt-root /mnt/d/CodeProjects/dbt6_workspace/dbt6 \
-  --output recovery.json
+uv sync
+uv run pytest
 ```
 
-`complete=false` 和报告中的 Unknown 表示控制流、线程或同步事实仍有缺口。它们不能被解释为程序不需要 Fence。
-
-生成 Milestone 2 shared-memory slice：
-
-```bash
-~/.local/bin/uv run bmo-check slice \
-  --exe /path/to/x86-program \
-  --library-root /path/to/x86-libraries \
-  --threads 4 \
-  --dbt-contract specs/dbt6-mo-off.yaml \
-  --pthread-spec specs/pthread-api.yaml \
-  --dbt-root /path/to/dbt6 \
-  --output shared-slice.json
-```
-
-`slice` 输出事件、program-order、alias/conflict、同步候选、Unknown 和每个被剪除事件的
-ProofObject。它不是最终安全证书。
-
-执行 Milestone 3 分析：
-
-```bash
-~/.local/bin/uv run bmo-check analyze \
-  --exe /path/to/x86-program \
-  --library-root /path/to/x86-libraries \
-  --threads 4 \
-  --dbt-contract specs/dbt6-mo-off.yaml \
-  --pthread-spec specs/pthread-api.yaml \
-  --dbt-root /path/to/dbt6 \
-  --output certificate.json
-```
-
-解释证书：
-
-```bash
-~/.local/bin/uv run bmo-check explain certificate.json
-```
-
-`SAFE` 只来自无 Unknown 的结构性通信消除证明。有限 checker 找不到反例时输出
-`UNKNOWN`，不会把 bounded no-counterexample 当成 `SAFE`；找到同一 rf/co 执行在
-RVWMO 可行而 x86-TSO 不可行时输出 `COUNTEREXAMPLE`。
-
-Python 包使用 `bmo_check` namespace，命令行入口统一为 `bmo-check`。
+动态路线文档位于 `docs/dynamic/`，原静态研究位于 `docs/static/`。

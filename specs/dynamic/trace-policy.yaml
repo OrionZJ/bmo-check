@@ -1,0 +1,25 @@
+schema: 1
+policy_version: bmo-dynamic-v1
+
+platforms:
+  - linux-x86_64
+  - wsl2-x86_64
+
+unsupported:
+  - windows-pe
+  - jit-code
+  - self-modifying-code
+  - cross-process-shared-memory
+
+limits:
+  max_window_events: 18
+  max_executions: 20000
+  max_communication_edges: 100000
+  max_pages_per_access: 16
+  batch_size: 50000
+
+strictness:
+  dropped_event: unknown
+  truncated_trace: unknown
+  mixed_width_overlap: unknown
+  unvalidated_target_only_candidate: unknown

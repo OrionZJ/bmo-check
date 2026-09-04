@@ -1,0 +1,7 @@
+schema: 1
+runs:
+  - name: example
+    command: ["/absolute/path/to/program", "argument"]
+    environment:
+      OMP_NUM_THREADS: "4"
+    repeat: 3

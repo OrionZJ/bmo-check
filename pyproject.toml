@@ -4,13 +4,14 @@ build-backend = "hatchling.build"
 
 [project]
 name = "bmo-check"
-version = "0.1.0"
-description = "Binary-only, DBT-aware verifier for DBT6 mo-off execution"
+version = "0.2.0"
+description = "Dynamic trace-scoped memory-order verifier for DBT6 mo-off"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "angr",
     "capstone",
+    "duckdb>=1.1",
     "networkx",
     "pydantic>=2",
     "pyelftools",
@@ -19,7 +20,8 @@ dependencies = [
 ]
 
 [project.scripts]
-bmo-check = "bmo_check.cli:main"
+bmo-check = "bmo_check_dynamic.cli:main"
+bmo-check-static = "bmo_check_static.cli:main"
 
 [dependency-groups]
 dev = [
@@ -28,7 +30,14 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/bmo_check"]
+packages = ["src/bmo_check_dynamic", "src/bmo_check_static"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"specs/dynamic/dbt6-mo-off.yaml" = "bmo_check_dynamic/data/dbt6-mo-off.yaml"
+"specs/static/dbt6-mo-off.yaml" = "bmo_check_static/data/dbt6-mo-off.yaml"
+"specs/static/library-effects.yaml" = "bmo_check_static/data/library-effects.yaml"
+"specs/static/parsec-simlarge.yaml" = "bmo_check_static/data/parsec-simlarge.yaml"
+"specs/static/pthread-api.yaml" = "bmo_check_static/data/pthread-api.yaml"
 
 [tool.pytest.ini_options]
 addopts = "-ra"
@@ -36,4 +45,4 @@ testpaths = ["tests"]
 
 [tool.coverage.run]
 branch = true
-source = ["bmo_check"]
+source = ["bmo_check_dynamic", "bmo_check_static"]

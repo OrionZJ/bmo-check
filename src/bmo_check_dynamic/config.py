@@ -1,0 +1,29 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+
+
+@dataclass(frozen=True, slots=True)
+class DynamicConfig:
+    """动态分析的资源边界；越界必须返回 UNKNOWN，不能丢事件后继续证明。"""
+
+    max_window_events: int = 18
+    max_executions: int = 20_000
+    max_communication_edges: int = 100_000
+    max_pages_per_access: int = 16
+    batch_size: int = 50_000
+    solver_timeout_ms: int = 10_000
+    database_path: Path | None = None
+
+    def validate(self) -> None:
+        values = (
+            self.max_window_events,
+            self.max_executions,
+            self.max_communication_edges,
+            self.max_pages_per_access,
+            self.batch_size,
+            self.solver_timeout_ms,
+        )
+        if any(value <= 0 for value in values):
+            raise ValueError("dynamic analysis limits must be positive")

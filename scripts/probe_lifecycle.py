@@ -3,12 +3,12 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from bmo_check.analysis.lifecycle_symbolic import prove_symbolic_lifecycle
-from bmo_check.analysis.shared_state import _post_join_covers_pc
-from bmo_check.binary.dependency_closure import build_program_manifest
-from bmo_check.controlflow import recover_control_flow
-from bmo_check.evaluation import load_evaluation_suite
-from bmo_check.model import ExecutionScope
+from bmo_check_static.analysis.lifecycle_symbolic import prove_symbolic_lifecycle
+from bmo_check_static.analysis.shared_state import _post_join_covers_pc
+from bmo_check_static.binary.dependency_closure import build_program_manifest
+from bmo_check_static.controlflow import recover_control_flow
+from bmo_check_static.evaluation import load_evaluation_suite
+from bmo_check_static.model import ExecutionScope
 
 
 def main() -> None:

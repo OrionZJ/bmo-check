@@ -4,14 +4,14 @@ import argparse
 import json
 from pathlib import Path
 
-from bmo_check.analysis import extract_memory_events
-from bmo_check.analysis.address_provenance import recover_address_provenance
-from bmo_check.binary.capstone_backend import collect_instruction_facts
-from bmo_check.binary.dependency_closure import build_program_manifest
-from bmo_check.config import load_function_effect_contract
-from bmo_check.controlflow import recover_control_flow
-from bmo_check.model import ExecutionScope
-from bmo_check.threading import discover_pthread_threads
+from bmo_check_static.analysis import extract_memory_events
+from bmo_check_static.analysis.address_provenance import recover_address_provenance
+from bmo_check_static.binary.capstone_backend import collect_instruction_facts
+from bmo_check_static.binary.dependency_closure import build_program_manifest
+from bmo_check_static.config import load_function_effect_contract
+from bmo_check_static.controlflow import recover_control_flow
+from bmo_check_static.model import ExecutionScope
+from bmo_check_static.threading import discover_pthread_threads
 
 
 def main() -> None:
