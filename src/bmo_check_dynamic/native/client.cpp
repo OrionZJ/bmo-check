@@ -360,7 +360,7 @@ void process_exit() {
         dr_close_file(module_file);
     if (module_lock != nullptr)
         dr_mutex_destroy(module_lock);
-    drmgr_unregister_bb_instrumentation_event(nullptr, instrument_instruction);
+    drmgr_unregister_bb_insertion_event(instrument_instruction);
     drmgr_unregister_tls_field(tls_index);
     drwrap_exit();
     drutil_exit();
