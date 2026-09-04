@@ -48,6 +48,13 @@ class ProofReason(str, Enum):
     ATOMIC_COVERED = "AtomicCovered"
     # SEQUENTIAL_BEFORE_CREATE 表示事件发生时还没有 worker 可以并发访问。
     SEQUENTIAL_BEFORE_CREATE = "SequentialBeforeCreate"
+    # SEQUENTIAL_AFTER_JOIN 表示已证明每个成功创建的 worker 都已退出。
+    SEQUENTIAL_AFTER_JOIN = "SequentialAfterJoin"
+    # SEQUENTIAL_MAIN_CALLEE 表示 main 只在创建前或 join 后进入该函数。
+    # worker 对同一函数的访问不在这份证明内。
+    SEQUENTIAL_MAIN_CALLEE = "SequentialMainCallee"
+    # NON_RETURNING_PATH 只用于 scope 明确排除异常终止的证书。
+    NON_RETURNING_PATH = "NonReturningPath"
 
 
 class AliasRelation(str, Enum):

@@ -11,10 +11,15 @@ def test_effect_contract_is_content_addressed() -> None:
     contract = load_function_effect_contract(path)
 
     assert contract.unknown is None
-    assert contract.version == "linux-libm-thread-effects-v2"
+    assert contract.version == "linux-runtime-effects-v4"
     assert {
         name for name, effect in contract.effects.items() if effect == "thread_local"
     } == {"exp", "expf", "log", "logf", "sqrt", "sqrtf"}
+    assert contract.effects["malloc"] == "fresh_allocation"
+    assert contract.integer_arguments["malloc"] == (0,)
+    assert contract.effects["free"] == "runtime_internal"
+    assert contract.internal_objects["malloc"] == "runtime:allocator"
+    assert contract.internal_objects["free"] == "runtime:allocator"
     assert len(contract.sha256) == 64
 
 

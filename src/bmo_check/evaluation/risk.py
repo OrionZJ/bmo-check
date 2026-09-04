@@ -113,6 +113,50 @@ def find_publication_risks(
 
     findings: list[RiskFinding] = []
     seen: set[tuple[str, ...]] = set()
+    for event in events.values():
+        required = event.provenance.get("summary_required_orderings")
+        target = event.provenance.get("summary_target_orderings")
+        evidence_pcs = event.provenance.get("summary_evidence_pcs")
+        issue_pcs = event.provenance.get("summary_issue_pcs")
+        missing_requirement = next(
+            (
+                item
+                for item in ("Release", "Acquire")
+                if isinstance(required, list) and item in required
+            ),
+            None,
+        )
+        if (
+            missing_requirement is not None
+            and isinstance(target, list)
+            and target
+            and all(item == "Relaxed" for item in target)
+        ):
+            internal_pcs = tuple(
+                int(item) for item in issue_pcs
+            ) if isinstance(issue_pcs, list) and issue_pcs else (
+                tuple(int(item) for item in evidence_pcs)
+                if isinstance(evidence_pcs, list)
+                else ()
+            )
+            findings.append(
+                RiskFinding(
+                    kind="WeakSynchronizationLowering",
+                    event_ids=(event.id,),
+                    pcs=(event.pc, *internal_pcs),
+                    roles=(event.thread_role or "unknown",),
+                    objects=(str(event.provenance.get("target_symbol") or "sync"),),
+                    missing_orders=(
+                        f"{event.id}: required {missing_requirement}, target Relaxed",
+                    ),
+                    reason=(
+                        "the concrete synchronization implementation has a Relaxed "
+                        f"target path and the mo-off contract supplies no {missing_requirement} ordering"
+                    ),
+                )
+            )
+            if len(findings) >= max_findings:
+                return tuple(findings)
     for (payload, flag), writers in writer_pairs.items():
         for writer_payload, writer_flag in writers:
             for reader_flag, reader_payload in reader_pairs.get((flag, payload), ()):

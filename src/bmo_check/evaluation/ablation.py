@@ -22,6 +22,9 @@ _THREAD_LOCAL_REASONS = {
     ProofReason.SINGLE_MAIN_ROLE,
     ProofReason.UNESCAPED_STACK,
     ProofReason.SEQUENTIAL_BEFORE_CREATE,
+    ProofReason.SEQUENTIAL_AFTER_JOIN,
+    ProofReason.SEQUENTIAL_MAIN_CALLEE,
+    ProofReason.NON_RETURNING_PATH,
 }
 _ALLOWED_REASONS = {
     PruningLevel.NONE: set(),

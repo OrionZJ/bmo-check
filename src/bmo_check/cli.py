@@ -8,7 +8,12 @@ import sys
 from pathlib import Path
 from time import monotonic
 
-from bmo_check.analysis import analyze_shared_state, extract_memory_events
+from bmo_check.analysis import (
+    analyze_shared_state,
+    extract_memory_events,
+    prove_symbolic_lifecycle,
+    prove_symbolic_partition,
+)
 from bmo_check.binary.dependency_closure import build_program_manifest
 from bmo_check.binary.symbols import function_symbols
 from bmo_check.config import load_contract_version, load_function_effect_contract
@@ -252,14 +257,15 @@ def _build_slice_report(args: argparse.Namespace) -> ProgramSliceReport:
             unknowns=recovery.manifest.unknowns + recovery.unknowns,
         )
 
+    effect_contract = load_function_effect_contract(args.function_effects)
     events = extract_memory_events(
         module,
         recovery.control_flow,
         recovery.thread_roles,
         recovery.synchronization,
-        function_effects=load_function_effect_contract(
-            args.function_effects
-        ).effects,
+        function_effects=effect_contract.effects,
+        function_integer_arguments=effect_contract.integer_arguments,
+        function_internal_objects=effect_contract.internal_objects,
     )
     shared_state = analyze_shared_state(
         module,
@@ -379,6 +385,8 @@ def _evaluate(args: argparse.Namespace) -> int:
         shared_state_seconds = 0.0
         memory_events = None
         shared_state = None
+        partition_proofs = ()
+        lifecycle_proof = None
         module = recovery.manifest.executable
         if (
             module is not None
@@ -386,22 +394,39 @@ def _evaluate(args: argparse.Namespace) -> int:
             and recovery.thread_roles is not None
         ):
             event_started = monotonic()
+            effect_contract = load_function_effect_contract(args.function_effects)
+            if definition.lifecycle_hint is not None:
+                lifecycle_proof = prove_symbolic_lifecycle(
+                    module, definition.lifecycle_hint, threads
+                )
             memory_events = extract_memory_events(
                 module,
                 recovery.control_flow,
                 recovery.thread_roles,
                 recovery.synchronization,
-                function_effects=load_function_effect_contract(
-                    args.function_effects
-                ).effects,
+                function_effects=effect_contract.effects,
+                function_integer_arguments=effect_contract.integer_arguments,
+                function_internal_objects=effect_contract.internal_objects,
+                worker_argument_base=(
+                    lifecycle_proof.worker_argument_base
+                    if lifecycle_proof is not None and lifecycle_proof.proven
+                    else None
+                ),
             )
             event_seconds = monotonic() - event_started
             shared_started = monotonic()
+            partition_proofs = tuple(
+                prove_symbolic_partition(module, hint, threads)
+                for hint in definition.partition_hints
+            )
             shared_state = analyze_shared_state(
                 module,
                 recovery.control_flow,
                 recovery.thread_roles,
                 memory_events,
+                partition_proofs,
+                lifecycle_proof,
+                definition.normal_completion_only,
             )
             shared_state_seconds = monotonic() - shared_started
 
@@ -432,7 +457,54 @@ def _evaluate(args: argparse.Namespace) -> int:
             certificate = verify_portability(
                 program_report,
                 limits,
-                analysis_options={"pruning_level": level.value},
+                analysis_options={
+                    "pruning_level": level.value,
+                    "normal_completion_only": definition.normal_completion_only,
+                    # suite 只给出机器码入口；proof 结果也写入 scope，防止
+                    # 换输入或证明失败后误复用旧 certificate。
+                    "partition_hints": [
+                        item.model_dump(mode="json")
+                        for item in definition.partition_hints
+                    ],
+                    "partition_proofs": [
+                        {
+                            "proven": item.proven,
+                            "object_base": item.object_base,
+                            "index_term": item.index_term,
+                            "element_size": item.element_size,
+                            "item_count": item.item_count,
+                            "thread_count": item.thread_count,
+                            "evidence": list(item.evidence),
+                            "worker_pc": item.worker_pc,
+                            "loop_pc": item.loop_pc,
+                        }
+                        for item in partition_proofs
+                    ],
+                    "lifecycle_hint": (
+                        definition.lifecycle_hint.model_dump(mode="json")
+                        if definition.lifecycle_hint is not None
+                        else None
+                    ),
+                    "lifecycle_proof": (
+                        {
+                            "proven": lifecycle_proof.proven,
+                            "start_pc": lifecycle_proof.start_pc,
+                            "post_join_pc": lifecycle_proof.post_join_pc,
+                            "thread_count": lifecycle_proof.thread_count,
+                            "created_handles": list(lifecycle_proof.created_handles),
+                            "joined_handles": list(lifecycle_proof.joined_handles),
+                            "created_arguments": list(
+                                lifecycle_proof.created_arguments
+                            ),
+                            "worker_argument_base": (
+                                lifecycle_proof.worker_argument_base
+                            ),
+                            "evidence": list(lifecycle_proof.evidence),
+                        }
+                        if lifecycle_proof is not None
+                        else None
+                    ),
+                },
             )
             checker_seconds = monotonic() - checker_started
             screening_started = monotonic()

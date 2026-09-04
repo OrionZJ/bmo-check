@@ -8,14 +8,55 @@ benchmarks:
     run_directory: pkgs/apps/blackscholes/run
     argv: ["{threads}", "in_64K.txt", "prices.txt"]
     threads: 4
+    normal_completion_only: true
     input_files: ["in_64K.txt"]
     output_files: ["prices.txt"]
+    partition_hints:
+      - worker_pc: 0x0fbb
+        loop_pc: 0x101a
+        item_count_pc: 0x203658
+        thread_count_pc: 0x203694
+        start_offset: -12
+        end_offset: -8
+        induction_offset: -24
+        item_count: 65536
+        object_base: "heap:malloc@0x1294"
+        element_size: 4
+    lifecycle_hint:
+      start_pc: 0x17bd
+      post_join_pc: 0x18d7
+      create_pc: 0x0990
+      join_pc: 0x0a70
+      thread_count_pc: 0x203694
+      frame_pointer_offsets: [-32]
+      worker_argument_base: "heap:malloc@0x17b4"
+      assume_success: true
 
   - id: swaptions
     executable: pkgs/apps/swaptions/inst/amd64-linux.gcc/bin/swaptions
     run_directory: pkgs/apps/swaptions/run
     argv: ["-ns", "64", "-sm", "40000", "-nt", "{threads}"]
     threads: 4
+    normal_completion_only: true
+    partition_hints:
+      - worker_pc: 0x4603
+        loop_pc: 0x46e8
+        item_count_pc: 0x2070b0
+        thread_count_pc: 0x2070ac
+        start_offset: -64
+        end_offset: -60
+        induction_offset: -56
+        item_count: 64
+        object_base: "heap:malloc@0x516f"
+        element_size: 104
+    lifecycle_hint:
+      start_pc: 0x575c
+      post_join_pc: 0x5820
+      create_pc: 0x0b00
+      join_pc: 0x0af0
+      thread_count_pc: 0x2070ac
+      frame_pointer_offsets: [-104, -120]
+      assume_success: true
 
   - id: dedup
     executable: pkgs/kernels/dedup/inst/amd64-linux.gcc/bin/dedup

@@ -49,7 +49,12 @@ def _compile(tmp_path: Path, name: str, source_text: str) -> Path:
     return executable
 
 
-def _pipeline(executable: Path, *, create_release: bool = False):
+def _pipeline(
+    executable: Path,
+    *,
+    create_release: bool = False,
+    normal_completion_only: bool = False,
+):
     roots = tuple(
         path
         for path in (
@@ -94,7 +99,13 @@ def _pipeline(executable: Path, *, create_release: bool = False):
     events = extract_memory_events(
         manifest.executable, cfg, threads, synchronization
     )
-    state = analyze_shared_state(manifest.executable, cfg, threads, events)
+    state = analyze_shared_state(
+        manifest.executable,
+        cfg,
+        threads,
+        events,
+        normal_completion_only=normal_completion_only,
+    )
     shared_slice = build_shared_memory_slice(events, state, threads)
     return events, state, shared_slice
 
@@ -191,4 +202,32 @@ def test_dynamic_stack_escape_does_not_poison_fixed_frame_slots(
         proof.reason == ProofReason.UNESCAPED_STACK
         and any("never materialized" in fact for fact in proof.supporting_facts)
         for proof in state.proofs
+    )
+
+
+def test_normal_completion_scope_removes_only_blocks_without_return_path(
+    tmp_path: Path,
+) -> None:
+    executable = _compile(
+        tmp_path,
+        "normal-completion",
+        "#include <stdlib.h>\n"
+        "static volatile int fail; static volatile int shared;\n"
+        "static int work(void) { if (fail) { shared = 9; abort(); } "
+        "shared = 7; return shared; }\n"
+        "int main(void) { return work(); }\n",
+    )
+    events, state, _ = _pipeline(executable, normal_completion_only=True)
+
+    proof = next(
+        item for item in state.proofs
+        if item.reason == ProofReason.NON_RETURNING_PATH
+    )
+    removed = {event.id for event in events.events if event.id in proof.event_ids}
+    assert removed
+    assert any(event.pc for event in events.events if event.id in removed)
+    assert any(
+        event.provenance.get("can_reach_function_return") is True
+        and event.id not in removed
+        for event in events.events
     )

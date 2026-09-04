@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from collections import deque
+import re
+from collections import defaultdict, deque
 from pathlib import Path
 
 from bmo_check.binary.capstone_backend import collect_instruction_facts
@@ -8,6 +9,7 @@ from bmo_check.model import (
     AbstractAddress,
     AddressKind,
     CallKind,
+    CallSite,
     ControlFlowReport,
     EventKind,
     FenceKind,
@@ -25,7 +27,7 @@ from bmo_check.model import (
     UnknownKind,
 )
 
-from .address_provenance import recover_block_local_addresses
+from .address_provenance import recover_address_provenance
 
 
 _ACQUIRE_APIS = {"pthread_mutex_lock", "pthread_spin_lock"}
@@ -93,6 +95,96 @@ def _block_maps(
         for pc in block.instruction_pcs:
             instruction_to_block[pc] = block.location.pc
     return instruction_to_block, block_to_function, function_names
+
+
+def _blocks_reaching_return(
+    report: ControlFlowReport,
+    facts: tuple[InstructionFact, ...],
+) -> set[int]:
+    """反向标记能到达 ret 的块；没有恢复完整返回路径时不作乐观判断。"""
+
+    return_pcs = {
+        fact.pc
+        for fact in facts
+        if fact.control_flow is not None and fact.control_flow.value == "return"
+    }
+    result: set[int] = set()
+    blocks = {item.location.pc: item for item in report.basic_blocks}
+    for function in report.functions:
+        function_blocks = set(function.block_pcs)
+        exits = {
+            block_pc
+            for block_pc in function_blocks
+            if block_pc in blocks
+            and any(pc in return_pcs for pc in blocks[block_pc].instruction_pcs)
+        }
+        # 没有 ret 也可能是 tail call 或 CFG 缺口；这种情况不删任何事件。
+        if not exits:
+            continue
+        predecessors: dict[int, set[int]] = {}
+        for block_pc in function_blocks:
+            if block_pc not in blocks:
+                continue
+            for successor in blocks[block_pc].successor_pcs:
+                if successor in function_blocks:
+                    predecessors.setdefault(successor, set()).add(block_pc)
+        pending = list(exits)
+        while pending:
+            block_pc = pending.pop()
+            if block_pc in result:
+                continue
+            result.add(block_pc)
+            pending.extend(predecessors.get(block_pc, ()))
+    return result
+
+
+def _functions_only_called_from_nonreturning_paths(
+    report: ControlFlowReport,
+    return_reachable_blocks: set[int],
+    role_roots: set[int],
+    role_reachable_functions: set[int],
+) -> set[int]:
+    """只有所有调用点都无法返回时，才把这个 callee 纳入失败路径。"""
+
+    functions = {item.location.pc: item for item in report.functions}
+    # 未闭合的应用间接调用可能绕过已知 call site 进入 callee。
+    # PLT 桁只跳到依赖库 relocation，不会反向调用主 ELF 的本地函数。
+    if any(
+        not site.targets.complete
+        and site.containing_function_pc in functions
+        and site.containing_function_pc in role_reachable_functions
+        and not functions[site.containing_function_pc].is_plt
+        for site in report.indirect_sites
+    ):
+        return set()
+
+    incoming: dict[int, list[CallSite]] = defaultdict(list)
+    for call in report.call_sites:
+        if len(call.targets.known_targets) != 1:
+            continue
+        target = call.targets.known_targets[0]
+        if target.module_sha256 == report.module_sha256 and target.pc in functions:
+            incoming[target.pc].append(call)
+
+    result: set[int] = set()
+    changed = True
+    while changed:
+        changed = False
+        for function_pc, calls in incoming.items():
+            if function_pc in result or function_pc in role_roots or not calls:
+                continue
+            if all(
+                call.containing_function_pc in result
+                or (
+                    call.block_pc not in return_reachable_blocks
+                    and call.containing_function_pc in functions
+                    and functions[call.containing_function_pc].returning is not None
+                )
+                for call in calls
+            ):
+                result.add(function_pc)
+                changed = True
+    return result
 
 
 def _address(
@@ -229,6 +321,38 @@ def _summary_ordering(
     return next(iter(orderings)), None
 
 
+def _summary_provenance(
+    symbol: str, reports: tuple[SynchronizationReport, ...]
+) -> dict[str, object]:
+    summaries = [
+        summary
+        for report in reports
+        for summary in report.summaries
+        if summary.api == symbol
+    ]
+    if not summaries:
+        return {}
+    return {
+        "summary_required_orderings": sorted(
+            {summary.required_ordering.value for summary in summaries}
+        ),
+        "summary_target_orderings": sorted(
+            {summary.target_ordering.value for summary in summaries}
+        ),
+        "summary_complete": all(summary.complete for summary in summaries),
+        "summary_evidence_pcs": sorted(
+            {item.pc for summary in summaries for item in summary.evidence}
+        ),
+        "summary_issue_pcs": sorted(
+            {
+                int(match, 16)
+                for summary in summaries
+                for match in re.findall(r"0x[0-9a-fA-F]+", summary.reason or "")
+            }
+        ),
+    }
+
+
 def _call_event_kind(symbol: str, ordering: Ordering | None) -> EventKind:
     if symbol == "pthread_create":
         return EventKind.THREAD_CREATE
@@ -252,19 +376,93 @@ def extract_memory_events(
     synchronization: tuple[SynchronizationReport, ...] = (),
     *,
     function_effects: dict[str, str] | None = None,
+    function_integer_arguments: dict[str, tuple[int, ...]] | None = None,
+    function_internal_objects: dict[str, str] | None = None,
+    worker_argument_base: str | None = None,
 ) -> MemoryEventReport:
     try:
         if not control_flow.functions or not control_flow.basic_blocks:
             raise RuntimeError("CFG contains no recoverable functions or basic blocks")
+        effect_contract = function_effects or {}
+        integer_argument_contract = function_integer_arguments or {}
+        internal_object_contract = function_internal_objects or {}
         instruction_report = collect_instruction_facts(module)
-        provenance_addresses = recover_block_local_addresses(
-            module, control_flow, instruction_report.facts
+        return_reachable_blocks = _blocks_reaching_return(
+            control_flow, instruction_report.facts
         )
+        functions_with_return = {
+            function.location.pc
+            for function in control_flow.functions
+            if any(block_pc in return_reachable_blocks for block_pc in function.block_pcs)
+        }
+        known_nonreturn_functions = {
+            function.location.pc
+            for function in control_flow.functions
+            if function.returning is False
+        }
+        allocation_calls = {
+            call.location.pc: call.target_symbol
+            for call in control_flow.call_sites
+            if call.target_symbol is not None
+            and effect_contract.get(call.target_symbol) == "fresh_allocation"
+        }
+        base_address_provenance = recover_address_provenance(
+            module, control_flow, instruction_report.facts, allocation_calls
+        )
+        role_functions = _role_functions(control_flow, threads)
+        role_address_provenance = {}
+        for role in threads.roles:
+            function_entry_arguments: dict[int, dict[str, AbstractAddress]] = {}
+            seeded_function_pcs: set[int] = set()
+            if role.create_site is not None and len(role.start_targets.known_targets) == 1:
+                worker_pc = role.start_targets.known_targets[0].pc
+                seeded_function_pcs.add(worker_pc)
+                call_arguments = base_address_provenance.call_arguments.get(
+                    role.create_site.pc, ()
+                )
+                if len(call_arguments) > 3 and call_arguments[3] is not None:
+                    function_entry_arguments[worker_pc] = {
+                        "rdi": call_arguments[3]
+                    }
+                elif worker_argument_base is not None:
+                    # lifecycle 已逐个记录 create 的第四实参并证明它们互异。
+                    # 这里只恢复 worker 的入口对象，不猜测 main 栈布局。
+                    function_entry_arguments[worker_pc] = {
+                        "rdi": AbstractAddress(
+                            kind=AddressKind.GLOBAL,
+                            base=worker_argument_base,
+                            provenance={
+                                "base_indirect": False,
+                                "scope": "symbolic-lifecycle",
+                            },
+                        )
+                    }
+            role_address_provenance[role.id] = recover_address_provenance(
+                module,
+                control_flow,
+                instruction_report.facts,
+                allocation_calls,
+                function_entry_arguments,
+                seeded_function_pcs,
+                role_functions.get(role.id, set()),
+            )
         instruction_to_block, block_to_function, function_names = _block_maps(
             control_flow
         )
-        role_functions = _role_functions(control_flow, threads)
-        effect_contract = function_effects or {}
+        role_roots = {
+            target.pc
+            for role in threads.roles
+            for target in role.start_targets.known_targets
+            if target.module_sha256 == module.sha256
+        }
+        nonreturning_context_functions = (
+            _functions_only_called_from_nonreturning_paths(
+                control_flow,
+                return_reachable_blocks,
+                role_roots,
+                set().union(*role_functions.values()),
+            )
+        )
         roles_by_function: dict[int, set[str]] = {}
         for role, functions in role_functions.items():
             for function_pc in functions:
@@ -276,6 +474,48 @@ def extract_memory_events(
         block_events: dict[tuple[str, int], list[MemoryEvent]] = {}
 
         def append_event(event: MemoryEvent) -> None:
+            if (
+                event.function_pc in nonreturning_context_functions
+                and event.function_pc not in role_roots
+            ):
+                # callee 自身虽能 ret，但它的所有调用点都位于失败分支。
+                # 必须先于函数内的 ret 可达性判断，否则会把这种路径重新标为正常。
+                event = event.model_copy(
+                    update={
+                        "provenance": {
+                            **event.provenance,
+                            "can_reach_function_return": False,
+                        }
+                    }
+                )
+            elif (
+                event.function_pc in known_nonreturn_functions
+                and event.function_pc not in role_roots
+            ):
+                # 这些 callee 的 CFG 已明确不返回。但线程入口可以
+                # 通过 exit 正常结束进程，所以不能套用这条规则。
+                event = event.model_copy(
+                    update={
+                        "provenance": {
+                            **event.provenance,
+                            "can_reach_function_return": False,
+                        }
+                    }
+                )
+            elif (
+                event.block_pc is not None
+                and event.function_pc in functions_with_return
+            ):
+                event = event.model_copy(
+                    update={
+                        "provenance": {
+                            **event.provenance,
+                            "can_reach_function_return": (
+                                event.block_pc in return_reachable_blocks
+                            ),
+                        }
+                    }
+                )
             events.append(event)
             if event.block_pc is not None and event.thread_role is not None:
                 block_events.setdefault((event.thread_role, event.block_pc), []).append(event)
@@ -320,6 +560,7 @@ def extract_memory_events(
             unknowns.extend(fact.unknowns)
             source_ordering, target_ordering = _event_ordering(fact)
             for role in sorted(roles):
+                provenance_addresses = role_address_provenance[role].addresses
                 for operand in fact.memory_operands:
                     address = provenance_addresses.get(
                         (fact.pc, operand.operand_index)
@@ -431,6 +672,18 @@ def extract_memory_events(
             ordering, summary_reason = _summary_ordering(symbol, synchronization)
             kind = _call_event_kind(symbol, ordering)
             for role in sorted(roles):
+                role_call_arguments = role_address_provenance[
+                    role
+                ].call_arguments.get(
+                    call.location.pc,
+                    base_address_provenance.call_arguments.get(
+                        call.location.pc, ()
+                    ),
+                )
+                call_argument_details = [
+                    item.model_dump(mode="json") if item is not None else None
+                    for item in role_call_arguments
+                ]
                 event_id = f"{role}:0x{call.location.pc:x}:call"
                 if contracted_effect == "thread_local":
                     # libm 可能更新 errno/fenv；把它保留为 TLS 读写，而不是假装无 effect。
@@ -466,15 +719,29 @@ def extract_memory_events(
                                 provenance={
                                     "target_symbol": symbol,
                                     "contracted_effect": contracted_effect,
+                                    "integer_arguments": list(
+                                        integer_argument_contract.get(symbol, ())
+                                    ),
                                 },
                             )
                         )
                     continue
-                address = (
-                    AbstractAddress(kind=AddressKind.UNKNOWN)
-                    if kind == EventKind.OPAQUE_CALL
-                    else None
-                )
+                internal_object = internal_object_contract.get(symbol)
+                address = None
+                if kind == EventKind.OPAQUE_CALL:
+                    address = AbstractAddress(
+                        kind=(
+                            AddressKind.GLOBAL
+                            if internal_object is not None
+                            else AddressKind.UNKNOWN
+                        ),
+                        base=internal_object,
+                        provenance={
+                            "contracted_effect": contracted_effect,
+                            "target_symbol": symbol,
+                            "runtime_internal": internal_object is not None,
+                        },
+                    )
                 append_event(
                     MemoryEvent(
                         id=event_id,
@@ -493,9 +760,15 @@ def extract_memory_events(
                         thread_role=role,
                         provenance={
                             "target_symbol": call.target_symbol,
+                            "contracted_effect": contracted_effect,
+                            "integer_arguments": list(
+                                integer_argument_contract.get(symbol, ())
+                            ),
+                            "call_arguments": call_argument_details,
                             "target_set_complete": call.targets.complete,
                             "target_evidence": list(call.targets.evidence),
                             "summary_reason": summary_reason,
+                            **_summary_provenance(symbol, synchronization),
                         },
                     )
                 )
@@ -507,11 +780,21 @@ def extract_memory_events(
                                 f"call {symbol!r} has no usable memory-effect summary: "
                                 f"{summary_reason or 'unknown reason'}"
                             ),
-                            impact="the call may read or write any shared object",
+                            impact=(
+                                f"the call may read or write runtime object {internal_object}"
+                                if internal_object is not None
+                                else "the call may read or write any shared object"
+                            ),
                             module=module.path,
                             pc=call.location.pc,
                             function=function_names.get(call.containing_function_pc),
-                            details={"event_id": event_id},
+                            details={
+                                "event_id": event_id,
+                                "target_symbol": call.target_symbol,
+                                "contracted_effect": contracted_effect,
+                                "internal_object": internal_object,
+                                "call_arguments": call_argument_details,
+                            },
                         )
                     )
 

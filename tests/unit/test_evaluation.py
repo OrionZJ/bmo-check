@@ -82,6 +82,17 @@ def test_parsec_suite_contains_four_configured_programs() -> None:
         "dedup",
         "canneal",
     }
+    partitions = {
+        item.id: item.partition_hints
+        for item in suite.benchmarks
+        if item.partition_hints
+    }
+    assert partitions["blackscholes"][0].item_count == 65536
+    assert partitions["swaptions"][0].thread_count_pc == 0x2070AC
+    scoped = {item.id: item.normal_completion_only for item in suite.benchmarks}
+    assert scoped["blackscholes"]
+    assert scoped["swaptions"]
+    assert not scoped["dedup"]
 
 
 def test_native_exit_and_output_validation_are_separate(tmp_path: Path) -> None:
@@ -162,3 +173,61 @@ def test_publication_risk_search_is_not_blocked_by_unrelated_unknowns() -> None:
 
     assert len(findings) == 1
     assert findings[0].kind == "PlainStorePublication"
+
+
+def test_relaxed_unlock_summary_is_reported_with_internal_store_pc() -> None:
+    unlock = MemoryEvent(
+        id="worker:unlock",
+        module="app",
+        module_sha256="a" * 64,
+        pc=0x8054,
+        kind=EventKind.OPAQUE_CALL,
+        source_ordering=Ordering.FULL,
+        target_ordering=Ordering.UNKNOWN,
+        thread_role="worker",
+        provenance={
+            "target_symbol": "pthread_spin_unlock",
+            "summary_required_orderings": ["Release"],
+            "summary_target_orderings": ["Relaxed"],
+            "summary_complete": True,
+            "summary_evidence_pcs": [0xED40],
+        },
+    )
+    shared_slice = SharedMemorySlice(
+        events=(unlock,),
+        coverage=PruningCoverage(total_events=1, remaining_shared_events=1),
+    )
+
+    findings = find_publication_risks(shared_slice)
+
+    assert len(findings) == 1
+    assert findings[0].kind == "WeakSynchronizationLowering"
+    assert findings[0].pcs == (0x8054, 0xED40)
+
+
+def test_relaxed_join_summary_is_reported_as_missing_acquire() -> None:
+    join = MemoryEvent(
+        id="main:join",
+        module="app",
+        module_sha256="a" * 64,
+        pc=0x18CB,
+        kind=EventKind.THREAD_JOIN,
+        thread_role="main",
+        provenance={
+            "target_symbol": "pthread_join",
+            "summary_required_orderings": ["Acquire"],
+            "summary_target_orderings": ["Relaxed"],
+            "summary_complete": False,
+            "summary_evidence_pcs": [0x8D2B],
+        },
+    )
+    shared_slice = SharedMemorySlice(
+        events=(join,),
+        coverage=PruningCoverage(total_events=1, remaining_shared_events=1),
+    )
+
+    findings = find_publication_risks(shared_slice)
+
+    assert findings[0].missing_orders == (
+        "main:join: required Acquire, target Relaxed",
+    )

@@ -17,7 +17,10 @@ from bmo_check.model import (
 )
 from bmo_check.pruning import prove_affine_partition
 from bmo_check.slicing import build_shared_memory_slice
-from bmo_check.analysis.shared_state import _readonly_after_create
+from bmo_check.analysis.shared_state import (
+    _addresses_may_alias,
+    _readonly_after_create,
+)
 
 
 def _affine(thread_stride: int, index_upper: int) -> AbstractAddress:
@@ -55,6 +58,33 @@ def test_missing_affine_bounds_remains_unproved() -> None:
     )
     assert not proved
     assert "incomplete" in evidence[0]
+
+
+def test_runtime_internal_object_does_not_alias_application_arrays() -> None:
+    runtime = AbstractAddress(
+        kind=AddressKind.GLOBAL,
+        base="runtime:allocator",
+    )
+    application = AbstractAddress(
+        kind=AddressKind.AFFINE,
+        base="app@0x2000",
+        expression="app@0x2000+i*8",
+        provenance={"base_indirect": True},
+    )
+
+    assert not _addresses_may_alias(runtime, application)
+    assert _addresses_may_alias(runtime, runtime)
+
+    heap_union = AbstractAddress(
+        kind=AddressKind.HEAP,
+        base="heap-union:argument@0x3000:rdi",
+    )
+    concrete_heap = AbstractAddress(
+        kind=AddressKind.HEAP,
+        base="heap:malloc@0x1000",
+    )
+    assert _addresses_may_alias(heap_union, concrete_heap)
+    assert not _addresses_may_alias(heap_union, application)
 
 
 def test_unknown_memory_effect_remains_in_slice_and_conflicts() -> None:

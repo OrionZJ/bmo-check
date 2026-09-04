@@ -1,18 +1,37 @@
 schema: 1
-contract_version: linux-libm-thread-effects-v2
+contract_version: linux-runtime-effects-v4
 
 # 这些函数可以修改 errno 或浮点环境，但在 Linux pthread ABI 中二者都属于当前线程。
 # 契约只消除共享内存 effect；二进制模块仍由 manifest 的 SHA-256 单独绑定。
 functions:
+  malloc:
+    # allocator 仍是 Unknown，只是它的隐藏元数据不会别名到尚在使用的应用对象。
+    effect: fresh_allocation
+    integer_arguments: [0]
+    internal_object: "runtime:allocator"
+  free:
+    # 这条依赖无 use-after-free 的执行 scope。free 之后的对象不再是有效通信对象。
+    effect: runtime_internal
+    integer_arguments: [0]
+    internal_object: "runtime:allocator"
+  calloc:
+    effect: fresh_allocation
+    integer_arguments: [0, 1]
   exp:
     effect: thread_local
+    integer_arguments: []
   expf:
     effect: thread_local
+    integer_arguments: []
   log:
     effect: thread_local
+    integer_arguments: []
   logf:
     effect: thread_local
+    integer_arguments: []
   sqrt:
     effect: thread_local
+    integer_arguments: []
   sqrtf:
     effect: thread_local
+    integer_arguments: []

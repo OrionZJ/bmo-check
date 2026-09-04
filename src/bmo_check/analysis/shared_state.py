@@ -2,11 +2,17 @@ from __future__ import annotations
 
 from collections import defaultdict, deque
 
+from capstone import CS_AC_WRITE
 from capstone.x86 import X86_OP_MEM, X86_OP_REG
 
+from bmo_check.analysis.escape_summary import prove_register_parameter_nocapture
+from bmo_check.analysis.lifecycle_symbolic import SymbolicLifecycleProof
+from bmo_check.analysis.partition_symbolic import SymbolicPartitionProof
 from bmo_check.binary.angr_backend import AngrBackendError, load_cfg
 from bmo_check.model import (
+    AbstractAddress,
     AddressKind,
+    CallSite,
     ControlFlowReport,
     EscapeKind,
     EventKind,
@@ -95,6 +101,97 @@ def _frame_stack_value_pcs(instructions: list[object]) -> set[int]:
     return exempt
 
 
+def _local_direct_call_does_not_capture(
+    instructions: list[object],
+    start_index: int,
+    context: object,
+    control_flow: ControlFlowReport,
+    scalar_external_symbols: frozenset[str],
+) -> tuple[bool, str | None]:
+    instruction = instructions[start_index]
+    operands = list(instruction.operands)
+    if not operands or operands[0].type != X86_OP_REG:
+        return False, None
+    tainted = {instruction.reg_name(operands[0].reg)}
+    calls = {item.location.pc: item for item in control_flow.call_sites}
+    argument_registers = ("rdi", "rsi", "rdx", "rcx", "r8", "r9")
+    caller_saved = {"rax", "rcx", "rdx", "rsi", "rdi", "r8", "r9", "r10", "r11"}
+    tainted_stack_argument: int | None = None
+    for candidate in instructions[start_index + 1 :]:
+        candidate_operands = list(candidate.operands)
+        names = [
+            candidate.reg_name(item.reg)
+            for item in candidate_operands
+            if item.type == X86_OP_REG
+        ]
+        if candidate.mnemonic == "mov" and len(names) >= 2:
+            destination, source = names[0], names[1]
+            tainted.discard(destination)
+            if source in tainted:
+                tainted.add(destination)
+            continue
+        if candidate.mnemonic == "push":
+            if tainted_stack_argument is not None:
+                tainted_stack_argument += 1
+            if any(name in tainted for name in names):
+                tainted_stack_argument = 6
+            continue
+        call_pc = context.to_elf_pc(candidate.address)
+        call = calls.get(call_pc)
+        if call is not None:
+            tainted_arguments = [
+                index for index, name in enumerate(argument_registers) if name in tainted
+            ]
+            if tainted_stack_argument is not None:
+                tainted_arguments.append(tainted_stack_argument)
+            if tainted_arguments:
+                if call.kind.value != "direct" or len(call.targets.known_targets) != 1:
+                    return False, None
+                target = call.targets.known_targets[0]
+                if target.module_sha256 != context.module.sha256:
+                    return False, None
+                results = [
+                    prove_register_parameter_nocapture(
+                        context,
+                        control_flow,
+                        target.pc,
+                        argument_index,
+                        scalar_external_symbols,
+                    )
+                    for argument_index in tainted_arguments
+                ]
+                if not all(result.proven for result in results):
+                    failure = next(result for result in results if not result.proven)
+                    return False, f"0x{call_pc:x}: {failure.evidence[0]}"
+                evidence = (
+                    f"0x{call_pc:x}: direct callee 0x{target.pc:x} does not capture "
+                    f"argument(s) {','.join(str(item) for item in tainted_arguments)}"
+                )
+            else:
+                evidence = None
+            tainted.difference_update(caller_saved)
+            if not tainted:
+                return True, evidence
+            continue
+        memory_bases = {
+            candidate.reg_name(item.mem.base)
+            for item in candidate_operands
+            if item.type == X86_OP_MEM and item.mem.base
+        }
+        used = set(names) & tainted
+        if used - memory_bases:
+            return False, None
+        written = {
+            candidate.reg_name(item.reg)
+            for item in candidate_operands
+            if item.type == X86_OP_REG and item.access & CS_AC_WRITE
+        }
+        tainted.difference_update(written)
+        if not tainted:
+            return True, "materialized stack address is overwritten before it can escape"
+    return False, None
+
+
 def _object_key(event: MemoryEvent) -> tuple[object, ...]:
     address = event.address
     if address is None:
@@ -118,10 +215,213 @@ def _object_key(event: MemoryEvent) -> tuple[object, ...]:
     return (address.kind, address.base, address.offset)
 
 
+def _addresses_may_alias(
+    first: AbstractAddress, second: AbstractAddress
+) -> bool:
+    first_base = first.base
+    second_base = second.base
+    if first_base is None or second_base is None:
+        return True
+    if first_base.startswith("runtime:") or second_base.startswith("runtime:"):
+        # runtime effect 契约把库的隐藏状态划入独立命名空间。
+        # 它自身仍是 Unknown，但不能因此声称会覆盖主 ELF 的数组。
+        return first_base == second_base
+    if first_base.startswith("heap-union:") or second_base.startswith("heap-union:"):
+        # union 与任意 heap 仍可能重叠；它只能排除静态/global 对象。
+        heap_prefixes = ("heap:", "heap-union:")
+        return first_base.startswith(heap_prefixes) and second_base.startswith(
+            heap_prefixes
+        )
+    if first_base.startswith("heap:") and second_base.startswith("heap:"):
+        # fresh_allocation 契约让不同 call site 的返回对象在存活期内不重叠。
+        return first_base == second_base
+    if (
+        first_base.startswith("heap:")
+        and second.provenance.get("base_indirect") is False
+    ):
+        return False
+    if (
+        second_base.startswith("heap:")
+        and first.provenance.get("base_indirect") is False
+    ):
+        return False
+    if (
+        first.provenance.get("base_indirect") is False
+        and second.provenance.get("base_indirect") is False
+    ):
+        return first_base == second_base
+    if first.kind == AddressKind.GLOBAL and second.kind == AddressKind.GLOBAL:
+        return first_base == second_base
+    return True
+
+
+def _symbolic_partition_covers_event(
+    proof: SymbolicPartitionProof,
+    event: MemoryEvent,
+    control_flow: ControlFlowReport,
+) -> bool:
+    address = event.address
+    if (
+        not proof.proven
+        or address is None
+        or event.function_pc != proof.worker_pc
+        or address.base != proof.object_base
+        or address.index_coefficient != proof.element_size
+        or address.provenance.get("index_term") != proof.index_term
+    ):
+        return False
+
+    function = next(
+        (
+            item
+            for item in control_flow.functions
+            if item.location.pc == proof.worker_pc
+        ),
+        None,
+    )
+    if function is None or proof.loop_pc not in function.block_pcs:
+        return False
+    blocks = {
+        block.location.pc: block
+        for block in control_flow.basic_blocks
+        if block.location.pc in function.block_pcs
+    }
+    event_block = next(
+        (
+            block.location.pc
+            for block in blocks.values()
+            if block.location.pc <= event.pc < block.location.pc + block.size
+        ),
+        None,
+    )
+    if event_block is None:
+        return False
+
+    successors = {
+        pc: set(block.successor_pcs) & blocks.keys()
+        for pc, block in blocks.items()
+    }
+    predecessors: dict[int, set[int]] = defaultdict(set)
+    for source, targets in successors.items():
+        for target in targets:
+            predecessors[target].add(source)
+
+    def reachable(start: int, edges: dict[int, set[int]]) -> set[int]:
+        visited: set[int] = set()
+        pending = [start]
+        while pending:
+            current = pending.pop()
+            if current in visited:
+                continue
+            visited.add(current)
+            pending.extend(edges.get(current, ()))
+        return visited
+
+    # 只有既能从 header 到达、又能回到 header 的块才属于循环体。
+    # 这样不会把退出块中已经等于 end 的归纳变量误当成分片下标。
+    loop_blocks = reachable(proof.loop_pc, successors) & reachable(
+        proof.loop_pc, predecessors
+    )
+    return event_block in loop_blocks
+
+
+def _post_join_covers_pc(
+    proof: SymbolicLifecycleProof,
+    pc: int,
+    control_flow: ControlFlowReport,
+) -> bool:
+    if not proof.proven:
+        return False
+    post_block = min(
+        (
+            block
+            for block in control_flow.basic_blocks
+            if block.location.pc <= proof.post_join_pc
+            < block.location.pc + block.size
+        ),
+        key=lambda block: block.size,
+        default=None,
+    )
+    event_block = min(
+        (
+            block
+            for block in control_flow.basic_blocks
+            if block.location.pc <= pc < block.location.pc + block.size
+        ),
+        key=lambda block: block.size,
+        default=None,
+    )
+    if post_block is None or event_block is None:
+        return False
+    if post_block.location.pc == event_block.location.pc:
+        # 同一 basic block 内的指令顺序已经闭合，不依赖 angr 是否把
+        # 这个尾块重复挂进 FunctionFact。
+        return pc >= proof.post_join_pc
+    function = next(
+        (
+            item
+            for item in control_flow.functions
+            if post_block.location.pc in item.block_pcs
+            and event_block.location.pc in item.block_pcs
+        ),
+        None,
+    )
+    if function is None:
+        return False
+    nodes = set(function.block_pcs)
+    successors = {
+        block.location.pc: set(block.successor_pcs) & nodes
+        for block in control_flow.basic_blocks
+        if block.location.pc in nodes
+    }
+    predecessors: dict[int, set[int]] = defaultdict(set)
+    for source, targets in successors.items():
+        for target in targets:
+            predecessors[target].add(source)
+    dominators = {pc: ({pc} if pc == function.location.pc else set(nodes)) for pc in nodes}
+    changed = True
+    while changed:
+        changed = False
+        for pc in nodes - {function.location.pc}:
+            incoming = predecessors.get(pc, set())
+            updated = {pc} | (
+                set.intersection(*(dominators[item] for item in incoming))
+                if incoming
+                else set()
+            )
+            if updated != dominators[pc]:
+                dominators[pc] = updated
+                changed = True
+    if post_block.location.pc not in dominators[event_block.location.pc]:
+        return False
+    pending = [post_block.location.pc]
+    visited: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if current == event_block.location.pc:
+            return True
+        if current in visited:
+            continue
+        visited.add(current)
+        pending.extend(successors.get(current, ()))
+    return False
+
+
+def _lifecycle_covers_event(
+    proof: SymbolicLifecycleProof,
+    event: MemoryEvent,
+    control_flow: ControlFlowReport,
+) -> bool:
+    return event.thread_role == "main" and _post_join_covers_pc(
+        proof, event.pc, control_flow
+    )
+
+
 def _stack_escape_by_function(
     module: ModuleFingerprint,
     control_flow: ControlFlowReport,
     relevant_functions: set[int],
+    scalar_external_symbols: frozenset[str],
 ) -> tuple[
     dict[tuple[int, int | None], EscapeKind],
     dict[tuple[int, int | None], tuple[str, ...]],
@@ -161,8 +461,8 @@ def _stack_escape_by_function(
         function_instructions.sort(key=lambda item: int(item.address))
         frame_stack_value_pcs = _frame_stack_value_pcs(function_instructions)
         for _, block in blocks:
-            for wrapped in block.capstone.insns:
-                instruction = wrapped.insn
+            block_instructions = [wrapped.insn for wrapped in block.capstone.insns]
+            for instruction_index, instruction in enumerate(block_instructions):
                 operands = list(instruction.operands)
                 for operand in operands:
                     if operand.type == X86_OP_MEM:
@@ -178,10 +478,25 @@ def _stack_escape_by_function(
                             )
                             if destination_name != "rsp":
                                 key = (function.location.pc, int(operand.mem.disp))
-                                evidence_lists[key].append(
-                                    f"0x{context.to_elf_pc(instruction.address):x}: "
-                                    "this stack slot address is materialized by lea"
+                                no_capture, no_capture_evidence = (
+                                    _local_direct_call_does_not_capture(
+                                        block_instructions,
+                                        instruction_index,
+                                        context,
+                                        control_flow,
+                                        scalar_external_symbols,
+                                    )
                                 )
+                                if not no_capture:
+                                    evidence_lists[key].append(
+                                        f"0x{context.to_elf_pc(instruction.address):x}: "
+                                        "this stack slot address is materialized by lea"
+                                        + (
+                                            f"; nocapture stopped at {no_capture_evidence}"
+                                            if no_capture_evidence
+                                            else ""
+                                        )
+                                    )
                         if segment in {"fs", "gs"} and (
                             instruction.mnemonic == "lea"
                             or (operand.mem.disp == 0 and operand.size >= 8)
@@ -247,9 +562,162 @@ def _path_exists(edges: dict[str, set[str]], source: str, target: str) -> bool:
     return False
 
 
+def _cfg_path_exists(
+    control_flow: ControlFlowReport,
+    source_block: int,
+    target_block: int,
+) -> bool:
+    successors = {
+        block.location.pc: block.successor_pcs
+        for block in control_flow.basic_blocks
+    }
+    pending = [source_block]
+    visited: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if current == target_block:
+            return True
+        if current in visited:
+            continue
+        visited.add(current)
+        pending.extend(successors.get(current, ()))
+    return False
+
+
+def _terminates_before_first_create(
+    event: MemoryEvent,
+    creates: list[MemoryEvent],
+    control_flow: ControlFlowReport,
+) -> bool:
+    if event.thread_role != "main" or event.block_pc is None:
+        return False
+    function_pc = event.function_pc
+    if function_pc is None or any(
+        site.containing_function_pc == function_pc and not site.targets.complete
+        for site in control_flow.indirect_sites
+    ):
+        return False
+    relevant_creates = [
+        create
+        for create in creates
+        if create.function_pc == function_pc and create.block_pc is not None
+    ]
+    if not relevant_creates:
+        return False
+    for create in relevant_creates:
+        assert create.block_pc is not None
+        if create.block_pc == event.block_pc and create.pc <= event.pc:
+            return False
+        if _cfg_path_exists(control_flow, create.block_pc, event.block_pc):
+            return False
+    # 没有 create 能到达该事件时，它只会发生在线程创建前或不可达分支。
+    # 失败分支即使调用 I/O/exit，也不会与尚未存在的 worker 通信。
+    return True
+
+
+def _main_functions_outside_concurrent_phase(
+    control_flow: ControlFlowReport,
+    lifecycle_proof: SymbolicLifecycleProof | None,
+) -> set[int]:
+    if lifecycle_proof is None or not lifecycle_proof.proven:
+        return set()
+    main = next(
+        (
+            function.location.pc
+            for function in control_flow.functions
+            if function.location.symbol == "main"
+        ),
+        None,
+    )
+    if main is None:
+        return set()
+    local_calls = [
+        call
+        for call in control_flow.call_sites
+        if len(call.targets.known_targets) == 1
+        and call.targets.known_targets[0].module_sha256
+        == control_flow.module_sha256
+    ]
+    graph: dict[int, set[int]] = defaultdict(set)
+    for call in local_calls:
+        graph[call.containing_function_pc].add(call.targets.known_targets[0].pc)
+    main_reachable: set[int] = set()
+    pending = [main]
+    while pending:
+        function_pc = pending.pop()
+        if function_pc in main_reachable:
+            continue
+        main_reachable.add(function_pc)
+        pending.extend(graph.get(function_pc, ()))
+
+    create_sites = [
+        call
+        for call in control_flow.call_sites
+        if call.target_symbol == "pthread_create"
+        and call.containing_function_pc == main
+    ]
+    if not create_sites:
+        return set()
+
+    def main_site_is_nonconcurrent(call: CallSite) -> bool:
+        if _post_join_covers_pc(
+            lifecycle_proof, call.location.pc, control_flow
+        ):
+            return True
+        for create in create_sites:
+            if create.block_pc == call.block_pc:
+                if create.location.pc <= call.location.pc:
+                    return False
+            elif _cfg_path_exists(
+                control_flow, create.block_pc, call.block_pc
+            ):
+                return False
+        return True
+
+    calls_by_target: dict[int, list[CallSite]] = defaultdict(list)
+    for call in local_calls:
+        target_pc = call.targets.known_targets[0].pc
+        if call.containing_function_pc in main_reachable:
+            calls_by_target[target_pc].append(call)
+    incomplete_callers = {
+        site.containing_function_pc
+        for site in control_flow.indirect_sites
+        if not site.targets.complete
+        and site.containing_function_pc in main_reachable
+    }
+    nonconcurrent: set[int] = set()
+    changed = True
+    while changed:
+        changed = False
+        for target_pc, sites in calls_by_target.items():
+            if target_pc == main or target_pc in nonconcurrent:
+                continue
+            # 未闭合间接调用可能在并发阶段进入任意本地 callee。
+            # 只要这种 caller 尚未被证明处于非并发阶段，就不能传播阶段标签。
+            if any(
+                caller not in nonconcurrent
+                for caller in incomplete_callers
+            ):
+                continue
+            if all(
+                site.containing_function_pc in nonconcurrent
+                or (
+                    site.containing_function_pc == main
+                    and main_site_is_nonconcurrent(site)
+                )
+                for site in sites
+            ):
+                nonconcurrent.add(target_pc)
+                changed = True
+    return nonconcurrent
+
+
 def _readonly_after_create(
-    grouped_events: tuple[MemoryEvent, ...], report: MemoryEventReport
+    grouped_events: tuple[MemoryEvent, ...],
+    report: MemoryEventReport,
+    nonconcurrent_event_ids: set[str] | None = None,
 ) -> tuple[bool, tuple[str, ...]]:
+    nonconcurrent_event_ids = nonconcurrent_event_ids or set()
     writers = [event for event in grouped_events if event.kind in _WRITE_KINDS]
     worker_readers = [
         event
@@ -268,6 +736,7 @@ def _readonly_after_create(
             and event.address.kind in {AddressKind.UNKNOWN, AddressKind.AFFINE}
         )
         for event in report.events
+        if event.id not in nonconcurrent_event_ids
     ):
         return False, ()
     creates = [event for event in report.events if event.kind == EventKind.THREAD_CREATE]
@@ -302,14 +771,24 @@ def analyze_shared_state(
     control_flow: ControlFlowReport,
     threads: ThreadDiscoveryReport,
     memory_events: MemoryEventReport,
+    partition_proofs: tuple[SymbolicPartitionProof, ...] = (),
+    lifecycle_proof: SymbolicLifecycleProof | None = None,
+    normal_completion_only: bool = False,
 ) -> SharedStateReport:
     relevant_functions = {
         event.function_pc
         for event in memory_events.events
         if event.function_pc is not None
     }
+    scalar_external_symbols = frozenset(
+        str(event.provenance["target_symbol"])
+        for event in memory_events.events
+        if event.provenance.get("contracted_effect") == "thread_local"
+        and event.provenance.get("integer_arguments") == []
+        and isinstance(event.provenance.get("target_symbol"), str)
+    )
     stack_escape, stack_evidence, tls_escape_evidence = _stack_escape_by_function(
-        module, control_flow, relevant_functions
+        module, control_flow, relevant_functions, scalar_external_symbols
     )
     groups: dict[tuple[object, ...], list[MemoryEvent]] = defaultdict(list)
     for event in memory_events.events:
@@ -320,9 +799,54 @@ def analyze_shared_state(
     proofs: list[ProofObject] = []
     removed: set[str] = set()
     unknowns: list[UnknownFact] = []
-    wildcard_events = {
+    creates = [
+        event for event in memory_events.events if event.kind == EventKind.THREAD_CREATE
+    ]
+    order_edges: dict[str, set[str]] = defaultdict(set)
+    for edge in memory_events.program_order:
+        order_edges[edge.source_event].add(edge.target_event)
+    after_join_ids = {
         event.id
         for event in memory_events.events
+        if lifecycle_proof is not None
+        and lifecycle_proof.proven
+        and _lifecycle_covers_event(lifecycle_proof, event, control_flow)
+    }
+    before_create_ids = {
+        event.id
+        for event in memory_events.events
+        if event.thread_role == "main"
+        and creates
+        and (
+            all(_path_exists(order_edges, event.id, create.id) for create in creates)
+            or _terminates_before_first_create(event, creates, control_flow)
+        )
+    }
+    nonreturning_ids = {
+        event.id
+        for event in memory_events.events
+        if normal_completion_only
+        and event.provenance.get("can_reach_function_return") is False
+    }
+    main_nonconcurrent_functions = _main_functions_outside_concurrent_phase(
+        control_flow, lifecycle_proof
+    )
+    main_callee_ids = {
+        event.id
+        for event in memory_events.events
+        if event.thread_role == "main"
+        and event.function_pc in main_nonconcurrent_functions
+    }
+    nonconcurrent_event_ids = (
+        after_join_ids
+        | before_create_ids
+        | nonreturning_ids
+        | main_callee_ids
+    )
+    wildcard_events = {
+        event.id: event
+        for event in memory_events.events
+        if event.id not in nonconcurrent_event_ids
         if event.kind in {EventKind.OPAQUE_CALL, EventKind.SYSCALL, EventKind.UNKNOWN_MEMORY_EFFECT}
         or (
             event.address is not None
@@ -340,8 +864,104 @@ def analyze_shared_state(
         escape = EscapeKind.UNKNOWN
         proof: ProofObject | None = None
 
-        external_wildcards = wildcard_events - {event.id for event in events}
+        external_wildcards = {
+            event_id
+            for event_id, wildcard in wildcard_events.items()
+            if event_id not in {event.id for event in events}
+            and wildcard.address is not None
+            and _addresses_may_alias(address, wildcard.address)
+        }
         if (
+            roles == ("main",)
+            and address.kind in {AddressKind.GLOBAL, AddressKind.AFFINE, AddressKind.HEAP}
+            and not any(
+                event.kind
+                in {
+                    EventKind.OPAQUE_CALL,
+                    EventKind.SYSCALL,
+                    EventKind.UNKNOWN_MEMORY_EFFECT,
+                }
+                for event in events
+            )
+            and not external_wildcards
+        ):
+            sharing = SharingClass.THREAD_LOCAL
+            escape = EscapeKind.NO_ESCAPE
+            proof = ProofObject(
+                id=f"proof:main:{index}",
+                reason=ProofReason.SINGLE_MAIN_ROLE,
+                event_ids=tuple(event.id for event in events),
+                supporting_facts=(
+                    "only main reaches this object during the concurrent phase",
+                    "every remaining wildcard has a checked NoAlias address base",
+                ),
+            )
+        elif not writers and not external_wildcards:
+            sharing = SharingClass.READ_ONLY_AFTER_CREATE
+            escape = EscapeKind.THREAD_ESCAPE
+            proof = ProofObject(
+                id=f"proof:read-only:{index}",
+                reason=ProofReason.READ_ONLY_AFTER_CREATE,
+                event_ids=tuple(event.id for event in events),
+                supporting_facts=(
+                    "all concurrent accesses in this alias class are reads",
+                    "every remaining writer has a checked NoAlias address base",
+                ),
+            )
+        elif (
+            lifecycle_proof is not None
+            and lifecycle_proof.proven
+            and lifecycle_proof.worker_argument_base is not None
+            and address.base == lifecycle_proof.worker_argument_base
+            and roles
+            and "main" not in roles
+        ):
+            sharing = SharingClass.DISJOINT_PARTITION
+            escape = EscapeKind.THREAD_ESCAPE
+            proof = ProofObject(
+                id=f"proof:worker-argument:{index}",
+                reason=ProofReason.DISJOINT_AFFINE,
+                event_ids=tuple(event.id for event in events),
+                supporting_facts=lifecycle_proof.evidence
+                + (
+                    "each worker dereferences only its own fourth pthread_create argument",
+                ),
+            )
+        elif (
+            lifecycle_proof is not None
+            and lifecycle_proof.proven
+            and lifecycle_proof.worker_argument_base is not None
+            and address.base == lifecycle_proof.worker_argument_base
+            and writers
+            and readers
+            and all(event.thread_role == "main" for event in events if event.id in writers)
+            and all(event.thread_role != "main" for event in events if event.id in readers)
+            and all(
+                _path_exists(order_edges, writer, create.id)
+                for writer in writers
+                for create in creates
+            )
+            and any(
+                len(create.provenance.get("call_arguments", ())) > 3
+                and create.provenance["call_arguments"][3] is not None
+                and create.provenance["call_arguments"][3].get("base")
+                == lifecycle_proof.worker_argument_base
+                for create in creates
+            )
+        ):
+            sharing = SharingClass.DISJOINT_PARTITION
+            escape = EscapeKind.THREAD_ESCAPE
+            proof = ProofObject(
+                id=f"proof:thread-argument:{index}",
+                reason=ProofReason.DISJOINT_AFFINE,
+                event_ids=tuple(event.id for event in events),
+                supporting_facts=lifecycle_proof.evidence
+                + (
+                    "each main write precedes the pthread_create that publishes its argument",
+                    f"argument allocation site is {lifecycle_proof.worker_argument_base}",
+                ),
+            )
+        elif (
             address.kind == AddressKind.TLS
             and not tls_escape_evidence
         ):
@@ -423,28 +1043,54 @@ def analyze_shared_state(
                 )
         elif address.kind == AddressKind.GLOBAL:
             escape = EscapeKind.THREAD_ESCAPE if len(roles) > 1 else EscapeKind.NO_ESCAPE
-            if roles == ("main",) and not external_wildcards:
-                sharing = SharingClass.THREAD_LOCAL
+            readonly, evidence = _readonly_after_create(
+                events, memory_events, nonconcurrent_event_ids
+            )
+            if readonly:
+                sharing = SharingClass.READ_ONLY_AFTER_CREATE
                 proof = ProofObject(
-                    id=f"proof:main:{index}",
-                    reason=ProofReason.SINGLE_MAIN_ROLE,
+                    id=f"proof:readonly:{index}",
+                    reason=ProofReason.READ_ONLY_AFTER_CREATE,
                     event_ids=tuple(event.id for event in events),
-                    supporting_facts=("only the unique main thread role reaches this object",),
+                    supporting_facts=evidence,
                 )
-            else:
-                readonly, evidence = _readonly_after_create(events, memory_events)
-                if readonly:
-                    sharing = SharingClass.READ_ONLY_AFTER_CREATE
-                    proof = ProofObject(
-                        id=f"proof:readonly:{index}",
-                        reason=ProofReason.READ_ONLY_AFTER_CREATE,
-                        event_ids=tuple(event.id for event in events),
-                        supporting_facts=evidence,
-                    )
         elif address.kind == AddressKind.AFFINE:
             escape = EscapeKind.UNKNOWN
             disjoint, evidence = prove_affine_partition(address)
-            if disjoint and writers and not external_wildcards:
+            symbolic_proof = next(
+                (
+                    item
+                    for item in partition_proofs
+                    if all(
+                        _symbolic_partition_covers_event(
+                            item, event, control_flow
+                        )
+                        for event in events
+                    )
+                ),
+                None,
+            )
+            if symbolic_proof is not None:
+                disjoint = True
+                evidence = symbolic_proof.evidence + (
+                    f"proof applies to {symbolic_proof.object_base}",
+                    f"index term {symbolic_proof.index_term} has stride "
+                    f"{symbolic_proof.element_size}",
+                )
+            uncovered_wildcards = external_wildcards
+            if symbolic_proof is not None:
+                # 同一循环的不同字段会被分到多个 alias group。
+                # Z3 已证明整个 item 区间按线程不重叠，这些组不应再互相当 wildcard。
+                uncovered_wildcards = {
+                    event_id
+                    for event_id in external_wildcards
+                    if not _symbolic_partition_covers_event(
+                        symbolic_proof,
+                        wildcard_events[event_id],
+                        control_flow,
+                    )
+                }
+            if disjoint and writers and not uncovered_wildcards:
                 sharing = SharingClass.DISJOINT_PARTITION
                 proof = ProofObject(
                     id=f"proof:affine:{index}",
@@ -461,7 +1107,26 @@ def analyze_shared_state(
                         impact="different thread instances may access overlapping bytes",
                         module=module.path,
                         pc=min(event.pc for event in events),
-                        details={"event_ids": [event.id for event in events]},
+                        details={
+                            "event_ids": [event.id for event in events],
+                            # 证书必须指出是哪条未闭合访问阻止了当前对象证明，
+                            # 否则地址恢复变精确后仍无法判断下一步该收敛哪条数据流。
+                            "uncovered_wildcard_event_ids": sorted(
+                                uncovered_wildcards
+                            ),
+                            "event_contexts": [
+                                {
+                                    "id": event.id,
+                                    "pc": event.pc,
+                                    "function": event.function,
+                                    "function_pc": event.function_pc,
+                                    "role": event.thread_role,
+                                    "kind": event.kind.value,
+                                }
+                                for event in events
+                            ],
+                            "address": address.model_dump(mode="json"),
+                        },
                     )
                 )
         else:
@@ -485,19 +1150,57 @@ def analyze_shared_state(
         )
 
     event_ids = {event.id for event in memory_events.events}
-    creates = [
-        event for event in memory_events.events if event.kind == EventKind.THREAD_CREATE
-    ]
+    if nonreturning_ids:
+        proofs.append(
+            ProofObject(
+                id="proof:non-returning-path",
+                reason=ProofReason.NON_RETURNING_PATH,
+                event_ids=tuple(sorted(nonreturning_ids)),
+                supporting_facts=(
+                    "the certificate scope is restricted to normally returning executions",
+                    "each removed block cannot reach a recovered return in its function CFG",
+                ),
+            )
+        )
+        removed.update(nonreturning_ids)
+    if lifecycle_proof is not None and lifecycle_proof.proven:
+        after_join = tuple(
+            sorted(event_id for event_id in after_join_ids if event_id not in removed)
+        )
+        if after_join:
+            proofs.append(
+                ProofObject(
+                    id="proof:sequential-after-join",
+                    reason=ProofReason.SEQUENTIAL_AFTER_JOIN,
+                    event_ids=after_join,
+                    supporting_facts=lifecycle_proof.evidence,
+                )
+            )
+            removed.update(after_join)
+        main_callees = tuple(
+            sorted(
+                event_id
+                for event_id in main_callee_ids
+                if event_id not in removed
+            )
+        )
+        if main_callees:
+            proofs.append(
+                ProofObject(
+                    id="proof:sequential-main-callees",
+                    reason=ProofReason.SEQUENTIAL_MAIN_CALLEE,
+                    event_ids=main_callees,
+                    supporting_facts=lifecycle_proof.evidence
+                    + (
+                        "every direct main call path enters these functions before create or after join",
+                        "worker-role events for the same functions remain in the shared slice",
+                    ),
+                )
+            )
+            removed.update(main_callees)
     if creates:
-        order_edges: dict[str, set[str]] = defaultdict(set)
-        for edge in memory_events.program_order:
-            order_edges[edge.source_event].add(edge.target_event)
         sequential = tuple(
-            event.id
-            for event in memory_events.events
-            if event.thread_role == "main"
-            and event.id not in removed
-            and all(_path_exists(order_edges, event.id, create.id) for create in creates)
+            sorted(event_id for event_id in before_create_ids if event_id not in removed)
         )
         if sequential:
             proofs.append(
@@ -506,7 +1209,7 @@ def analyze_shared_state(
                     reason=ProofReason.SEQUENTIAL_BEFORE_CREATE,
                     event_ids=sequential,
                     supporting_facts=(
-                        "every event reaches every pthread_create in main program order",
+                        "each event either precedes every create or lies on a branch no create can reach",
                         "no worker thread exists before its pthread_create call",
                     ),
                 )

@@ -58,6 +58,42 @@ class RiskFinding(StrictModel):
     reason: str
 
 
+class PartitionHint(StrictModel):
+    # worker_pc/loop_pc 只定位待验证的机器码范围，不直接批准分片。
+    worker_pc: int
+    loop_pc: int
+    # 两个 global PC 提供程序读取 N/T 的具体位置。
+    item_count_pc: int
+    thread_count_pc: int
+    # start/end/induction_offset 绑定 worker frame 中的半开区间和归纳变量。
+    start_offset: int
+    end_offset: int
+    induction_offset: int
+    # item_count 是当前执行输入事实；thread_count 使用 benchmark 的实际线程参数。
+    item_count: int = Field(gt=0)
+    # object_base/element_size 将已证明的循环区间绑定到具体数组地址式。
+    object_base: str
+    element_size: int = Field(gt=0)
+
+
+class LifecycleHint(StrictModel):
+    # start_pc 从线程创建循环已完成输入准备的位置开始，避免符号执行 I/O。
+    start_pc: int
+    # post_join_pc 是只有等待循环结束后才能到达的第一条指令。
+    post_join_pc: int
+    # create_pc/join_pc 指向主 ELF 中的 pthread PLT 入口。
+    create_pc: int
+    join_pc: int
+    # thread_count_pc 让证明器写入本次执行范围中的固定线程数。
+    thread_count_pc: int
+    # frame_pointer_offsets 列出前缀已分配、后续循环会读取的指针栈槽。
+    frame_pointer_offsets: tuple[int, ...] = ()
+    # worker_argument_base 可显式绑定 allocation site；缺失时生命周期证明生成本地对象名。
+    worker_argument_base: str | None = None
+    # assume_success 明确限定只认证 pthread create/join 均成功的执行。
+    assume_success: bool = False
+
+
 class BenchmarkDefinition(StrictModel):
     # id 只标识报告行；分析器不得按它选择 verdict。
     id: str
@@ -73,6 +109,13 @@ class BenchmarkDefinition(StrictModel):
     # output_files 与 expected hashes 独立于进程退出状态检查。
     output_files: tuple[str, ...] = ()
     expected_output_sha256: dict[str, str] = Field(default_factory=dict)
+    # partition_hints 只提供符号执行入口；证明失败时必须保留 Unknown。
+    partition_hints: tuple[PartitionHint, ...] = ()
+    # lifecycle_hint 只定位机器码循环；证明器仍需逐个匹配 create/join handle。
+    lifecycle_hint: LifecycleHint | None = None
+    # normal_completion_only 限定证书只覆盖能正常返回的路径。
+    # assert、stack check 等必定终止的分支不能污染成功执行的通信图。
+    normal_completion_only: bool = False
 
 
 class EvaluationSuite(StrictModel):
