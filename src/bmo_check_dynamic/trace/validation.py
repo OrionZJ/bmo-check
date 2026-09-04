@@ -40,6 +40,8 @@ def validate_trace(trace_dir: Path) -> TraceValidation:
         return TraceValidation(False, 0, (), (f"invalid manifest: {error}",))
     if not manifest.complete:
         add_reason("trace did not reach a clean process exit")
+    if manifest.exit_code not in (None, 0):
+        add_reason(f"traced program exited with status {manifest.exit_code}")
     if manifest.dropped_events:
         add_reason(f"trace dropped {manifest.dropped_events} events")
         for name, count in sorted(manifest.dropped_by_reason.items()):

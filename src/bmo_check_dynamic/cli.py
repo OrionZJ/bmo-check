@@ -10,6 +10,7 @@ from pathlib import Path
 import yaml
 
 from bmo_check_dynamic.capture import CaptureError, capture_program
+from bmo_check_dynamic.analysis import locate_instruction_site
 from bmo_check_dynamic.config import DynamicConfig
 from bmo_check_dynamic.model import DynamicCertificate, TraceVerdict
 from bmo_check_dynamic.pipeline import analyze_trace
@@ -74,6 +75,7 @@ def _analysis_config(args: argparse.Namespace) -> DynamicConfig:
         max_pages_per_access=args.max_pages_per_access,
         batch_size=args.batch_size,
         solver_timeout_ms=args.solver_timeout_ms,
+        database_memory_limit_mb=args.database_memory_limit_mb,
         database_path=args.database,
     )
 
@@ -179,6 +181,12 @@ def _explain(args: argparse.Namespace) -> int:
     return EXIT_CODES[certificate.verdict]
 
 
+def _locate(args: argparse.Namespace) -> int:
+    evidence = locate_instruction_site(args.trace, args.module, args.offset)
+    print(evidence.model_dump_json(indent=2))
+    return 0
+
+
 def _add_capture_options(parser: argparse.ArgumentParser) -> None:
     default_home = Path(os.environ.get("DYNAMORIO_HOME", "/opt/dynamorio"))
     parser.add_argument("--dynamorio-home", type=Path, default=default_home)
@@ -200,6 +208,7 @@ def _add_analysis_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--max-pages-per-access", type=int, default=16)
     parser.add_argument("--batch-size", type=int, default=50_000)
     parser.add_argument("--solver-timeout-ms", type=int, default=10_000)
+    parser.add_argument("--database-memory-limit-mb", type=int, default=512)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -239,6 +248,14 @@ def build_parser() -> argparse.ArgumentParser:
     explain = subparsers.add_parser("explain", help="explain a certificate")
     explain.add_argument("certificate", type=Path)
     explain.set_defaults(handler=_explain)
+
+    locate = subparsers.add_parser(
+        "locate", help="locate one module-relative instruction in a trace"
+    )
+    locate.add_argument("trace", type=Path)
+    locate.add_argument("--module", required=True)
+    locate.add_argument("--offset", type=lambda value: int(value, 0), required=True)
+    locate.set_defaults(handler=_locate)
     return parser
 
 

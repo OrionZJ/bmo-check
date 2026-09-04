@@ -45,6 +45,27 @@ class WindowResult(StrictModel):
     witness: CandidateWitness | None = None
 
 
+class ApplicationPartitionEvidence(StrictModel):
+    # status=safe 只说明主模块的 worker 普通写互不重叠，不能替代库窗口证明。
+    status: str
+    # module_start 是本次 ASLR 映射的起点，筛出主模块发出的访存。
+    module_start: int = 0
+    # module_end 截止模块范围，避免把紧邻的运行库访问误算成应用输出。
+    module_end: int = 0
+    # main_thread 单独检查 worker 存活期间的并发访问。
+    main_thread: int | None = None
+    # worker_threads 是参与两两范围相交检查的线程集合。
+    worker_threads: tuple[int, ...] = ()
+    # 只读重叠不会产生写传播问题，但保留计数便于解释共享输入。
+    readonly_shared_ranges: int = 0
+    # worker 写范围一旦相交，就不能用“分离输出”关闭该子问题。
+    worker_conflicting_ranges: int = 0
+    # 主线程与存活 worker 冲突时，也不能把输出视为线程私有。
+    concurrent_main_conflicts: int = 0
+    # reasons 说明哪个条件阻止应用分区被标记为 safe。
+    reasons: tuple[str, ...] = ()
+
+
 class DynamicCertificate(StrictModel):
     schema_version: str = "1.0"
     verdict: TraceVerdict
@@ -58,6 +79,8 @@ class DynamicCertificate(StrictModel):
     unique_pc_count: int
     communication_edge_count: int
     indirect_target_count: int
+    # 分区证据帮助解释应用访问；整体验证仍由所有 windows 决定。
+    application_partition: ApplicationPartitionEvidence | None = None
     windows: tuple[WindowResult, ...] = ()
     unknown_reasons: tuple[str, ...] = ()
     assumptions: tuple[str, ...] = ()

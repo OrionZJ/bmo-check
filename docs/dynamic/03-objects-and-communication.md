@@ -7,3 +7,6 @@ Heap 和 mmap 对象使用 `kind:base:generation` 标识。free/munmap 后再次
 当前求解器只证明两端地址与宽度完全一致的窗口。部分重叠或混合宽度已经能被发现，但在 byte-level 编码完成前返回 `UNKNOWN`。
 
 通信图按连通分量切窗，并把同一线程两端之间的 Fence/atomic/sync 边界带入窗口。窗口超过配置上限时不得拆掉关键边后继续证明。
+
+DuckDB 缓存受 `--database-memory-limit-mb` 硬限制。轨迹按 batch 导入，数据库在
+达到上限后使用临时落盘；不能依赖操作系统在内存耗尽后杀死分析器。

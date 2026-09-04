@@ -63,3 +63,14 @@ def test_validation_error_list_is_bounded(trace_manifest, tmp_path: Path) -> Non
     assert not validation.valid
     assert len(validation.reasons) == 101
     assert validation.reasons[-1] == "trace validation omitted 50 additional errors"
+
+
+def test_nonzero_program_exit_is_unknown(trace_manifest, tmp_path: Path) -> None:
+    trace_dir = tmp_path / "trace"
+    manifest = trace_manifest(trace_dir)
+    manifest.model_copy(update={"exit_code": 7}).save(trace_dir / "manifest.json")
+    with TraceWriter(trace_dir / "events-1.bin") as writer:
+        writer.write(TraceEvent(1, 1, 1, 0, EventKind.THREAD_START))
+    validation = validate_trace(trace_dir)
+    assert not validation.valid
+    assert "status 7" in " ".join(validation.reasons)

@@ -5,7 +5,11 @@ import tempfile
 from itertools import chain
 from pathlib import Path
 
-from bmo_check_dynamic.analysis import build_windows, find_communication_edges
+from bmo_check_dynamic.analysis import (
+    analyze_application_partition,
+    build_windows,
+    find_communication_edges,
+)
 from bmo_check_dynamic.config import DynamicConfig
 from bmo_check_dynamic.model import (
     DynamicCertificate,
@@ -41,7 +45,9 @@ def analyze_trace(
     else:
         database_path = config.database_path
     try:
-        with TraceStore(database_path) as store:
+        with TraceStore(
+            database_path, memory_limit_mb=config.database_memory_limit_mb
+        ) as store:
             readers = (TraceReader(path) for path in event_files(trace_dir))
             _count, storage_unknowns = store.add_events(
                 chain.from_iterable(readers),
@@ -50,6 +56,9 @@ def analyze_trace(
             )
             unknowns.extend(storage_unknowns)
             object_count = store.materialize_objects()
+            application_partition = analyze_application_partition(
+                store, trace_dir / "modules.tsv", manifest.executable.path
+            )
             edge_sample = tuple(
                 find_communication_edges(
                     store, limit=config.max_communication_edges + 1
@@ -116,6 +125,7 @@ def analyze_trace(
                 ),
                 communication_edge_count=len(edges),
                 indirect_target_count=indirect_count,
+                application_partition=application_partition,
                 windows=results,
                 unknown_reasons=tuple(dict.fromkeys(unknowns)),
                 assumptions=(

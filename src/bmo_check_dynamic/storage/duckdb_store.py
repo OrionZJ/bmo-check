@@ -16,13 +16,18 @@ class TraceStoreError(RuntimeError):
 class TraceStore:
     """轨迹写入磁盘数据库，避免大型程序把所有事件留在 Python 对象中。"""
 
-    def __init__(self, path: Path | str = ":memory:") -> None:
+    def __init__(
+        self, path: Path | str = ":memory:", *, memory_limit_mb: int = 512
+    ) -> None:
         try:
             import duckdb
         except ImportError as error:
             raise TraceStoreError("DuckDB is required; run `uv sync`") from error
         self.path = path
         self.connection: Any = duckdb.connect(str(path))
+        # DuckDB 会把可用 RAM 当缓存；显式上限让大轨迹转为临时落盘，而不是
+        # 与 Python batch 一起持续推高进程峰值。
+        self.connection.execute(f"SET memory_limit = '{int(memory_limit_mb)}MB'")
         self._create_schema()
 
     def _create_schema(self) -> None:

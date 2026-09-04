@@ -11,6 +11,15 @@ def explain_certificate(certificate: DynamicCertificate) -> str:
         f"{certificate.thread_count}/{certificate.communication_edge_count}",
         f"Objects/unique PCs: {certificate.object_count}/{certificate.unique_pc_count}",
     ]
+    partition = certificate.application_partition
+    if partition is not None:
+        lines.append(
+            "Application partition: "
+            f"{partition.status} (workers={len(partition.worker_threads)}, "
+            f"worker conflicts={partition.worker_conflicting_ranges}, "
+            f"concurrent main conflicts={partition.concurrent_main_conflicts}, "
+            f"read-only shared ranges={partition.readonly_shared_ranges})"
+        )
     if certificate.verdict == TraceVerdict.TRACE_SAFE:
         lines.append(
             "Meaning: no RVWMO-only execution was found for the recorded event skeleton."

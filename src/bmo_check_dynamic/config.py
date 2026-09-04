@@ -14,6 +14,8 @@ class DynamicConfig:
     max_pages_per_access: int = 16
     batch_size: int = 50_000
     solver_timeout_ms: int = 10_000
+    # 限制 DuckDB 缓存，防止大轨迹与 Python batch 一起耗尽系统内存。
+    database_memory_limit_mb: int = 512
     database_path: Path | None = None
 
     def validate(self) -> None:
@@ -24,6 +26,7 @@ class DynamicConfig:
             self.max_pages_per_access,
             self.batch_size,
             self.solver_timeout_ms,
+            self.database_memory_limit_mb,
         )
         if any(value <= 0 for value in values):
             raise ValueError("dynamic analysis limits must be positive")
