@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import csv
+import tempfile
 from collections.abc import Iterable, Iterator
 from pathlib import Path
 from typing import Any
@@ -93,13 +95,58 @@ class TraceStore:
         self, rows: list[tuple[object, ...]], page_rows: list[tuple[str, int]]
     ) -> None:
         if rows:
-            self.connection.executemany(
-                "INSERT INTO events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)", rows
+            self._copy_rows(
+                "events",
+                (
+                    "event_id",
+                    "thread_id",
+                    "sequence",
+                    "ticket",
+                    "pc",
+                    "kind",
+                    "address",
+                    "size",
+                    "value",
+                    "flags",
+                    "aux",
+                ),
+                rows,
             )
             rows.clear()
         if page_rows:
-            self.connection.executemany("INSERT INTO event_pages VALUES (?, ?)", page_rows)
+            self._copy_rows("event_pages", ("event_id", "page"), page_rows)
             page_rows.clear()
+
+    def _copy_rows(
+        self,
+        table: str,
+        columns: tuple[str, ...],
+        rows: list[tuple[object, ...]],
+    ) -> None:
+        # DuckDB 的逐行 Python 接口会主导大型轨迹的导入时间。临时文件只保存
+        # 当前 batch，COPY 完成后立即删除，因此内存和临时空间都不会随轨迹累积。
+        temporary_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", newline="", delete=False
+            ) as stream:
+                temporary_path = Path(stream.name)
+                writer = csv.writer(stream, delimiter="\t", lineterminator="\n")
+                writer.writerows(rows)
+            escaped_path = temporary_path.as_posix().replace("'", "''")
+            column_list = ", ".join(columns)
+            self.connection.execute(
+                f"COPY {table} ({column_list}) FROM '{escaped_path}' "
+                "(FORMAT CSV, DELIMITER '\\t', HEADER false)"
+            )
+        finally:
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
+
+    def thread_count(self) -> int:
+        return int(
+            self.connection.execute("SELECT count(DISTINCT thread_id) FROM events").fetchone()[0]
+        )
 
     def iter_events(self) -> Iterator[TraceEvent]:
         cursor = self.connection.execute(

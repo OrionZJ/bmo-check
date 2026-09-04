@@ -18,6 +18,11 @@ class CommunicationEdge:
 def find_communication_edges(store: TraceStore) -> Iterator[CommunicationEdge]:
     """只保留真实地址重叠且至少一端写入的跨线程访问。"""
 
+    # 单线程轨迹不可能产生通信边。跳过同页自连接，否则循环和库初始化会把
+    # 同一页上的大量事件展开成无意义的二次方候选。
+    if store.thread_count() < 2:
+        return
+
     cursor = store.connection.execute(
         """
         SELECT DISTINCT

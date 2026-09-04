@@ -32,3 +32,14 @@ def test_reused_heap_address_does_not_connect_generations(tmp_path: Path) -> Non
         store.add_events(events, max_pages_per_access=16, batch_size=10)
         assert store.materialize_objects() == 2
         assert not tuple(find_communication_edges(store))
+
+
+def test_single_thread_skips_communication_join(tmp_path: Path) -> None:
+    events = tuple(
+        TraceEvent(1, sequence, 0, 0x10, EventKind.STORE, 0x1000, 4)
+        for sequence in range(1, 101)
+    )
+    with TraceStore(tmp_path / "single-thread.duckdb") as store:
+        store.add_events(events, max_pages_per_access=16, batch_size=17)
+        assert store.thread_count() == 1
+        assert not tuple(find_communication_edges(store))

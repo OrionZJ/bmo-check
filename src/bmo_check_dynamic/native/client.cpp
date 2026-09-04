@@ -140,10 +140,10 @@ void record_indirect(app_pc pc, app_pc target) {
                  reinterpret_cast<uintptr_t>(target), 0);
 }
 
-bool is_xchg(instr_t *instr) {
-    const int opcode = instr_get_opcode(instr);
-    return opcode == OP_xchg || opcode == OP_xadd || opcode == OP_cmpxchg ||
-           opcode == OP_cmpxchg8b;
+bool is_implicit_atomic_xchg(instr_t *instr) {
+    // 只有内存 XCHG 不写 LOCK 前缀也具备原子性。XADD/CMPXCHG 缺少 LOCK 时
+    // 仍是普通访存，把它们标成 atomic 会凭空给 mo-off 增加排序边。
+    return instr_get_opcode(instr) == OP_xchg;
 }
 
 dr_emit_flags_t instrument_instruction(void *drcontext, void *, instrlist_t *bb,
@@ -169,11 +169,14 @@ dr_emit_flags_t instrument_instruction(void *drcontext, void *, instrlist_t *bb,
         return DR_EMIT_DEFAULT;
     }
 
-    const bool atomic = instr_get_prefix_flag(instr, PREFIX_LOCK) || is_xchg(instr);
+    const bool implicit_atomic = is_implicit_atomic_xchg(instr);
+    const bool atomic = instr_get_prefix_flag(instr, PREFIX_LOCK) || implicit_atomic;
     const uint32_t flags =
         (instr_get_prefix_flag(instr, PREFIX_LOCK) ? EventFlags::LockPrefix : 0) |
-        (is_xchg(instr) ? EventFlags::Xchg : 0);
+        (implicit_atomic ? EventFlags::Xchg : 0);
     bool atomic_recorded = false;
+    const bool reads_memory = instr_reads_memory(instr);
+    const bool writes_memory = instr_writes_memory(instr);
     const int operand_count = instr_num_srcs(instr) + instr_num_dsts(instr);
     for (int index = 0; index < operand_count; ++index) {
         const bool source = index < instr_num_srcs(instr);
@@ -181,8 +184,20 @@ dr_emit_flags_t instrument_instruction(void *drcontext, void *, instrlist_t *bb,
                                 : instr_get_dst(instr, index - instr_num_srcs(instr));
         if (!opnd_is_memory_reference(operand))
             continue;
+        // LEA 和多字节 NOP 使用内存形式表达地址，但不会读取内存。若把它们写入
+        // trace，会产生 size=0 的伪访存并让完整轨迹错误退化为 UNKNOWN。
+        if ((source && !reads_memory) || (!source && !writes_memory))
+            continue;
         if (atomic && atomic_recorded)
             continue;
+        uint32_t access_size = opnd_size_in_bytes(opnd_get_size(operand));
+        if (access_size == 0)
+            access_size = instr_memory_reference_size(instr);
+        if (access_size == 0) {
+            // 未知宽度不能被静默丢弃，否则通信边可能消失。
+            dropped_events.fetch_add(1, std::memory_order_relaxed);
+            continue;
+        }
         reg_id_t address_reg = DR_REG_NULL;
         reg_id_t scratch_reg = DR_REG_NULL;
         if (drreg_reserve_register(drcontext, bb, instr, nullptr, &address_reg) !=
@@ -203,7 +218,7 @@ dr_emit_flags_t instrument_instruction(void *drcontext, void *, instrlist_t *bb,
             dr_insert_clean_call(
                 drcontext, bb, instr, reinterpret_cast<void *>(record_memory), false, 5,
                 OPND_CREATE_INT32(static_cast<uint32_t>(kind)), OPND_CREATE_INTPTR(pc),
-                opnd_create_reg(address_reg), OPND_CREATE_INT32(opnd_size_in_bytes(opnd_get_size(operand))),
+                opnd_create_reg(address_reg), OPND_CREATE_INT32(access_size),
                 OPND_CREATE_INT32(flags));
             atomic_recorded = atomic;
         }
