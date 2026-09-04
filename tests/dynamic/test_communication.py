@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from bmo_check_dynamic.analysis import find_communication_edges
-from bmo_check_dynamic.analysis.windows import build_windows
+from bmo_check_dynamic.analysis.windows import _biconnected_components, build_windows
 from bmo_check_dynamic.model import EventFlags, EventKind, TraceEvent
 from bmo_check_dynamic.storage import TraceStore
 
@@ -97,3 +97,26 @@ def test_tls_addresses_are_private_to_each_thread(tmp_path: Path) -> None:
         store.add_events(events, max_pages_per_access=16, batch_size=2)
         assert store.materialize_objects() == 2
         assert not tuple(find_communication_edges(store))
+
+
+def test_communication_limit_is_applied_inside_query(tmp_path: Path) -> None:
+    events = tuple(
+        TraceEvent(thread, sequence, 0, 0x10, EventKind.STORE, 0x1000, 4)
+        for thread in (1, 2)
+        for sequence in range(1, 6)
+    )
+    with TraceStore(tmp_path / "edge-limit.duckdb") as store:
+        store.add_events(events, max_pages_per_access=16, batch_size=4)
+        assert len(tuple(find_communication_edges(store, limit=3))) == 3
+
+
+def test_biconnected_split_handles_deep_graph_without_python_recursion() -> None:
+    graph: dict[str, set[str]] = {}
+    for index in range(2_500):
+        node = str(index)
+        graph.setdefault(node, set())
+        if index:
+            previous = str(index - 1)
+            graph[node].add(previous)
+            graph[previous].add(node)
+    assert len(_biconnected_components(graph)) == 2_499

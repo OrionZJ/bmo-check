@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import tempfile
-from itertools import chain, islice
+from itertools import chain
 from pathlib import Path
 
 from bmo_check_dynamic.analysis import build_windows, find_communication_edges
@@ -51,9 +51,8 @@ def analyze_trace(
             unknowns.extend(storage_unknowns)
             object_count = store.materialize_objects()
             edge_sample = tuple(
-                islice(
-                    find_communication_edges(store),
-                    config.max_communication_edges + 1,
+                find_communication_edges(
+                    store, limit=config.max_communication_edges + 1
                 )
             )
             if len(edge_sample) > config.max_communication_edges:
@@ -63,7 +62,12 @@ def analyze_trace(
                 )
                 edges = edge_sample[: config.max_communication_edges]
             else:
-                edges = edge_sample
+                edges = tuple(
+                    sorted(
+                        edge_sample,
+                        key=lambda edge: (edge.first_event, edge.second_event),
+                    )
+                )
             windows, window_unknowns = build_windows(
                 store, edges, max_events=config.max_window_events
             )

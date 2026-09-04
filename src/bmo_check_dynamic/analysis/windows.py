@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Iterator
 from dataclasses import dataclass
 
 from bmo_check_dynamic.model import TraceEvent
@@ -43,12 +44,7 @@ def build_windows(
 
     # 一个关系环只能落在同一个无向双连通分量内。按普通连接分量切分会把
     # 共享割点的长链合成巨窗，既增加枚举量，也没有提供额外反例路径。
-    try:
-        components = _biconnected_components(graph)
-    except RecursionError:
-        # 深链本身可以拆分，但递归 Tarjan 超出 Python 栈后不能带着不完整分量
-        # 继续证明。先显式 UNKNOWN，后续再换成迭代遍历。
-        return (), ("communication graph exceeds biconnected traversal depth",)
+    components = _biconnected_components(graph)
     grouped_edges = [
         [
             edge
@@ -99,32 +95,45 @@ def _biconnected_components(graph: dict[str, set[str]]) -> tuple[frozenset[str],
     low: dict[str, int] = {}
     edge_stack: list[tuple[str, str]] = []
     components: list[frozenset[str]] = []
+    parent: dict[str, str | None] = {}
     clock = 0
-
-    def visit(node: str, parent: str | None) -> None:
-        nonlocal clock
+    for node in sorted(graph):
+        if node in discovery:
+            continue
         clock += 1
         discovery[node] = low[node] = clock
-        for neighbor in sorted(graph[node]):
-            if neighbor == parent:
-                continue
-            if neighbor not in discovery:
-                edge_stack.append((node, neighbor))
-                visit(neighbor, node)
-                low[node] = min(low[node], low[neighbor])
-                if low[neighbor] >= discovery[node]:
+        parent[node] = None
+        traversal: list[tuple[str, Iterator[str]]] = [
+            (node, iter(sorted(graph[node])))
+        ]
+        while traversal:
+            current, neighbors = traversal[-1]
+            try:
+                neighbor = next(neighbors)
+            except StopIteration:
+                traversal.pop()
+                ancestor = parent[current]
+                if ancestor is None:
+                    continue
+                low[ancestor] = min(low[ancestor], low[current])
+                if low[current] >= discovery[ancestor]:
                     vertices: set[str] = set()
                     while edge_stack:
                         edge = edge_stack.pop()
                         vertices.update(edge)
-                        if edge == (node, neighbor):
+                        if edge == (ancestor, current):
                             break
                     components.append(frozenset(vertices))
-            elif discovery[neighbor] < discovery[node]:
-                edge_stack.append((node, neighbor))
-                low[node] = min(low[node], discovery[neighbor])
-
-    for node in sorted(graph):
-        if node not in discovery:
-            visit(node, None)
+                continue
+            if neighbor == parent[current]:
+                continue
+            if neighbor not in discovery:
+                edge_stack.append((current, neighbor))
+                parent[neighbor] = current
+                clock += 1
+                discovery[neighbor] = low[neighbor] = clock
+                traversal.append((neighbor, iter(sorted(graph[neighbor]))))
+            elif discovery[neighbor] < discovery[current]:
+                edge_stack.append((current, neighbor))
+                low[current] = min(low[current], discovery[neighbor])
     return tuple(components)
