@@ -171,10 +171,15 @@ class TraceStore:
                     kind,
                     row_number() OVER (PARTITION BY address ORDER BY ticket) AS generation
                 FROM events
-                WHERE kind IN (20, 22) AND size > 0
+                WHERE kind IN (20, 22, 24, 30) AND size > 0
             )
             SELECT
-                concat(CASE WHEN kind = 20 THEN 'heap' ELSE 'mapping' END,
+                concat(CASE kind
+                           WHEN 20 THEN 'heap'
+                           WHEN 22 THEN 'mapping'
+                           WHEN 24 THEN 'stack'
+                           ELSE 'module'
+                       END,
                        ':0x', hex(base), ':g', generation) AS object_id,
                 base,
                 size,
@@ -182,7 +187,7 @@ class TraceStore:
                 (
                     SELECT min(f.ticket)
                     FROM events f
-                    WHERE f.kind IN (21, 23)
+                    WHERE f.kind IN (21, 23, 25, 31)
                       AND f.address = allocations.base
                       AND f.ticket >= allocations.start_ticket
                 ) AS end_ticket
@@ -203,9 +208,23 @@ class TraceStore:
                 LIMIT 1
             )
             WHERE e.kind IN (1, 2, 3)
+              AND (e.flags & 16) = 0
             """
         )
-        return int(self.connection.execute("SELECT count(*) FROM objects").fetchone()[0])
+        # TLS 的数值地址来自线程私有 FS/GS base。把 thread_id 写进身份，防止
+        # 两个线程复用相同 offset 时被误判为共享对象。
+        self.connection.execute(
+            """
+            UPDATE events
+            SET object_id = concat('tls:t', thread_id)
+            WHERE kind IN (1, 2, 3) AND (flags & 16) <> 0
+            """
+        )
+        return int(
+            self.connection.execute(
+                "SELECT count(DISTINCT object_id) FROM events WHERE object_id IS NOT NULL"
+            ).fetchone()[0]
+        )
 
     def get_events(self, event_ids: Iterable[str]) -> tuple[TraceEvent, ...]:
         ids = tuple(event_ids)
@@ -223,6 +242,17 @@ class TraceStore:
         rows = self.connection.execute(
             "SELECT thread_id, sequence, ticket, pc, kind, address, size, value, flags, aux "
             "FROM events WHERE thread_id = ? AND sequence BETWEEN ? AND ? ORDER BY sequence",
+            (thread_id, first, last),
+        ).fetchall()
+        return tuple(_row_to_event(row) for row in rows)
+
+    def boundaries_between(
+        self, thread_id: int, first: int, last: int
+    ) -> tuple[TraceEvent, ...]:
+        rows = self.connection.execute(
+            "SELECT thread_id, sequence, ticket, pc, kind, address, size, value, flags, aux "
+            "FROM events WHERE thread_id = ? AND sequence BETWEEN ? AND ? "
+            "AND kind IN (3, 4, 5, 6) ORDER BY sequence",
             (thread_id, first, last),
         ).fetchall()
         return tuple(_row_to_event(row) for row in rows)

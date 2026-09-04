@@ -18,10 +18,14 @@ class EventKind(IntEnum):
     SYNC_ACQUIRE = 12
     SYNC_RELEASE = 13
     SYNC_FULL = 14
+    THREAD_CREATE = 15
+    THREAD_JOIN = 16
     ALLOC = 20
     FREE = 21
     MMAP = 22
     MUNMAP = 23
+    THREAD_STACK = 24
+    THREAD_STACK_END = 25
     MODULE_LOAD = 30
     MODULE_UNLOAD = 31
     INDIRECT_TARGET = 32
@@ -56,6 +60,8 @@ class EventFlags(IntFlag):
     LOCK_PREFIX = 1 << 1
     XCHG = 1 << 2
     CONTROL_CLOSED = 1 << 3
+    # FS/GS 相对访存属于当前线程的 TLS，不能按相同数值地址跨线程连边。
+    TLS = 1 << 4
 
 
 @dataclass(frozen=True, slots=True)

@@ -34,6 +34,7 @@ class TraceManifest(StrictModel):
     complete: bool = False
     exit_code: int | None = None
     dropped_events: int = 0
+    dropped_by_reason: dict[str, int] = Field(default_factory=dict)
     control_flow_closed: bool = False
     limitations: tuple[str, ...] = ()
 

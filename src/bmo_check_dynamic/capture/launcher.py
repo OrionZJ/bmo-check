@@ -15,6 +15,16 @@ class CaptureError(RuntimeError):
     pass
 
 
+def dynamorio_version(home: Path) -> str:
+    version_file = home / "cmake" / "DynamoRIOConfigVersion.cmake"
+    try:
+        content = version_file.read_text(encoding="utf-8")
+    except OSError:
+        return "unknown"
+    match = re.search(r"set\(PACKAGE_VERSION\s+\"?([^\s\")]+)", content)
+    return match.group(1) if match else "unknown"
+
+
 def fingerprint(path: Path) -> BinaryFingerprint:
     resolved = path.resolve(strict=True)
     digest = hashlib.sha256()
@@ -100,6 +110,8 @@ def capture_program(
         environment=environment or {},
         executable=fingerprint(executable),
         libraries=dependency_fingerprints(executable),
+        dynamorio_version=dynamorio_version(dynamorio_home),
+        client_version="0.2",
         complete=False,
         limitations=(
             "trace scope excludes unexecuted paths and alternative input-dependent addresses",
@@ -133,6 +145,17 @@ def capture_program(
         dropped_events = int(dropped_path.read_text(encoding="ascii").strip())
     except (OSError, ValueError):
         dropped_events = 1
+    dropped_by_reason: dict[str, int] = {}
+    reasons_path = output_dir / ".drop-reasons"
+    try:
+        for line in reasons_path.read_text(encoding="ascii").splitlines():
+            name, separator, count = line.partition("\t")
+            if not separator or not name:
+                raise ValueError("invalid drop reason")
+            dropped_by_reason[name] = dropped_by_reason.get(name, 0) + int(count)
+    except (OSError, ValueError):
+        if dropped_events:
+            dropped_by_reason["missing_reason_file"] = dropped_events
     loaded_modules, module_errors = loaded_module_fingerprints(output_dir / "modules.tsv")
     all_libraries = {item.path: item for item in (*manifest.libraries, *loaded_modules)}
     dropped_events += module_errors
@@ -142,6 +165,7 @@ def capture_program(
             "complete": complete,
             "exit_code": result.returncode,
             "dropped_events": dropped_events,
+            "dropped_by_reason": dropped_by_reason,
             "libraries": tuple(all_libraries[path] for path in sorted(all_libraries)),
         }
     )

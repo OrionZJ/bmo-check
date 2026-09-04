@@ -1,7 +1,8 @@
 from pathlib import Path
 
 from bmo_check_dynamic.analysis import find_communication_edges
-from bmo_check_dynamic.model import EventKind, TraceEvent
+from bmo_check_dynamic.analysis.windows import build_windows
+from bmo_check_dynamic.model import EventFlags, EventKind, TraceEvent
 from bmo_check_dynamic.storage import TraceStore
 
 
@@ -42,4 +43,57 @@ def test_single_thread_skips_communication_join(tmp_path: Path) -> None:
     with TraceStore(tmp_path / "single-thread.duckdb") as store:
         store.add_events(events, max_pages_per_access=16, batch_size=17)
         assert store.thread_count() == 1
+        assert not tuple(find_communication_edges(store))
+
+
+def test_window_omits_noncommunicating_memory_but_keeps_boundary(tmp_path: Path) -> None:
+    events = (
+        TraceEvent(1, 1, 0, 0x10, EventKind.LOAD, 0x1000, 4),
+        TraceEvent(1, 2, 0, 0x11, EventKind.LOAD, 0x9000, 4),
+        TraceEvent(1, 3, 0, 0x12, EventKind.MFENCE),
+        TraceEvent(1, 4, 0, 0x13, EventKind.STORE, 0x2000, 4),
+        TraceEvent(2, 1, 0, 0x20, EventKind.STORE, 0x1000, 4),
+        TraceEvent(2, 2, 0, 0x21, EventKind.LOAD, 0x2000, 4),
+    )
+    with TraceStore(tmp_path / "minimal-window.duckdb") as store:
+        store.add_events(events, max_pages_per_access=16, batch_size=3)
+        edges = tuple(find_communication_edges(store))
+        windows, unknowns = build_windows(store, edges, max_events=10)
+
+    assert not unknowns
+    assert len(windows) == 1
+    assert {event.event_id for event in windows[0].events} == {
+        "t1:e1",
+        "t1:e3",
+        "t1:e4",
+        "t2:e1",
+        "t2:e2",
+    }
+
+
+def test_articulation_chain_is_split_into_independent_windows(tmp_path: Path) -> None:
+    events = (
+        TraceEvent(1, 1, 0, 0x10, EventKind.STORE, 0x1000, 4),
+        TraceEvent(1, 2, 0, 0x11, EventKind.STORE, 0x2000, 4),
+        TraceEvent(2, 1, 0, 0x20, EventKind.LOAD, 0x1000, 4),
+        TraceEvent(3, 1, 0, 0x30, EventKind.LOAD, 0x2000, 4),
+    )
+    with TraceStore(tmp_path / "articulation.duckdb") as store:
+        store.add_events(events, max_pages_per_access=16, batch_size=4)
+        edges = tuple(find_communication_edges(store))
+        windows, unknowns = build_windows(store, edges, max_events=3)
+
+    assert not unknowns
+    assert len(windows) == 2
+    assert all(len(window.events) == 2 for window in windows)
+
+
+def test_tls_addresses_are_private_to_each_thread(tmp_path: Path) -> None:
+    events = (
+        TraceEvent(1, 1, 0, 0x10, EventKind.STORE, 0x7000, 8, flags=EventFlags.TLS),
+        TraceEvent(2, 1, 0, 0x20, EventKind.LOAD, 0x7000, 8, flags=EventFlags.TLS),
+    )
+    with TraceStore(tmp_path / "tls.duckdb") as store:
+        store.add_events(events, max_pages_per_access=16, batch_size=2)
+        assert store.materialize_objects() == 2
         assert not tuple(find_communication_edges(store))

@@ -9,4 +9,8 @@
 - LFENCE、SFENCE、MFENCE 保持独立事件。
 - pthread API 事件只帮助切片和解释。target 排序必须来自库内部实际执行的 atomic/Fence，不能仅凭 API 名称添加。
 
-`manifest.json` 固定 executable、library closure、argv、显式环境、工具版本、退出状态和 dropped count。manifest 未完成时仍允许生成报告，但 verdict 必须是 `UNKNOWN`。
+`manifest.json` 固定 executable、library closure、argv、显式环境、DynamoRIO/client
+版本、退出状态和 dropped count。`dropped_by_reason` 区分写文件失败、线程状态
+缺失、未知宽度、寄存器不足、地址计算失败、生命周期及 module 元数据失败；总数
+非零时 verdict 必须是 `UNKNOWN`。manifest 未完成时仍允许生成报告，但 verdict
+也必须是 `UNKNOWN`。

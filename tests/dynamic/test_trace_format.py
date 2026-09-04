@@ -48,3 +48,18 @@ def test_incomplete_manifest_never_validates(trace_manifest, tmp_path: Path) -> 
     validation = validate_trace(trace_dir)
     assert not validation.valid
     assert "clean process exit" in validation.reasons[0]
+
+
+def test_validation_error_list_is_bounded(trace_manifest, tmp_path: Path) -> None:
+    trace_dir = tmp_path / "trace"
+    trace_manifest(trace_dir)
+    with TraceWriter(trace_dir / "events-1.bin") as writer:
+        for sequence in range(1, 151):
+            writer.write(
+                TraceEvent(1, sequence, 0, 0x1000, EventKind.LOAD, 0x2000, 0)
+            )
+
+    validation = validate_trace(trace_dir)
+    assert not validation.valid
+    assert len(validation.reasons) == 101
+    assert validation.reasons[-1] == "trace validation omitted 50 additional errors"

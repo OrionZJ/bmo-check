@@ -26,10 +26,14 @@ enum class EventKind : uint16_t {
     SyncAcquire = 12,
     SyncRelease = 13,
     SyncFull = 14,
+    ThreadCreate = 15,
+    ThreadJoin = 16,
     Alloc = 20,
     Free = 21,
     Mmap = 22,
     Munmap = 23,
+    ThreadStack = 24,
+    ThreadStackEnd = 25,
     ModuleLoad = 30,
     ModuleUnload = 31,
     IndirectTarget = 32,
@@ -42,6 +46,23 @@ enum EventFlags : uint16_t {
     ValueKnown = 1 << 0,
     LockPrefix = 1 << 1,
     Xchg = 1 << 2,
+    Tls = 1 << 4,
+};
+
+enum class DropReason : size_t {
+    Write,
+    MissingThreadState,
+    UnknownWidth,
+    RegisterReservation,
+    AddressCalculation,
+    Lifecycle,
+    ModuleMetadata,
+    Count,
+};
+
+constexpr const char *kDropReasonNames[] = {
+    "write", "missing_thread_state", "unknown_width", "register_reservation",
+    "address_calculation", "lifecycle", "module_metadata",
 };
 
 #pragma pack(push, 1)
@@ -69,11 +90,18 @@ struct TraceRecord {
 static_assert(sizeof(TraceRecord) == 56, "Python and native trace layouts differ");
 
 struct ThreadState {
+    // file 只由所属 app thread 写，普通访存不需要全局锁。
     file_t file = INVALID_FILE;
+    // sequence 是该线程唯一可信的 guest 程序序。
     uint64_t sequence = 0;
     static constexpr size_t kBufferRecords = 4096;
+    // buffer 把磁盘写入摊到固定大小的批次，不随轨迹增长。
     TraceRecord buffer[kBufferRecords]{};
+    // used 标出下一条可写记录；flush 后由所属线程清零。
     size_t used = 0;
+    // stack_base/size 由 thread init 保存，thread exit 用它关闭 generation。
+    uintptr_t stack_base = 0;
+    uint32_t stack_size = 0;
 };
 
 int tls_index = -1;
@@ -81,8 +109,17 @@ client_id_t client_id;
 char trace_dir[MAXIMUM_PATH] = {0};
 std::atomic<uint64_t> global_ticket{1};
 std::atomic<uint64_t> dropped_events{0};
+std::atomic<uint64_t> dropped_by_reason[static_cast<size_t>(DropReason::Count)]{};
+std::atomic<uintptr_t> first_unknown_width_pc{0};
+std::atomic<int> first_unknown_width_opcode{0};
 file_t module_file = INVALID_FILE;
 void *module_lock = nullptr;
+
+void note_drop(DropReason reason, uint64_t count = 1) {
+    dropped_events.fetch_add(count, std::memory_order_relaxed);
+    dropped_by_reason[static_cast<size_t>(reason)].fetch_add(
+        count, std::memory_order_relaxed);
+}
 
 ThreadState *state_for(void *drcontext) {
     return static_cast<ThreadState *>(drmgr_get_tls_field(drcontext, tls_index));
@@ -93,7 +130,7 @@ void flush_state(ThreadState *state) {
         return;
     const size_t bytes = state->used * sizeof(TraceRecord);
     if (dr_write_file(state->file, state->buffer, bytes) != bytes)
-        dropped_events.fetch_add(state->used, std::memory_order_relaxed);
+        note_drop(DropReason::Write, state->used);
     state->used = 0;
 }
 
@@ -103,7 +140,7 @@ void write_record(EventKind kind, app_pc pc, uintptr_t address, uint32_t size,
     void *drcontext = dr_get_current_drcontext();
     ThreadState *state = state_for(drcontext);
     if (state == nullptr || state->file == INVALID_FILE) {
-        dropped_events.fetch_add(1, std::memory_order_relaxed);
+        note_drop(DropReason::MissingThreadState);
         return;
     }
     TraceRecord record{};
@@ -146,9 +183,33 @@ bool is_implicit_atomic_xchg(instr_t *instr) {
     return instr_get_opcode(instr) == OP_xchg;
 }
 
+bool is_extended_state_access(int opcode) {
+    switch (opcode) {
+    case OP_xsave32:
+    case OP_xsave64:
+    case OP_xsaveopt32:
+    case OP_xsaveopt64:
+    case OP_xsavec32:
+    case OP_xsavec64:
+    case OP_xsaves32:
+    case OP_xsaves64:
+    case OP_xrstor32:
+    case OP_xrstor64:
+    case OP_xrstors32:
+    case OP_xrstors64:
+        return true;
+    default:
+        return false;
+    }
+}
+
 dr_emit_flags_t instrument_instruction(void *drcontext, void *, instrlist_t *bb,
                                        instr_t *instr, bool, bool, void *) {
     if (!instr_is_app(instr))
+        return DR_EMIT_DEFAULT;
+    // PREFETCH 只有地址提示，没有可参与 read-from/coherence 的架构访存。
+    // DynamoRIO 因此返回宽度 0；把它当 dropped 会让常见运行库永远 UNKNOWN。
+    if (instr_is_prefetch(instr))
         return DR_EMIT_DEFAULT;
     app_pc pc = instr_get_app_pc(instr);
     const int opcode = instr_get_opcode(instr);
@@ -171,7 +232,7 @@ dr_emit_flags_t instrument_instruction(void *drcontext, void *, instrlist_t *bb,
 
     const bool implicit_atomic = is_implicit_atomic_xchg(instr);
     const bool atomic = instr_get_prefix_flag(instr, PREFIX_LOCK) || implicit_atomic;
-    const uint32_t flags =
+    const uint32_t instruction_flags =
         (instr_get_prefix_flag(instr, PREFIX_LOCK) ? EventFlags::LockPrefix : 0) |
         (implicit_atomic ? EventFlags::Xchg : 0);
     bool atomic_recorded = false;
@@ -193,25 +254,40 @@ dr_emit_flags_t instrument_instruction(void *drcontext, void *, instrlist_t *bb,
         uint32_t access_size = opnd_size_in_bytes(opnd_get_size(operand));
         if (access_size == 0)
             access_size = instr_memory_reference_size(instr);
+        if (access_size == 0 && is_extended_state_access(opcode)) {
+            // XSAVEC 的真实紧凑长度还受 EDX:EAX 和 XCR0 影响。使用完整状态区
+            // 上界只会增加可能重叠，不能漏掉它实际触及的字节。
+            const size_t state_size = proc_fpstate_save_size();
+            if (state_size <= UINT32_MAX)
+                access_size = static_cast<uint32_t>(state_size);
+        }
         if (access_size == 0) {
             // 未知宽度不能被静默丢弃，否则通信边可能消失。
-            dropped_events.fetch_add(1, std::memory_order_relaxed);
+            note_drop(DropReason::UnknownWidth);
+            uintptr_t expected = 0;
+            if (first_unknown_width_pc.compare_exchange_strong(
+                    expected, reinterpret_cast<uintptr_t>(pc),
+                    std::memory_order_relaxed))
+                first_unknown_width_opcode.store(opcode, std::memory_order_relaxed);
             continue;
         }
+        const reg_id_t segment = opnd_get_segment(operand);
+        const uint32_t flags = instruction_flags |
+            ((segment == DR_SEG_FS || segment == DR_SEG_GS) ? EventFlags::Tls : 0);
         reg_id_t address_reg = DR_REG_NULL;
         reg_id_t scratch_reg = DR_REG_NULL;
         if (drreg_reserve_register(drcontext, bb, instr, nullptr, &address_reg) !=
                 DRREG_SUCCESS ||
             drreg_reserve_register(drcontext, bb, instr, nullptr, &scratch_reg) !=
                 DRREG_SUCCESS) {
-            dropped_events.fetch_add(1, std::memory_order_relaxed);
+            note_drop(DropReason::RegisterReservation);
             if (address_reg != DR_REG_NULL)
                 drreg_unreserve_register(drcontext, bb, instr, address_reg);
             continue;
         }
         if (!drutil_insert_get_mem_addr(drcontext, bb, instr, operand, address_reg,
                                         scratch_reg)) {
-            dropped_events.fetch_add(1, std::memory_order_relaxed);
+            note_drop(DropReason::AddressCalculation);
         } else {
             const EventKind kind = atomic ? EventKind::AtomicRmw
                                           : (source ? EventKind::Load : EventKind::Store);
@@ -246,13 +322,28 @@ void thread_init(void *drcontext) {
         header.minor = kVersionMinor;
         header.record_size = sizeof(TraceRecord);
         if (dr_write_file(state->file, &header, sizeof(header)) != sizeof(header))
-            dropped_events.fetch_add(1, std::memory_order_relaxed);
+            note_drop(DropReason::Write);
     }
     write_record(EventKind::ThreadStart, nullptr, 0, 0, 0, 0, 0, true);
+    dr_mcontext_t context{sizeof(context), DR_MC_CONTROL};
+    dr_mem_info_t stack{};
+    if (dr_get_mcontext(drcontext, &context) &&
+        dr_query_memory_ex(reinterpret_cast<const byte *>(context.xsp), &stack) &&
+        stack.size <= UINT32_MAX) {
+        state->stack_base = reinterpret_cast<uintptr_t>(stack.base_pc);
+        state->stack_size = static_cast<uint32_t>(stack.size);
+        write_record(EventKind::ThreadStack, nullptr, state->stack_base,
+                     state->stack_size, 0, 0, 0, true);
+    }
+    // thread_init 早于可读 app context 时保留匿名地址。它可能增加伪通信边，
+    // 但不会删除真实通信，因此不能冒充“丢失了访存事件”。
 }
 
 void thread_exit(void *drcontext) {
     ThreadState *state = state_for(drcontext);
+    if (state != nullptr && state->stack_base != 0)
+        write_record(EventKind::ThreadStackEnd, nullptr, state->stack_base,
+                     state->stack_size, 0, 0, 0, true);
     write_record(EventKind::ThreadEnd, nullptr, 0, 0, 0, 0, 0, true);
     if (state != nullptr) {
         flush_state(state);
@@ -266,9 +357,15 @@ void thread_exit(void *drcontext) {
 void allocation_post(void *wrapcxt, void *user_data) {
     const uintptr_t size = reinterpret_cast<uintptr_t>(user_data);
     const uintptr_t result = reinterpret_cast<uintptr_t>(drwrap_get_retval(wrapcxt));
-    if (result != 0)
-        write_record(EventKind::Alloc, nullptr, result, static_cast<uint32_t>(size),
-                     0, 0, 0, true);
+    if (result == 0)
+        return;
+    if (size > UINT32_MAX) {
+        // Trace IR 的 size 是 32 位。截断会把对象尾部误判为无归属地址。
+        note_drop(DropReason::Lifecycle);
+        return;
+    }
+    write_record(EventKind::Alloc, nullptr, result, static_cast<uint32_t>(size),
+                 0, 0, 0, true);
 }
 
 void malloc_pre(void *wrapcxt, void **user_data) {
@@ -282,24 +379,155 @@ void calloc_pre(void *wrapcxt, void **user_data) {
 }
 
 void free_pre(void *wrapcxt, void **) {
-    write_record(EventKind::Free, nullptr,
-                 reinterpret_cast<uintptr_t>(drwrap_get_arg(wrapcxt, 0)), 0,
+    const uintptr_t address = reinterpret_cast<uintptr_t>(drwrap_get_arg(wrapcxt, 0));
+    if (address != 0)
+        write_record(EventKind::Free, nullptr, address, 0, 0, 0, 0, true);
+}
+
+struct ReallocCall {
+    // old_address 在成功后关闭旧 generation；失败时旧对象仍然有效。
+    uintptr_t old_address;
+    // requested_size 决定新 generation 的范围，不能从返回地址反推。
+    uintptr_t requested_size;
+};
+
+void realloc_pre(void *wrapcxt, void **user_data) {
+    void *drcontext = drwrap_get_drcontext(wrapcxt);
+    auto *call = static_cast<ReallocCall *>(
+        dr_thread_alloc(drcontext, sizeof(ReallocCall)));
+    if (call == nullptr) {
+        note_drop(DropReason::Lifecycle);
+        return;
+    }
+    call->old_address = reinterpret_cast<uintptr_t>(drwrap_get_arg(wrapcxt, 0));
+    call->requested_size = reinterpret_cast<uintptr_t>(drwrap_get_arg(wrapcxt, 1));
+    *user_data = call;
+}
+
+void realloc_post(void *wrapcxt, void *user_data) {
+    auto *call = static_cast<ReallocCall *>(user_data);
+    if (call == nullptr)
+        return;
+    const uintptr_t result = reinterpret_cast<uintptr_t>(drwrap_get_retval(wrapcxt));
+    if (result != 0) {
+        if (call->requested_size > UINT32_MAX) {
+            note_drop(DropReason::Lifecycle);
+        } else {
+            // 即使地址没变，也开启新 generation。否则 realloc 前后的范围会混用。
+            if (call->old_address != 0)
+                write_record(EventKind::Free, nullptr, call->old_address, 0,
+                             0, 0, 0, true);
+            write_record(EventKind::Alloc, nullptr, result,
+                         static_cast<uint32_t>(call->requested_size),
+                         0, 0, 0, true);
+        }
+    }
+    dr_thread_free(drwrap_get_drcontext(wrapcxt), call, sizeof(ReallocCall));
+}
+
+void mmap_pre(void *wrapcxt, void **user_data) {
+    *user_data = drwrap_get_arg(wrapcxt, 1);
+}
+
+void mmap_post(void *wrapcxt, void *user_data) {
+    const uintptr_t address = reinterpret_cast<uintptr_t>(drwrap_get_retval(wrapcxt));
+    const uintptr_t size = reinterpret_cast<uintptr_t>(user_data);
+    if (address == UINTPTR_MAX)
+        return;
+    if (size > UINT32_MAX) {
+        note_drop(DropReason::Lifecycle);
+        return;
+    }
+    write_record(EventKind::Mmap, nullptr, address, static_cast<uint32_t>(size),
                  0, 0, 0, true);
+}
+
+struct MunmapCall {
+    // address 标识只有在 munmap 成功后才结束的 mapping generation。
+    uintptr_t address;
+    // size 记录部分 unmap 的真实范围，后续对象切分会依赖它。
+    uintptr_t size;
+};
+
+void munmap_pre(void *wrapcxt, void **user_data) {
+    void *drcontext = drwrap_get_drcontext(wrapcxt);
+    auto *call = static_cast<MunmapCall *>(
+        dr_thread_alloc(drcontext, sizeof(MunmapCall)));
+    if (call == nullptr) {
+        note_drop(DropReason::Lifecycle);
+        return;
+    }
+    call->address = reinterpret_cast<uintptr_t>(drwrap_get_arg(wrapcxt, 0));
+    call->size = reinterpret_cast<uintptr_t>(drwrap_get_arg(wrapcxt, 1));
+    *user_data = call;
+}
+
+void munmap_post(void *wrapcxt, void *user_data) {
+    auto *call = static_cast<MunmapCall *>(user_data);
+    if (call == nullptr)
+        return;
+    const intptr_t result = reinterpret_cast<intptr_t>(drwrap_get_retval(wrapcxt));
+    if (result == 0) {
+        if (call->size > UINT32_MAX) {
+            note_drop(DropReason::Lifecycle);
+        } else {
+            write_record(EventKind::Munmap, nullptr, call->address,
+                         static_cast<uint32_t>(call->size), 0, 0, 0, true);
+        }
+    }
+    dr_thread_free(drwrap_get_drcontext(wrapcxt), call, sizeof(MunmapCall));
 }
 
 void sync_acquire_pre(void *wrapcxt, void **user_data) {
     *user_data = drwrap_get_arg(wrapcxt, 0);
 }
 
-void sync_acquire_post(void *, void *user_data) {
+void sync_acquire_post(void *wrapcxt, void *user_data) {
+    // 锁操作失败时没有 acquire，记录它会把无序访问切到错误的 epoch。
+    if (reinterpret_cast<intptr_t>(drwrap_get_retval(wrapcxt)) != 0)
+        return;
     write_record(EventKind::SyncAcquire, nullptr,
                  reinterpret_cast<uintptr_t>(user_data), 0, 0, 0, 0, true);
 }
 
-void sync_release_pre(void *wrapcxt, void **) {
+void sync_release_pre(void *wrapcxt, void **user_data) {
+    *user_data = drwrap_get_arg(wrapcxt, 0);
+}
+
+void sync_release_post(void *wrapcxt, void *user_data) {
+    if (reinterpret_cast<intptr_t>(drwrap_get_retval(wrapcxt)) != 0)
+        return;
     write_record(EventKind::SyncRelease, nullptr,
-                 reinterpret_cast<uintptr_t>(drwrap_get_arg(wrapcxt, 0)), 0,
+                 reinterpret_cast<uintptr_t>(user_data), 0,
                  0, 0, 0, true);
+}
+
+void thread_create_pre(void *wrapcxt, void **user_data) {
+    *user_data = drwrap_get_arg(wrapcxt, 0);
+}
+
+void thread_create_post(void *wrapcxt, void *user_data) {
+    if (reinterpret_cast<intptr_t>(drwrap_get_retval(wrapcxt)) != 0)
+        return;
+    uintptr_t handle = 0;
+    size_t bytes_read = 0;
+    if (!dr_safe_read(user_data, sizeof(handle), &handle, &bytes_read) ||
+        bytes_read != sizeof(handle)) {
+        note_drop(DropReason::Lifecycle);
+        return;
+    }
+    write_record(EventKind::ThreadCreate, nullptr, handle, 0, 0, 0, 0, true);
+}
+
+void thread_join_pre(void *wrapcxt, void **user_data) {
+    *user_data = drwrap_get_arg(wrapcxt, 0);
+}
+
+void thread_join_post(void *wrapcxt, void *user_data) {
+    if (reinterpret_cast<intptr_t>(drwrap_get_retval(wrapcxt)) != 0)
+        return;
+    write_record(EventKind::ThreadJoin, nullptr,
+                 reinterpret_cast<uintptr_t>(user_data), 0, 0, 0, 0, true);
 }
 
 void wrap_if_present(const module_data_t *module, const char *name,
@@ -319,23 +547,29 @@ void module_load(void *, const module_data_t *module, bool) {
             line, sizeof(line), "%p\t%p\t%s\n", module->start, module->end,
             module->full_path);
         if (length <= 0 || length >= static_cast<int>(sizeof(line))) {
-            dropped_events.fetch_add(1, std::memory_order_relaxed);
+            note_drop(DropReason::ModuleMetadata);
         } else {
             dr_mutex_lock(module_lock);
             const ssize_t written = dr_write_file(module_file, line, length);
             dr_mutex_unlock(module_lock);
             if (written != length)
-                dropped_events.fetch_add(1, std::memory_order_relaxed);
+                note_drop(DropReason::ModuleMetadata);
         }
     }
     wrap_if_present(module, "malloc", malloc_pre, allocation_post);
     wrap_if_present(module, "calloc", calloc_pre, allocation_post);
     wrap_if_present(module, "free", free_pre, nullptr);
+    wrap_if_present(module, "realloc", realloc_pre, realloc_post);
+    wrap_if_present(module, "mmap", mmap_pre, mmap_post);
+    wrap_if_present(module, "mmap64", mmap_pre, mmap_post);
+    wrap_if_present(module, "munmap", munmap_pre, munmap_post);
+    wrap_if_present(module, "pthread_create", thread_create_pre, thread_create_post);
+    wrap_if_present(module, "pthread_join", thread_join_pre, thread_join_post);
     wrap_if_present(module, "pthread_mutex_lock", sync_acquire_pre, sync_acquire_post);
     wrap_if_present(module, "pthread_rwlock_rdlock", sync_acquire_pre, sync_acquire_post);
     wrap_if_present(module, "pthread_rwlock_wrlock", sync_acquire_pre, sync_acquire_post);
-    wrap_if_present(module, "pthread_mutex_unlock", sync_release_pre, nullptr);
-    wrap_if_present(module, "pthread_rwlock_unlock", sync_release_pre, nullptr);
+    wrap_if_present(module, "pthread_mutex_unlock", sync_release_pre, sync_release_post);
+    wrap_if_present(module, "pthread_rwlock_unlock", sync_release_pre, sync_release_post);
 }
 
 void module_unload(void *, const module_data_t *module) {
@@ -358,8 +592,36 @@ dr_signal_action_t signal_event(void *, dr_siginfo_t *info) {
 
 void process_exit() {
     char path[MAXIMUM_PATH];
-    dr_snprintf(path, sizeof(path), "%s/.dropped", trace_dir);
+    dr_snprintf(path, sizeof(path), "%s/.drop-reasons", trace_dir);
     file_t file = dr_open_file(path, DR_FILE_WRITE_OVERWRITE);
+    if (file != INVALID_FILE) {
+        for (size_t index = 0; index < static_cast<size_t>(DropReason::Count); ++index) {
+            const uint64_t count = dropped_by_reason[index].load(std::memory_order_relaxed);
+            if (count == 0)
+                continue;
+            char line[128];
+            const int length = dr_snprintf(
+                line, sizeof(line), "%s\t%llu\n", kDropReasonNames[index],
+                static_cast<unsigned long long>(count));
+            if (length <= 0 || dr_write_file(file, line, length) != length)
+                note_drop(DropReason::Write);
+        }
+        const uintptr_t unknown_pc = first_unknown_width_pc.load(std::memory_order_relaxed);
+        if (unknown_pc != 0) {
+            char line[160];
+            const int length = dr_snprintf(
+                line, sizeof(line), "unknown_width_opcode_%d_pc_%p\t1\n",
+                first_unknown_width_opcode.load(std::memory_order_relaxed),
+                reinterpret_cast<void *>(unknown_pc));
+            if (length <= 0 || dr_write_file(file, line, length) != length)
+                note_drop(DropReason::Write);
+        }
+        dr_close_file(file);
+    } else {
+        note_drop(DropReason::Write);
+    }
+    dr_snprintf(path, sizeof(path), "%s/.dropped", trace_dir);
+    file = dr_open_file(path, DR_FILE_WRITE_OVERWRITE);
     if (file != INVALID_FILE) {
         char count[64];
         const int length = dr_snprintf(count, sizeof(count), "%llu\n",
