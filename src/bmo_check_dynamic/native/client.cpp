@@ -380,6 +380,12 @@ void malloc_pre(void *wrapcxt, void **user_data) {
 void calloc_pre(void *wrapcxt, void **user_data) {
     const uintptr_t count = reinterpret_cast<uintptr_t>(drwrap_get_arg(wrapcxt, 0));
     const uintptr_t size = reinterpret_cast<uintptr_t>(drwrap_get_arg(wrapcxt, 1));
+    if (count != 0 && size > UINTPTR_MAX / count) {
+        // 乘法回绕会把巨大 allocation 伪装成小对象，随后漏掉对象尾部的通信。
+        note_drop(DropReason::Lifecycle);
+        *user_data = reinterpret_cast<void *>(UINTPTR_MAX);
+        return;
+    }
     *user_data = reinterpret_cast<void *>(count * size);
 }
 
@@ -616,9 +622,15 @@ void wrap_if_present(const module_data_t *module, const char *name,
 }
 
 void module_load(void *, const module_data_t *module, bool) {
-    write_record(EventKind::ModuleLoad, nullptr,
-                 reinterpret_cast<uintptr_t>(module->start),
-                 static_cast<uint32_t>(module->end - module->start), 0, 0, 0, true);
+    const uintptr_t module_size = module->end - module->start;
+    if (module_size > UINT32_MAX) {
+        // Trace IR 不能表示这个 module 的完整范围。截断会把尾部 PC 错绑到别的对象。
+        note_drop(DropReason::ModuleMetadata);
+    } else {
+        write_record(EventKind::ModuleLoad, nullptr,
+                     reinterpret_cast<uintptr_t>(module->start),
+                     static_cast<uint32_t>(module_size), 0, 0, 0, true);
+    }
     if (module_file != INVALID_FILE && module->full_path != nullptr) {
         char line[MAXIMUM_PATH + 96];
         const int length = dr_snprintf(
@@ -660,9 +672,14 @@ void module_load(void *, const module_data_t *module, bool) {
 }
 
 void module_unload(void *, const module_data_t *module) {
+    const uintptr_t module_size = module->end - module->start;
+    if (module_size > UINT32_MAX) {
+        note_drop(DropReason::ModuleMetadata);
+        return;
+    }
     write_record(EventKind::ModuleUnload, nullptr,
                  reinterpret_cast<uintptr_t>(module->start),
-                 static_cast<uint32_t>(module->end - module->start), 0, 0, 0, true);
+                 static_cast<uint32_t>(module_size), 0, 0, 0, true);
 }
 
 bool pre_syscall(void *drcontext, int number) {
@@ -690,6 +707,11 @@ dr_signal_action_t signal_event(void *, dr_siginfo_t *info) {
 }
 
 void process_exit() {
+    bool metadata_complete = true;
+    if (module_file != INVALID_FILE) {
+        dr_close_file(module_file);
+        module_file = INVALID_FILE;
+    }
     char path[MAXIMUM_PATH];
     dr_snprintf(path, sizeof(path), "%s/.drop-reasons", trace_dir);
     file_t file = dr_open_file(path, DR_FILE_WRITE_OVERWRITE);
@@ -702,8 +724,10 @@ void process_exit() {
             const int length = dr_snprintf(
                 line, sizeof(line), "%s\t%llu\n", kDropReasonNames[index],
                 static_cast<unsigned long long>(count));
-            if (length <= 0 || dr_write_file(file, line, length) != length)
+            if (length <= 0 || dr_write_file(file, line, length) != length) {
                 note_drop(DropReason::Write);
+                metadata_complete = false;
+            }
         }
         const uintptr_t unknown_pc = first_unknown_width_pc.load(std::memory_order_relaxed);
         if (unknown_pc != 0) {
@@ -712,12 +736,15 @@ void process_exit() {
                 line, sizeof(line), "unknown_width_opcode_%d_pc_%p\t1\n",
                 first_unknown_width_opcode.load(std::memory_order_relaxed),
                 reinterpret_cast<void *>(unknown_pc));
-            if (length <= 0 || dr_write_file(file, line, length) != length)
+            if (length <= 0 || dr_write_file(file, line, length) != length) {
                 note_drop(DropReason::Write);
+                metadata_complete = false;
+            }
         }
         dr_close_file(file);
     } else {
         note_drop(DropReason::Write);
+        metadata_complete = false;
     }
     dr_snprintf(path, sizeof(path), "%s/.dropped", trace_dir);
     file = dr_open_file(path, DR_FILE_WRITE_OVERWRITE);
@@ -725,15 +752,19 @@ void process_exit() {
         char count[64];
         const int length = dr_snprintf(count, sizeof(count), "%llu\n",
             static_cast<unsigned long long>(dropped_events.load(std::memory_order_relaxed)));
-        dr_write_file(file, count, length);
+        if (length <= 0 || dr_write_file(file, count, length) != length)
+            metadata_complete = false;
         dr_close_file(file);
+    } else {
+        metadata_complete = false;
     }
-    dr_snprintf(path, sizeof(path), "%s/.complete", trace_dir);
-    file = dr_open_file(path, DR_FILE_WRITE_OVERWRITE);
-    if (file != INVALID_FILE)
-        dr_close_file(file);
-    if (module_file != INVALID_FILE)
-        dr_close_file(module_file);
+    // .complete 是最后的提交点。它出现时，launcher 依赖的计数和 module 清单都已落盘。
+    if (metadata_complete) {
+        dr_snprintf(path, sizeof(path), "%s/.complete", trace_dir);
+        file = dr_open_file(path, DR_FILE_WRITE_OVERWRITE);
+        if (file != INVALID_FILE)
+            dr_close_file(file);
+    }
     if (module_lock != nullptr)
         dr_mutex_destroy(module_lock);
     drmgr_unregister_bb_insertion_event(instrument_instruction);
@@ -761,19 +792,25 @@ DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[]) {
     dr_snprintf(module_path, sizeof(module_path), "%s/modules.tsv", trace_dir);
     module_file = dr_open_file(
         module_path, DR_FILE_WRITE_OVERWRITE | DR_FILE_ALLOW_LARGE);
+    if (module_file == INVALID_FILE)
+        note_drop(DropReason::ModuleMetadata);
     module_lock = dr_mutex_create();
-    drmgr_init();
-    drutil_init();
-    drwrap_init();
+    if (module_lock == nullptr || !drmgr_init() || !drutil_init() || !drwrap_init())
+        dr_abort();
     drreg_options_t options{sizeof(options), 3, false};
-    drreg_init(&options);
+    if (drreg_init(&options) != DRREG_SUCCESS)
+        dr_abort();
     tls_index = drmgr_register_tls_field();
+    if (tls_index < 0)
+        dr_abort();
     dr_register_exit_event(process_exit);
-    drmgr_register_thread_init_event(thread_init);
-    drmgr_register_thread_exit_event(thread_exit);
-    drmgr_register_module_load_event(module_load);
-    drmgr_register_module_unload_event(module_unload);
-    drmgr_register_pre_syscall_event(pre_syscall);
-    drmgr_register_signal_event(signal_event);
-    drmgr_register_bb_instrumentation_event(nullptr, instrument_instruction, nullptr);
+    if (!drmgr_register_thread_init_event(thread_init) ||
+        !drmgr_register_thread_exit_event(thread_exit) ||
+        !drmgr_register_module_load_event(module_load) ||
+        !drmgr_register_module_unload_event(module_unload) ||
+        !drmgr_register_pre_syscall_event(pre_syscall) ||
+        !drmgr_register_signal_event(signal_event) ||
+        !drmgr_register_bb_instrumentation_event(
+            nullptr, instrument_instruction, nullptr))
+        dr_abort();
 }
