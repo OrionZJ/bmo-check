@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+from bisect import bisect_left
 from collections import defaultdict
 from collections.abc import Iterator
 from dataclasses import dataclass
 
-from bmo_check_dynamic.model import TraceEvent
+from bmo_check_dynamic.model import EventKind, TraceEvent
 from bmo_check_dynamic.storage import TraceStore
 
 from .communication import CommunicationEdge
@@ -71,7 +72,16 @@ def build_windows(
             bounds[1] = max(bounds[1], event.sequence)
         selected = {event.event_id: event for event in endpoints}
         for thread_id, (first, last) in sorted(ranges.items()):
-            for event in store.boundaries_between(thread_id, first, last):
+            thread_endpoints = sorted(
+                (
+                    event
+                    for event in endpoints
+                    if event.thread_id == thread_id
+                ),
+                key=lambda event: event.sequence,
+            )
+            boundaries = store.boundaries_between(thread_id, first, last)
+            for event in _minimal_boundaries(thread_endpoints, boundaries):
                 selected[event.event_id] = event
         # 没有通信边的普通访存不可能成为关系环节点。Fence/atomic 必须保留，
         # 因为它们会让两个端点在 source 和 target 中同时恢复顺序。
@@ -88,6 +98,38 @@ def build_windows(
             AnalysisWindow(window_id, events, tuple(component_edges))
         )
     return tuple(windows), tuple(unknowns)
+
+
+def _minimal_boundaries(
+    endpoints: list[TraceEvent], boundaries: tuple[TraceEvent, ...]
+) -> tuple[TraceEvent, ...]:
+    sequences = [event.sequence for event in endpoints]
+    endpoint_ids = {event.event_id for event in endpoints}
+    selected: dict[tuple[int, str], TraceEvent] = {}
+    for boundary in boundaries:
+        if boundary.event_id in endpoint_ids:
+            continue
+        cut = bisect_left(sequences, boundary.sequence)
+        if cut == 0 or cut == len(endpoints):
+            continue
+        category = _boundary_category(boundary.kind)
+        key = (cut, category)
+        selected.setdefault(key, boundary)
+    full_cuts = {cut for cut, category in selected if category == "full"}
+    return tuple(
+        event
+        for (cut, category), event in selected.items()
+        if category == "full" or cut not in full_cuts
+    )
+
+
+def _boundary_category(kind: EventKind) -> str:
+    # Atomic 和 MFENCE 对保留端点都建立完整顺序，因此同一切点可共用一个代表。
+    if kind in {EventKind.ATOMIC_RMW, EventKind.MFENCE}:
+        return "full"
+    if kind == EventKind.LFENCE:
+        return "read"
+    return "write"
 
 
 def _biconnected_components(graph: dict[str, set[str]]) -> tuple[frozenset[str], ...]:

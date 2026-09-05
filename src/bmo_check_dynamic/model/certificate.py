@@ -77,6 +77,7 @@ class DynamicCertificate(StrictModel):
     thread_count: int
     object_count: int
     unique_pc_count: int
+    # communication_edge_count 记录精确地址相交得到的原始候选数量。
     communication_edge_count: int
     indirect_target_count: int
     # 分区证据帮助解释应用访问；整体验证仍由所有 windows 决定。
@@ -93,6 +94,8 @@ class DynamicCertificate(StrictModel):
             if any(window.status != "safe" for window in self.windows):
                 raise ValueError("TRACE_SAFE requires every window to be safe")
         if self.verdict == TraceVerdict.COUNTEREXAMPLE:
+            if not self.trace_complete or self.unknown_reasons:
+                raise ValueError("COUNTEREXAMPLE requires complete evidence without Unknowns")
             if not any(
                 window.witness is not None and window.witness.validated
                 for window in self.windows

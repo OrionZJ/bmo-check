@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from bmo_check_dynamic.model import EventKind, TraceEvent
+from bmo_check_dynamic.model import EventFlags, EventKind, TraceEvent
 from bmo_check_dynamic.trace import TraceFormatError, TraceReader, TraceWriter, validate_trace
 
 
@@ -74,3 +74,42 @@ def test_nonzero_program_exit_is_unknown(trace_manifest, tmp_path: Path) -> None
     validation = validate_trace(trace_dir)
     assert not validation.valid
     assert "status 7" in " ".join(validation.reasons)
+
+
+@pytest.mark.parametrize("sequences", [(2,), (1, 3), (1, 1), (1, 2, 1)])
+def test_missing_or_repeated_sequences_fail_validation(
+    trace_manifest, tmp_path: Path, sequences
+) -> None:
+    trace_dir = tmp_path / "trace"
+    trace_manifest(trace_dir)
+    with TraceWriter(trace_dir / "events-1.bin") as writer:
+        for sequence in sequences:
+            writer.write(TraceEvent(1, sequence, 0, 0x10, EventKind.LOAD, 0x1000, 4))
+    validation = validate_trace(trace_dir)
+    assert not validation.valid
+    assert any("sequence gap or duplicate" in reason for reason in validation.reasons)
+
+
+def test_duplicate_thread_records_in_another_file_fail_validation(
+    trace_manifest, tmp_path: Path
+) -> None:
+    trace_dir = tmp_path / "trace"
+    trace_manifest(trace_dir)
+    for suffix in ("1", "2"):
+        with TraceWriter(trace_dir / f"events-{suffix}.bin") as writer:
+            writer.write(TraceEvent(1, 1, 0, 0x10, EventKind.LOAD, 0x1000, 4))
+    assert not validate_trace(trace_dir).valid
+
+
+@pytest.mark.parametrize("address,size,flags", [
+    (0x1000, 4, EventFlags(1 << 15)),
+    ((1 << 64) - 2, 4, EventFlags.NONE),
+])
+def test_unsupported_record_fields_fail_validation(
+    trace_manifest, tmp_path: Path, address, size, flags
+) -> None:
+    trace_dir = tmp_path / "trace"
+    trace_manifest(trace_dir)
+    with TraceWriter(trace_dir / "events-1.bin") as writer:
+        writer.write(TraceEvent(1, 1, 0, 0x10, EventKind.LOAD, address, size, flags=flags))
+    assert not validate_trace(trace_dir).valid

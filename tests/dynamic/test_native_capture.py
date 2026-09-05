@@ -12,6 +12,7 @@ from bmo_check_dynamic.capture import capture_program
 from bmo_check_dynamic.capture.launcher import dynamorio_version
 from bmo_check_dynamic.model import EventFlags, EventKind
 from bmo_check_dynamic.trace import TraceReader
+from bmo_check_dynamic.trace import validate_trace
 from bmo_check_dynamic.trace.format import event_files
 
 
@@ -136,3 +137,60 @@ def test_openmp_runtime_threads_are_captured(tmp_path: Path) -> None:
     assert manifest.complete
     assert manifest.dropped_events == 0, manifest.dropped_by_reason
     assert len(thread_ids) >= 2
+
+
+@pytest.mark.skipif(
+    _native_environment() is None,
+    reason="DYNAMORIO_HOME, cc, and the built native client are required",
+)
+def test_shared_mapping_forces_unknown(tmp_path: Path) -> None:
+    environment = _native_environment()
+    assert environment is not None
+    home, client, compiler = environment
+    source = Path(__file__).parent / "native" / "unsupported_shared.c"
+    executable = tmp_path / "unsupported-shared"
+    subprocess.run(
+        [compiler, "-O0", str(source), "-o", str(executable)],
+        check=True,
+    )
+
+    trace_dir = tmp_path / "trace"
+    manifest = capture_program(
+        (str(executable),),
+        trace_dir,
+        dynamorio_home=home,
+        client_path=client,
+    )
+
+    assert manifest.complete
+    assert manifest.dropped_by_reason.get("unsupported") == 1
+    validation = validate_trace(trace_dir)
+    assert not validation.valid
+    assert "unsupported" in " ".join(validation.reasons)
+
+
+@pytest.mark.skipif(_native_environment() is None, reason="native capture environment required")
+def test_sync_calls_preserve_failure_and_barrier_success(tmp_path: Path) -> None:
+    environment = _native_environment()
+    assert environment is not None
+    home, client, compiler = environment
+    executable = tmp_path / "sync-calls"
+    subprocess.run([compiler, "-O0", "-pthread",
+                    str(Path(__file__).parent / "native" / "sync_calls.c"),
+                    "-o", str(executable)], check=True)
+    trace_dir = tmp_path / "trace"
+    manifest = capture_program((str(executable),), trace_dir,
+                               dynamorio_home=home, client_path=client)
+    assert manifest.exit_code == 0
+    assert manifest.dropped_events == 0
+    assert validate_trace(trace_dir).valid
+    calls = [event for path in event_files(trace_dir) for event in TraceReader(path)
+             if event.kind == EventKind.SYNC_CALL]
+    returns = {event.aux >> 1: event.value for event in calls if event.aux & 1}
+    import errno
+    assert returns[2] == errno.ETIMEDOUT
+    assert returns[5] == (1 << 64) - 1
+    assert returns[7] == (1 << 64) - 1
+    assert returns[8] == (1 << 64) - 1
+    assert all(returns[api] == 0 for api in (3, 4, 6, 9))
+    assert next(event.value for event in calls if event.aux == 4) != 0

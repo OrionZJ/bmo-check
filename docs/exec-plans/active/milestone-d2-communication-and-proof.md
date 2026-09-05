@@ -23,3 +23,13 @@
 ## Acceptance criteria
 
 只有完整 trace 的全部窗口安全才能 `TRACE_SAFE`；已知 target-only litmus 有复核 witness；不支持编码稳定返回 `UNKNOWN`。
+
+## 当前验收证据与剩余项
+
+`tests/dynamic/test_litmus_matrix.py` 对 MP、SB、LB、IRIW 及相应 Fence 版本分别运行
+枚举和 Z3，另覆盖四类普通访存程序序。无值/控制证明的 target-only 候选必须
+保持 UNKNOWN。`test_atomic_relations.py` 覆盖 RMW 紧邻前驱、自环和初始读漏边。
+
+这仍不足以验收 D2：原生采集尚未闭合值与控制路径证明；生命周期剪枝已经撤回，
+真实程序需要重新验收；source/target 模型还需独立参考验证，包括同线程转发、
+混合宽度和依赖。不能用两条共享建模规则的实现互相通过代替架构证明。

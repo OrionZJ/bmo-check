@@ -20,6 +20,8 @@ class EventKind(IntEnum):
     SYNC_FULL = 14
     THREAD_CREATE = 15
     THREAD_JOIN = 16
+    # aux 编码 API/进入返回，value 保存 mutex 或返回码；此事件不提供内存序。
+    SYNC_CALL = 17
     ALLOC = 20
     FREE = 21
     MMAP = 22

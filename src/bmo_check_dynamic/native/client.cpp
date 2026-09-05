@@ -7,6 +7,7 @@
 #include <atomic>
 #include <cstdint>
 #include <cstring>
+#include <unordered_set>
 
 namespace {
 
@@ -28,6 +29,8 @@ enum class EventKind : uint16_t {
     SyncFull = 14,
     ThreadCreate = 15,
     ThreadJoin = 16,
+    // API 进入/返回只用于配对和诊断；不能给目标机凭空增加 Fence。
+    SyncCall = 17,
     Alloc = 20,
     Free = 21,
     Mmap = 22,
@@ -57,12 +60,14 @@ enum class DropReason : size_t {
     AddressCalculation,
     Lifecycle,
     ModuleMetadata,
+    // 首版不建模跨进程共享和动态生成代码；遇到它们必须让证书转 UNKNOWN。
+    Unsupported,
     Count,
 };
 
 constexpr const char *kDropReasonNames[] = {
     "write", "missing_thread_state", "unknown_width", "register_reservation",
-    "address_calculation", "lifecycle", "module_metadata",
+    "address_calculation", "lifecycle", "module_metadata", "unsupported",
 };
 
 #pragma pack(push, 1)
@@ -425,21 +430,51 @@ void realloc_post(void *wrapcxt, void *user_data) {
     dr_thread_free(drwrap_get_drcontext(wrapcxt), call, sizeof(ReallocCall));
 }
 
-void mmap_pre(void *wrapcxt, void **user_data) {
-    *user_data = drwrap_get_arg(wrapcxt, 1);
-}
+struct MmapCall {
+    // size 用于成功后建立 mapping generation。
+    uintptr_t size;
+    // protection 暴露匿名可执行映射，首版不能跟踪其后生成的代码。
+    uintptr_t protection;
+    // flags 区分进程私有与跨进程共享映射。
+    uintptr_t flags;
+};
 
-void mmap_post(void *wrapcxt, void *user_data) {
-    const uintptr_t address = reinterpret_cast<uintptr_t>(drwrap_get_retval(wrapcxt));
-    const uintptr_t size = reinterpret_cast<uintptr_t>(user_data);
-    if (address == UINTPTR_MAX)
-        return;
-    if (size > UINT32_MAX) {
+void mmap_pre(void *wrapcxt, void **user_data) {
+    void *drcontext = drwrap_get_drcontext(wrapcxt);
+    auto *call = static_cast<MmapCall *>(dr_thread_alloc(drcontext, sizeof(MmapCall)));
+    if (call == nullptr) {
         note_drop(DropReason::Lifecycle);
         return;
     }
-    write_record(EventKind::Mmap, nullptr, address, static_cast<uint32_t>(size),
-                 0, 0, 0, true);
+    call->size = reinterpret_cast<uintptr_t>(drwrap_get_arg(wrapcxt, 1));
+    call->protection = reinterpret_cast<uintptr_t>(drwrap_get_arg(wrapcxt, 2));
+    call->flags = reinterpret_cast<uintptr_t>(drwrap_get_arg(wrapcxt, 3));
+    *user_data = call;
+}
+
+void mmap_post(void *wrapcxt, void *user_data) {
+    auto *call = static_cast<MmapCall *>(user_data);
+    if (call == nullptr)
+        return;
+    const uintptr_t address = reinterpret_cast<uintptr_t>(drwrap_get_retval(wrapcxt));
+    if (address == UINTPTR_MAX) {
+        dr_thread_free(drwrap_get_drcontext(wrapcxt), call, sizeof(MmapCall));
+        return;
+    }
+    constexpr uintptr_t kMapShared = 0x01;
+    constexpr uintptr_t kMapAnonymous = 0x20;
+    constexpr uintptr_t kProtExec = 0x04;
+    if ((call->flags & kMapShared) != 0 ||
+        ((call->flags & kMapAnonymous) != 0 &&
+         (call->protection & kProtExec) != 0))
+        note_drop(DropReason::Unsupported);
+    if (call->size > UINT32_MAX) {
+        note_drop(DropReason::Lifecycle);
+    } else {
+        write_record(EventKind::Mmap, nullptr, address,
+                     static_cast<uint32_t>(call->size), 0, 0, 0, true);
+    }
+    dr_thread_free(drwrap_get_drcontext(wrapcxt), call, sizeof(MmapCall));
 }
 
 struct MunmapCall {
@@ -506,6 +541,33 @@ void thread_create_pre(void *wrapcxt, void **user_data) {
     *user_data = drwrap_get_arg(wrapcxt, 0);
 }
 
+template <uint32_t Api>
+void sync_call_pre(void *wrapcxt, void **user_data) {
+    *user_data = drwrap_get_arg(wrapcxt, 0);
+    const uintptr_t mutex = (Api == 1 || Api == 2)
+        ? reinterpret_cast<uintptr_t>(drwrap_get_arg(wrapcxt, 1)) : 0;
+    // cond wait 同时涉及 cond 和 mutex；丢掉 mutex 会让后续配对连接错对象。
+    write_record(EventKind::SyncCall, nullptr,
+                 reinterpret_cast<uintptr_t>(*user_data), 0, 0, mutex,
+                 Api << 1, true);
+}
+
+template <uint32_t Api>
+void sync_call_post(void *wrapcxt, void *user_data) {
+    if (wrapcxt == nullptr) {
+        note_drop(DropReason::Lifecycle);
+        return;
+    }
+    // 保留原始返回值：barrier 的 -1 可能是成功，sem 的 -1 却是失败。
+    // 分析器必须按 API 解释，不能统一把非零当成获得同步。
+    const int32_t result = static_cast<int32_t>(
+        reinterpret_cast<intptr_t>(drwrap_get_retval(wrapcxt)));
+    write_record(EventKind::SyncCall, nullptr,
+                 reinterpret_cast<uintptr_t>(user_data), 0, 0,
+                 static_cast<uint64_t>(static_cast<int64_t>(result)),
+                 (Api << 1) | 1, true);
+}
+
 void thread_create_post(void *wrapcxt, void *user_data) {
     if (reinterpret_cast<intptr_t>(drwrap_get_retval(wrapcxt)) != 0)
         return;
@@ -532,9 +594,25 @@ void thread_join_post(void *wrapcxt, void *user_data) {
 
 void wrap_if_present(const module_data_t *module, const char *name,
                      void (*pre)(void *, void **), void (*post)(void *, void *)) {
-    app_pc function = reinterpret_cast<app_pc>(dr_get_proc_address(module->handle, name));
-    if (function != nullptr)
-        drwrap_wrap(function, pre, post);
+    // libc 的同名版本符号可能有不同地址；单次按名查询会漏掉实际绑定的版本。
+    std::unordered_set<app_pc> addresses;
+    auto *iterator = dr_symbol_export_iterator_start(module->handle);
+    if (iterator == nullptr) {
+        note_drop(DropReason::ModuleMetadata);
+        return;
+    }
+    while (dr_symbol_export_iterator_hasnext(iterator)) {
+        auto *symbol = dr_symbol_export_iterator_next(iterator);
+        if (symbol->name == nullptr || std::strcmp(symbol->name, name) != 0)
+            continue;
+        if (symbol->is_indirect_code) {
+            note_drop(DropReason::Unsupported);
+            continue;
+        }
+        if (symbol->is_code && addresses.insert(symbol->addr).second)
+            drwrap_wrap(symbol->addr, pre, post);
+    }
+    dr_symbol_export_iterator_stop(iterator);
 }
 
 void module_load(void *, const module_data_t *module, bool) {
@@ -570,6 +648,15 @@ void module_load(void *, const module_data_t *module, bool) {
     wrap_if_present(module, "pthread_rwlock_wrlock", sync_acquire_pre, sync_acquire_post);
     wrap_if_present(module, "pthread_mutex_unlock", sync_release_pre, sync_release_post);
     wrap_if_present(module, "pthread_rwlock_unlock", sync_release_pre, sync_release_post);
+    wrap_if_present(module, "pthread_cond_wait", sync_call_pre<1>, sync_call_post<1>);
+    wrap_if_present(module, "pthread_cond_timedwait", sync_call_pre<2>, sync_call_post<2>);
+    wrap_if_present(module, "pthread_cond_signal", sync_call_pre<3>, sync_call_post<3>);
+    wrap_if_present(module, "pthread_cond_broadcast", sync_call_pre<4>, sync_call_post<4>);
+    wrap_if_present(module, "pthread_barrier_wait", sync_call_pre<5>, sync_call_post<5>);
+    wrap_if_present(module, "sem_wait", sync_call_pre<6>, sync_call_post<6>);
+    wrap_if_present(module, "sem_trywait", sync_call_pre<7>, sync_call_post<7>);
+    wrap_if_present(module, "sem_timedwait", sync_call_pre<8>, sync_call_post<8>);
+    wrap_if_present(module, "sem_post", sync_call_pre<9>, sync_call_post<9>);
 }
 
 void module_unload(void *, const module_data_t *module) {
@@ -578,7 +665,19 @@ void module_unload(void *, const module_data_t *module) {
                  static_cast<uint32_t>(module->end - module->start), 0, 0, 0, true);
 }
 
-bool pre_syscall(void *, int number) {
+bool pre_syscall(void *drcontext, int number) {
+    constexpr int kClone = 56;
+    constexpr int kFork = 57;
+    constexpr int kVfork = 58;
+    constexpr int kExecve = 59;
+    constexpr int kExecveat = 322;
+    constexpr uintptr_t kCloneVm = 0x100;
+    // clone 没有 CLONE_VM 时会产生独立地址空间，和 fork 一样超出单进程证书范围。
+    if (number == kFork || number == kVfork || number == kExecve ||
+        number == kExecveat ||
+        (number == kClone &&
+         (static_cast<uintptr_t>(dr_syscall_get_param(drcontext, 0)) & kCloneVm) == 0))
+        note_drop(DropReason::Unsupported);
     write_record(EventKind::Syscall, nullptr, 0, 0, 0, 0,
                  static_cast<uint32_t>(number), true);
     return true;

@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from bmo_check_dynamic.model import TraceManifest
+from bmo_check_dynamic.model import EventFlags, TraceManifest
 
 from .format import TraceFormatError, TraceReader, event_files
 
@@ -49,22 +49,35 @@ def validate_trace(trace_dir: Path) -> TraceValidation:
     files = event_files(trace_dir)
     if not files:
         add_reason("trace contains no event files")
-    try:
-        for path in files:
-            previous: dict[int, int] = {}
+    # 每个线程只保留最后序号；跨文件重复不能逃过检查，也无需缓存所有 event_id。
+    previous: dict[int, int] = {}
+    known_flags = sum(int(flag) for flag in EventFlags)
+    for path in files:
+        file_event_count = 0
+        try:
             for event in TraceReader(path):
                 event_count += 1
+                file_event_count += 1
                 thread_ids.add(event.thread_id)
                 old = previous.get(event.thread_id)
-                if old is not None and event.sequence <= old:
+                expected = 1 if old is None else old + 1
+                if event.sequence != expected:
                     add_reason(
-                        f"non-monotonic sequence for thread {event.thread_id} in {path.name}"
+                        f"sequence gap or duplicate for thread {event.thread_id} "
+                        f"in {path.name}: expected {expected}, got {event.sequence}"
                     )
                 previous[event.thread_id] = event.sequence
+                if int(event.flags) & ~known_flags:
+                    add_reason(f"unsupported flags for {event.event_id}: {int(event.flags)}")
                 if event.kind.is_memory and event.size <= 0:
                     add_reason(f"zero-width memory event {event.event_id}")
-    except (OSError, TraceFormatError) as error:
-        add_reason(str(error))
+                if event.kind.is_memory and event.end_address > 1 << 64:
+                    add_reason(f"memory range overflows address space: {event.event_id}")
+            if not file_event_count:
+                add_reason(f"empty event file: {path.name}")
+        except (OSError, TraceFormatError) as error:
+            # 一个坏文件不应掩盖其他线程也损坏的事实。
+            add_reason(str(error))
     if omitted_reasons:
         reasons.append(f"trace validation omitted {omitted_reasons} additional errors")
     return TraceValidation(not reasons, event_count, tuple(sorted(thread_ids)), tuple(reasons))

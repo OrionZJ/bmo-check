@@ -8,7 +8,7 @@ from pathlib import Path
 class DynamicConfig:
     """动态分析的资源边界；越界必须返回 UNKNOWN，不能丢事件后继续证明。"""
 
-    max_window_events: int = 18
+    max_window_events: int = 64
     max_executions: int = 20_000
     max_communication_edges: int = 100_000
     max_pages_per_access: int = 16

@@ -15,8 +15,12 @@ class CommunicationEdge:
     size: int
 
 
+class CommunicationLimitError(RuntimeError):
+    """扫描活动集合超限，调用者必须报告 UNKNOWN。"""
+
+
 def find_communication_edges(
-    store: TraceStore, *, limit: int | None = None
+    store: TraceStore, *, limit: int | None = None, max_active_events: int = 100_000
 ) -> Iterator[CommunicationEdge]:
     """只保留真实地址重叠且至少一端写入的跨线程访问。"""
 
@@ -61,7 +65,14 @@ def find_communication_edges(
                     continue
                 if int(kind) not in (2, 3) and other_kind not in (2, 3):
                     continue
-                if object_id is not None and other_object is not None and object_id != other_object:
+                if (
+                    object_id is not None and other_object is not None
+                    and object_id != other_object
+                    and not str(object_id).startswith("tls:")
+                    and not str(other_object).startswith("tls:")
+                    and str(object_id).rsplit(":g", 1)[0]
+                    == str(other_object).rsplit(":g", 1)[0]
+                ):
                     continue
                 overlap_start = max(start, other_start)
                 overlap_end = min(end, other_end)
@@ -72,6 +83,11 @@ def find_communication_edges(
                 emitted += 1
                 if limit is not None and emitted >= limit:
                     return
+            # 同址只读事件也会累积；输出边上限无法限制这个集合。
+            if len(active) >= max_active_events:
+                raise CommunicationLimitError(
+                    f"communication active set exceeds {max_active_events} events"
+                )
             active.append(
                 (event_id, start, end, int(thread), int(kind), None if object_id is None else str(object_id))
             )

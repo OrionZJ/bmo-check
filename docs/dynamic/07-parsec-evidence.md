@@ -1,5 +1,12 @@
 # PARSEC 动态证据
 
+2026-09-05 复审：实验文件 `certificate-lifecycle.json` 中 blackscholes 和
+swaptions 的 TRACE_SAFE 结论已撤回，不可作为安全证据。旧实验用启动/结束 ticket
+及 join 数量直接删除通信边，没有证明 DBT6 目标机上的发布/acquire 路径。
+当前已停用该剪枝；下面的分区和指令点记录仍只是辅助证据。
+随后复审还发现并修复了 RMW from-read 自环及初始读漏边。修复前包含原子窗口的
+safe 结果也不构成可信证明；真实程序须在修复和模型复核完成后重新验收。
+
 本文记录 D2 开发期间的可复现实验。应用分区和指令点证据用于解释大型窗口，
 不会绕过完整性检查，也不会把整个程序的 `UNKNOWN` 改成 `TRACE_SAFE`。
 

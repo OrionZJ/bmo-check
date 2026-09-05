@@ -68,3 +68,35 @@ def test_unsupported_contract_is_unknown(trace_manifest, tmp_path: Path) -> None
     certificate = analyze_trace(trace_dir, dbt_contract=contract)
     assert certificate.verdict == TraceVerdict.UNKNOWN
     assert any("unsupported DBT contract" in reason for reason in certificate.unknown_reasons)
+
+
+def test_truncated_record_returns_certificate_instead_of_raising(
+    trace_manifest, tmp_path: Path
+) -> None:
+    trace_dir = tmp_path / "trace"
+    trace_manifest(trace_dir)
+    path = trace_dir / "events-1.bin"
+    with TraceWriter(path) as writer:
+        writer.write(TraceEvent(1, 1, 0, 0x10, EventKind.LOAD, 0x1000, 4))
+    path.write_bytes(path.read_bytes()[:-1])
+    certificate = analyze_trace(trace_dir, dbt_contract=_contract(tmp_path))
+    assert certificate.verdict == TraceVerdict.UNKNOWN
+    assert not certificate.trace_complete
+    assert any("truncated" in reason for reason in certificate.unknown_reasons)
+
+
+def test_dropped_trace_cannot_promote_local_counterexample(
+    trace_manifest, tmp_path: Path
+) -> None:
+    trace_dir = tmp_path / "trace"
+    manifest = trace_manifest(trace_dir, control_closed=True)
+    manifest.model_copy(update={"dropped_events": 1}).save(trace_dir / "manifest.json")
+    for thread, read_address, write_address in ((1, 0x1000, 0x2000), (2, 0x2000, 0x1000)):
+        with TraceWriter(trace_dir / f"events-{thread}.bin") as writer:
+            writer.write(TraceEvent(thread, 1, 0, 0x10, EventKind.LOAD,
+                                    read_address, 4, 1, EventFlags.VALUE_KNOWN))
+            writer.write(TraceEvent(thread, 2, 0, 0x20, EventKind.STORE,
+                                    write_address, 4, 1, EventFlags.VALUE_KNOWN))
+    certificate = analyze_trace(trace_dir, dbt_contract=_contract(tmp_path))
+    assert certificate.verdict == TraceVerdict.UNKNOWN
+    assert not certificate.windows

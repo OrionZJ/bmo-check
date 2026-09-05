@@ -11,6 +11,7 @@ from bmo_check_dynamic.analysis import (
     find_communication_edges,
 )
 from bmo_check_dynamic.config import DynamicConfig
+from bmo_check_dynamic.analysis.communication import CommunicationLimitError
 from bmo_check_dynamic.model import (
     DynamicCertificate,
     TraceManifest,
@@ -38,6 +39,31 @@ def analyze_trace(
     contract, contract_error = load_supported_contract(dbt_contract)
     if contract_error is not None:
         unknowns.append(contract_error)
+    if unknowns:
+        # 校验已经发现截断时，再次解码会抛异常并丢掉 UNKNOWN 报告。
+        # 失败轨迹也不能凭一个局部 witness 越过完整性门槛。
+        return DynamicCertificate(
+            verdict=TraceVerdict.UNKNOWN,
+            scope=TraceScope(
+                trace_ids=(manifest.trace_id,),
+                trace_sha256=(trace_digest(trace_dir),),
+                executable=manifest.executable,
+                libraries=manifest.libraries,
+                commands=(manifest.command,),
+                working_directories=(manifest.working_directory,),
+            ),
+            dbt_contract_sha256=contract_sha256,
+            analyzer_version="0.2.0",
+            trace_complete=validation.valid,
+            event_count=validation.event_count,
+            thread_count=len(validation.thread_ids),
+            object_count=0,
+            unique_pc_count=0,
+            communication_edge_count=0,
+            indirect_target_count=0,
+            unknown_reasons=tuple(unknowns),
+            assumptions=("analysis stopped at preflight; analysis counts are unavailable",),
+        )
     temporary: tempfile.TemporaryDirectory[str] | None = None
     if config.database_path is None:
         temporary = tempfile.TemporaryDirectory(prefix="bmo-check-")
@@ -59,11 +85,15 @@ def analyze_trace(
             application_partition = analyze_application_partition(
                 store, trace_dir / "modules.tsv", manifest.executable.path
             )
-            edge_sample = tuple(
-                find_communication_edges(
-                    store, limit=config.max_communication_edges + 1
+            try:
+                edge_sample = tuple(
+                    find_communication_edges(
+                        store, limit=config.max_communication_edges + 1
+                    )
                 )
-            )
+            except CommunicationLimitError as error:
+                unknowns.append(str(error))
+                edge_sample = ()
             if len(edge_sample) > config.max_communication_edges:
                 unknowns.append(
                     "communication edge count exceeds "
@@ -93,10 +123,10 @@ def analyze_trace(
             unknowns.extend(
                 result.reason for result in results if result.status == "unknown"
             )
-            if any(result.status == "counterexample" for result in results):
-                verdict = TraceVerdict.COUNTEREXAMPLE
-            elif unknowns:
+            if unknowns:
                 verdict = TraceVerdict.UNKNOWN
+            elif any(result.status == "counterexample" for result in results):
+                verdict = TraceVerdict.COUNTEREXAMPLE
             else:
                 verdict = TraceVerdict.TRACE_SAFE
             indirect_count = int(
@@ -131,6 +161,7 @@ def analyze_trace(
                 assumptions=(
                     f"DBT contract: {contract.contract_version if contract else 'invalid'}",
                     "ordinary RVWMO dependencies are omitted from the target model",
+                    "lifecycle tickets do not establish target memory ordering",
                     "the proof applies only to concrete addresses and the recorded event skeleton",
                 ),
             )

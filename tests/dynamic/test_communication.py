@@ -1,7 +1,17 @@
 from pathlib import Path
 
-from bmo_check_dynamic.analysis import find_communication_edges
-from bmo_check_dynamic.analysis.windows import _biconnected_components, build_windows
+import pytest
+
+from bmo_check_dynamic.analysis.communication import CommunicationLimitError
+
+from bmo_check_dynamic.analysis import (
+    find_communication_edges,
+)
+from bmo_check_dynamic.analysis.windows import (
+    _biconnected_components,
+    _minimal_boundaries,
+    build_windows,
+)
 from bmo_check_dynamic.model import EventFlags, EventKind, TraceEvent
 from bmo_check_dynamic.storage import TraceStore
 
@@ -88,7 +98,7 @@ def test_articulation_chain_is_split_into_independent_windows(tmp_path: Path) ->
     assert all(len(window.events) == 2 for window in windows)
 
 
-def test_tls_addresses_are_private_to_each_thread(tmp_path: Path) -> None:
+def test_tls_label_does_not_hide_actual_address_overlap(tmp_path: Path) -> None:
     events = (
         TraceEvent(1, 1, 0, 0x10, EventKind.STORE, 0x7000, 8, flags=EventFlags.TLS),
         TraceEvent(2, 1, 0, 0x20, EventKind.LOAD, 0x7000, 8, flags=EventFlags.TLS),
@@ -96,7 +106,7 @@ def test_tls_addresses_are_private_to_each_thread(tmp_path: Path) -> None:
     with TraceStore(tmp_path / "tls.duckdb") as store:
         store.add_events(events, max_pages_per_access=16, batch_size=2)
         assert store.materialize_objects() == 2
-        assert not tuple(find_communication_edges(store))
+        assert len(tuple(find_communication_edges(store))) == 1
 
 
 def test_communication_limit_is_applied_inside_query(tmp_path: Path) -> None:
@@ -120,3 +130,28 @@ def test_biconnected_split_handles_deep_graph_without_python_recursion() -> None
             graph[node].add(previous)
             graph[previous].add(node)
     assert len(_biconnected_components(graph)) == 2_499
+
+
+def test_equivalent_boundaries_at_same_endpoint_cut_are_collapsed() -> None:
+    endpoints = [
+        TraceEvent(1, 1, 0, 0x10, EventKind.LOAD, 0x1000, 4),
+        TraceEvent(1, 100, 0, 0x20, EventKind.STORE, 0x2000, 4),
+    ]
+    boundaries = tuple(
+        TraceEvent(1, sequence, 0, 0x30, EventKind.ATOMIC_RMW, 0x3000, 4)
+        for sequence in range(2, 100)
+    )
+    selected = _minimal_boundaries(endpoints, boundaries)
+    assert len(selected) == 1
+    assert selected[0].sequence == 2
+
+
+def test_active_set_limit_covers_readonly_hotspot(tmp_path: Path) -> None:
+    events = tuple(
+        TraceEvent(1, sequence, 0, 0x10, EventKind.LOAD, 0x1000, 4)
+        for sequence in range(1, 10)
+    ) + (TraceEvent(2, 1, 0, 0x20, EventKind.STORE, 0x1000, 4),)
+    with TraceStore(tmp_path / "active-limit.duckdb") as store:
+        store.add_events(events, max_pages_per_access=16, batch_size=4)
+        with pytest.raises(CommunicationLimitError, match="active set"):
+            tuple(find_communication_edges(store, max_active_events=3))
