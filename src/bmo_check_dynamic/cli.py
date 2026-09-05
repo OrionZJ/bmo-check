@@ -75,6 +75,7 @@ def _analysis_config(args: argparse.Namespace) -> DynamicConfig:
         max_pages_per_access=args.max_pages_per_access,
         batch_size=args.batch_size,
         solver_timeout_ms=args.solver_timeout_ms,
+        max_symbolic_terms=args.max_symbolic_terms,
         database_memory_limit_mb=args.database_memory_limit_mb,
         database_path=args.database,
     )
@@ -208,6 +209,7 @@ def _add_analysis_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--max-pages-per-access", type=int, default=16)
     parser.add_argument("--batch-size", type=int, default=50_000)
     parser.add_argument("--solver-timeout-ms", type=int, default=10_000)
+    parser.add_argument("--max-symbolic-terms", type=int, default=100_000)
     parser.add_argument("--database-memory-limit-mb", type=int, default=512)
 
 

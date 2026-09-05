@@ -11,8 +11,9 @@ x86-TSO preserved order 保留 Load→Load、Load→Store、Store→Store，普�
 宽 Store 完整覆盖窄 Load 时，read-from 绑定到同一个写事件，并按小端偏移比较值。
 不同宽度的普通 Store 重叠时，符号求解器把 overlap-connected 写放入同一个
 coherence rank 空间，并只给真正重叠的写生成 coherence 边。一个 Store 完整覆盖
-Load 时可以作为 read-from 来源。多个局部写拼成一次 Load、以及混合宽度原子仍返回
-`UNKNOWN`；不能用拆成独立字节的 source 过近似冒充 x86 原子访问。
+Load 时可以作为 read-from 来源。宽 Load 会按重叠写的边界切成片段，每片独立选择
+read-from，但所有片段仍共用一个 Load 事件参与程序序和关系环。该编码故意包含
+额外组合，因此只会增加候选；混合宽度原子仍返回 `UNKNOWN`。
 
 小窗口先用显式 read-from/coherence 枚举，便于生成直观 witness。排列超过执行预算
 时改用 Z3 直接求“target 无环且 source 有环”；`UNSAT` 才能关闭窗口，超时仍返回

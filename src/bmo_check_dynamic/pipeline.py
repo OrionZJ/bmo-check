@@ -117,6 +117,7 @@ def analyze_trace(
                     max_executions=config.max_executions,
                     control_flow_closed=manifest.control_flow_closed,
                     timeout_ms=config.solver_timeout_ms,
+                    max_symbolic_terms=config.max_symbolic_terms,
                 )
                 for window in windows
             )

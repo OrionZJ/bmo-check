@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from itertools import islice, permutations, product
 from time import monotonic
 
@@ -17,12 +18,24 @@ from bmo_check_dynamic.model import (
 from .relations import Edge, find_cycle, source_preserved_order, target_preserved_order
 
 
+@dataclass(frozen=True, slots=True)
+class _ReadPart:
+    event: TraceEvent
+    address: int
+    size: int
+
+    @property
+    def end_address(self) -> int:
+        return self.address + self.size
+
+
 def check_window(
     window: AnalysisWindow,
     *,
     max_executions: int,
     control_flow_closed: bool,
     timeout_ms: int = 10_000,
+    max_symbolic_terms: int = 100_000,
 ) -> WindowResult:
     deadline = monotonic() + timeout_ms / 1000
     memory = tuple(event for event in window.events if event.kind.is_memory)
@@ -41,14 +54,17 @@ def check_window(
                     )
 
     reads = tuple(event for event in memory if event.kind.is_read)
+    partial_reads = False
     for read in reads:
         if any(write.overlaps(read) and not _covers(write, read) for write in writes):
-            return WindowResult(
-                window_id=window.window_id,
-                event_ids=tuple(event.event_id for event in window.events),
-                status="unknown",
-                reason="a read assembled from partial writes needs byte-level read-from",
-            )
+            partial_reads = True
+            if read.kind == EventKind.ATOMIC_RMW:
+                return WindowResult(
+                    window_id=window.window_id,
+                    event_ids=tuple(event.event_id for event in window.events),
+                    status="unknown",
+                    reason="mixed-width atomic read-from is not supported",
+                )
 
     write_locations = {_location(event) for event in writes}
     writes_by_location = {
@@ -73,11 +89,12 @@ def check_window(
     source_ppo = source_preserved_order(window.events)
     target_ppo = target_preserved_order(window.events)
     # 先决定是否转符号求解，避免在预算检查前就物化阶乘数量的 coherence 排列。
-    if (mixed_write_overlap or len(memory) > 12 or
+    if (mixed_write_overlap or partial_reads or len(memory) > 12 or
             any(len(group) > 6 for group in writes_by_location.values())):
         return _check_symbolic(
             window, reads, writes, writes_by_location, source_ppo, target_ppo,
             control_flow_closed=control_flow_closed, timeout_ms=timeout_ms,
+            max_symbolic_terms=max_symbolic_terms,
         )
     coherence_orders = tuple(
         tuple(_valid_coherence_orders(writes))
@@ -100,6 +117,7 @@ def check_window(
             target_ppo,
             control_flow_closed=control_flow_closed,
             timeout_ms=timeout_ms,
+            max_symbolic_terms=max_symbolic_terms,
         )
     for selected_writes in rf_products:
         rf = tuple(zip(reads, selected_writes, strict=True))
@@ -123,6 +141,7 @@ def check_window(
                     target_ppo,
                     control_flow_closed=control_flow_closed,
                     timeout_ms=timeout_ms,
+                    max_symbolic_terms=max_symbolic_terms,
                 )
             com, coherence_pairs = _communication_relations(
                 rf, selected_orders, writes_by_location, writes
@@ -274,11 +293,35 @@ def _check_symbolic(
     *,
     control_flow_closed: bool,
     timeout_ms: int,
+    max_symbolic_terms: int,
 ) -> WindowResult:
+    deadline = monotonic() + timeout_ms / 1000
+
+    def timed_out() -> WindowResult:
+        return WindowResult(
+            window_id=window.window_id,
+            event_ids=tuple(event.event_id for event in window.events),
+            status="unknown",
+            reason=f"symbolic formula construction exceeded {timeout_ms} ms",
+        )
+
+    def formula_limited() -> WindowResult:
+        return WindowResult(
+            window_id=window.window_id,
+            event_ids=tuple(event.event_id for event in window.events),
+            status="unknown",
+            reason=f"symbolic formula exceeds {max_symbolic_terms} terms",
+        )
+
     solver = z3.Solver()
     solver.set(timeout=timeout_ms)
     event_by_id = {event.event_id: event for event in window.events}
     nodes = tuple(sorted(event_by_id))
+    # 一个 PPO edge 后续至少出现在 rank 约束、source 条件和 cycle 选择中。
+    # 用保守权重在创建 Z3 AST 前拒绝巨窗，避免“项数不多但重复引用很多”的低估。
+    formula_terms = len(nodes) * 3 + len(source_ppo) * 4 + len(target_ppo)
+    if formula_terms > max_symbolic_terms:
+        return formula_limited()
     topological = {node: z3.Int(f"target_rank_{index}") for index, node in enumerate(nodes)}
     # 有向图无环只要求每条边的 rank 严格递增。无关节点可以共享 rank；强迫
     # 数千个节点全异会制造一个与 memory model 无关的排列问题。
@@ -286,6 +329,8 @@ def _check_symbolic(
     coherence_groups = _overlap_components(writes)
     co_rank: dict[str, z3.ArithRef] = {}
     for location_index, location_writes in enumerate(coherence_groups):
+        if monotonic() >= deadline:
+            return timed_out()
         ranks = []
         for write_index, write in enumerate(location_writes):
             rank = z3.Int(f"co_{location_index}_{write_index}")
@@ -300,56 +345,80 @@ def _check_symbolic(
                         left.sequence < right.sequence):
                     solver.add(co_rank[left.event_id] < co_rank[right.event_id])
 
-    rf_choice: dict[str, tuple[z3.ArithRef, tuple[TraceEvent, ...]]] = {}
+    rf_choice: dict[
+        tuple[str, int], tuple[_ReadPart, z3.ArithRef, tuple[TraceEvent, ...]]
+    ] = {}
     conditional_edges: dict[Edge, list[z3.BoolRef]] = {}
 
-    def add_edge(edge: Edge, condition: z3.BoolRef) -> None:
+    def add_edge(edge: Edge, condition: z3.BoolRef, *, weight: int = 4) -> bool:
+        nonlocal formula_terms
+        formula_terms += weight
+        if formula_terms > max_symbolic_terms:
+            return False
         conditional_edges.setdefault(edge, []).append(condition)
+        return True
 
     for location_writes in coherence_groups:
+        if monotonic() >= deadline:
+            return timed_out()
         for left in location_writes:
             for right in location_writes:
                 if left is not right and left.overlaps(right):
-                    add_edge(
+                    if not add_edge(
                         (left.event_id, right.event_id),
                         co_rank[left.event_id] < co_rank[right.event_id],
-                    )
+                    ):
+                        return formula_limited()
 
-    for read_index, read in enumerate(reads):
-        candidates = tuple(
-            write
-            for write in writes
-            if _covers(write, read)
-            and not (
-                write.thread_id == read.thread_id and write.sequence >= read.sequence
-            )
-        )
-        choice = z3.Int(f"rf_{read_index}")
-        solver.add(choice >= -1, choice < len(candidates))
-        rf_choice[read.event_id] = (choice, candidates)
-        if read.kind == EventKind.ATOMIC_RMW:
-            solver.add(z3.Implies(choice == -1, co_rank[read.event_id] == 0))
-            for index, write in enumerate(candidates):
-                solver.add(z3.Implies(
-                    choice == index,
-                    co_rank[read.event_id] == co_rank[write.event_id] + 1,
-                ))
-        for index, write in enumerate(candidates):
-            add_edge((write.event_id, read.event_id), choice == index)
-        for later in writes:
-            if not later.overlaps(read) or later.event_id == read.event_id:
-                continue
-            conditions: list[z3.BoolRef] = [choice == -1]
-            for index, source in enumerate(candidates):
-                if not source.overlaps(later) or source is later:
-                    continue
-                conditions.append(
-                    z3.And(
-                        choice == index,
-                        co_rank[source.event_id] < co_rank[later.event_id],
-                    )
+    choice_index = 0
+    for read in reads:
+        if monotonic() >= deadline:
+            return timed_out()
+        for part_index, part in enumerate(_read_parts(read, writes)):
+            candidates = tuple(
+                write
+                for write in writes
+                if write.address <= part.address
+                and write.end_address >= part.end_address
+                and not (
+                    write.thread_id == read.thread_id and write.sequence >= read.sequence
                 )
-            add_edge((read.event_id, later.event_id), z3.Or(*conditions))
+            )
+            choice = z3.Int(f"rf_{choice_index}")
+            choice_index += 1
+            solver.add(choice >= -1, choice < len(candidates))
+            rf_choice[(read.event_id, part_index)] = (part, choice, candidates)
+            if read.kind == EventKind.ATOMIC_RMW:
+                solver.add(z3.Implies(choice == -1, co_rank[read.event_id] == 0))
+                for index, write in enumerate(candidates):
+                    solver.add(z3.Implies(
+                        choice == index,
+                        co_rank[read.event_id] == co_rank[write.event_id] + 1,
+                    ))
+            for index, write in enumerate(candidates):
+                if not add_edge((write.event_id, read.event_id), choice == index):
+                    return formula_limited()
+            for later in writes:
+                if (later.address >= part.end_address or
+                        later.end_address <= part.address or
+                        later.event_id == read.event_id):
+                    continue
+                conditions: list[z3.BoolRef] = [choice == -1]
+                for index, source in enumerate(candidates):
+                    if not source.overlaps(later) or source is later:
+                        continue
+                    conditions.append(
+                        z3.And(
+                            choice == index,
+                            co_rank[source.event_id] < co_rank[later.event_id],
+                        )
+                    )
+                if not add_edge(
+                    (read.event_id, later.event_id),
+                    z3.Or(*conditions),
+                    weight=3 + len(conditions),
+                ):
+                    return formula_limited()
 
     for left, right in target_ppo:
         solver.add(topological[left] < topological[right])
@@ -372,18 +441,22 @@ def _check_symbolic(
         for index, edge in enumerate(sorted(source_conditions))
     }
     solver.add(z3.Or(*selected_nodes.values()))
+    incoming_by_node: dict[str, list[z3.BoolRef]] = {node: [] for node in nodes}
+    outgoing_by_node: dict[str, list[z3.BoolRef]] = {node: [] for node in nodes}
     for edge, selected in selected_edges.items():
         solver.add(z3.Implies(selected, source_conditions[edge]))
+        outgoing_by_node[edge[0]].append(selected)
+        incoming_by_node[edge[1]].append(selected)
     for node in nodes:
-        incoming = [
-            selected for (left, right), selected in selected_edges.items() if right == node
-        ]
-        outgoing = [
-            selected for (left, right), selected in selected_edges.items() if left == node
-        ]
+        if monotonic() >= deadline:
+            return timed_out()
+        incoming = incoming_by_node[node]
+        outgoing = outgoing_by_node[node]
         solver.add(z3.Sum(*[z3.If(item, 1, 0) for item in incoming]) == z3.If(selected_nodes[node], 1, 0))
         solver.add(z3.Sum(*[z3.If(item, 1, 0) for item in outgoing]) == z3.If(selected_nodes[node], 1, 0))
 
+    remaining_ms = max(1, int((deadline - monotonic()) * 1000))
+    solver.set(timeout=remaining_ms)
     status = solver.check()
     if status == z3.unknown:
         return WindowResult(
@@ -402,14 +475,14 @@ def _check_symbolic(
         )
 
     model = solver.model()
-    rf = tuple(
+    sliced_rf = tuple(
         (
-            event_by_id[read_id],
+            part,
             candidates[model.eval(choice).as_long()]
             if model.eval(choice).as_long() >= 0
             else None,
         )
-        for read_id, (choice, candidates) in rf_choice.items()
+        for part, choice, candidates in rf_choice.values()
     )
     coherence_orders = tuple(
         tuple(sorted(location_writes, key=lambda event: model.eval(co_rank[event.event_id]).as_long()))
@@ -424,12 +497,12 @@ def _check_symbolic(
         for order in coherence_orders
         for left, right in zip(order, order[1:])
     )
-    validated = control_flow_closed and _values_match(rf)
+    validated = control_flow_closed and _slice_values_match(sliced_rf)
     witness = CandidateWitness(
         window_id=window.window_id,
         read_from=tuple(
-            (read.event_id, write.event_id if write is not None else None)
-            for read, write in rf
+            (part.event.event_id, write.event_id if write is not None else None)
+            for part, write in sliced_rf
         ),
         coherence=tuple(
             (left.event_id, right.event_id) for left, right in coherence_pairs
@@ -475,3 +548,43 @@ def _overlap_components(
             pending.extend(connected)
         components.append(tuple(writes[index] for index in sorted(component)))
     return tuple(components)
+
+
+def _read_parts(
+    read: TraceEvent, writes: tuple[TraceEvent, ...]
+) -> tuple[_ReadPart, ...]:
+    boundaries = {read.address, read.end_address}
+    for write in writes:
+        if not write.overlaps(read):
+            continue
+        boundaries.add(max(read.address, write.address))
+        boundaries.add(min(read.end_address, write.end_address))
+    ordered = sorted(boundaries)
+    return tuple(
+        _ReadPart(read, left, right - left)
+        for left, right in zip(ordered, ordered[1:])
+    )
+
+
+def _slice_values_match(
+    rf: tuple[tuple[_ReadPart, TraceEvent | None], ...],
+) -> bool:
+    for part, write in rf:
+        read = part.event
+        if read.kind == EventKind.ATOMIC_RMW or write is None:
+            return False
+        if write.kind == EventKind.ATOMIC_RMW:
+            return False
+        if not (
+            read.flags & EventFlags.VALUE_KNOWN
+            and write.flags & EventFlags.VALUE_KNOWN
+        ):
+            return False
+        if read.size > 8 or write.size > 8:
+            return False
+        mask = (1 << part.size * 8) - 1
+        read_shift = (part.address - read.address) * 8
+        write_shift = (part.address - write.address) * 8
+        if (read.value >> read_shift) & mask != (write.value >> write_shift) & mask:
+            return False
+    return True

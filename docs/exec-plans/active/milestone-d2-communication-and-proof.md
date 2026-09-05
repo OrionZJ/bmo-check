@@ -37,6 +37,9 @@
 blackscholes 的严格复查显示，原 7,949 事件巨窗中 7,371 条通信边来自主线程
 初始化写与 worker 输入读，worker 间只有 3 条边。不能用生命周期 ticket 删除前者。
 x86 PPO 已换成保持同一可达关系的稀疏边，RVWMO 也补入明文规定的
-overlapping-address order；普通混合宽度写可进入符号 coherence。把显式窗口预算
-提高到 10,000 后，当前首个阻塞变成“宽 Load 可能由多个窄 Store 拼接”。在
-byte-level read-from 同时约束 source 原子性之前，此情况继续返回 UNKNOWN。
+overlapping-address order；普通混合宽度写可进入符号 coherence。byte-level
+read-from 现已按写边界切分普通 Load，并在各片段上建立 rf/fr；混合宽度
+原子仍拒绝。7,949 事件实验已继续推进到符号公式构造阶段。公式构造现在与 solver
+共享时间预算，并受独立项数上限约束，不会在超限后继续堆积 Z3 AST。默认
+100,000 项预算下，该实验用 46.6 秒、约 182 MiB 稳定返回 UNKNOWN；约 45 秒用于
+重建通信窗。此前没有公式项预算时峰值约 716 MiB。

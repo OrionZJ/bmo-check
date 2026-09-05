@@ -113,7 +113,7 @@ def test_overlapping_mixed_width_writes_use_symbolic_coherence() -> None:
     assert result.status == "safe"
 
 
-def test_read_spanning_only_part_of_write_stays_unknown() -> None:
+def test_read_with_unwritten_part_uses_initial_value_for_that_part() -> None:
     events = (
         TraceEvent(1, 1, 0, 0x10, EventKind.STORE, 0x1000, 4),
         TraceEvent(2, 1, 0, 0x20, EventKind.LOAD, 0x1000, 8),
@@ -127,8 +127,45 @@ def test_read_spanning_only_part_of_write_stays_unknown() -> None:
         max_executions=100,
         control_flow_closed=False,
     )
+    assert result.status == "safe"
+
+
+def test_two_narrow_stores_expose_store_order_candidate_to_wide_read() -> None:
+    events = (
+        TraceEvent(1, 1, 0, 0x10, EventKind.STORE, 0x1000, 4),
+        TraceEvent(1, 2, 0, 0x11, EventKind.STORE, 0x1004, 4),
+        TraceEvent(2, 1, 0, 0x20, EventKind.LOAD, 0x1000, 8),
+    )
+    result = check_window(
+        AnalysisWindow(
+            "composite-read",
+            events,
+            (
+                CommunicationEdge("t1:e1", "t2:e1", 0x1000, 4),
+                CommunicationEdge("t1:e2", "t2:e1", 0x1004, 4),
+            ),
+        ),
+        max_executions=100,
+        control_flow_closed=False,
+    )
     assert result.status == "unknown"
-    assert "partial writes" in result.reason
+    assert result.witness is not None
+    assert not result.witness.validated
+
+
+def test_symbolic_formula_limit_returns_unknown_before_solver() -> None:
+    events = tuple(
+        TraceEvent(1, sequence, 0, 0x10, EventKind.LOAD, 0x1000, 4)
+        for sequence in range(1, 14)
+    )
+    result = check_window(
+        AnalysisWindow("formula-limit", events, ()),
+        max_executions=100,
+        control_flow_closed=False,
+        max_symbolic_terms=10,
+    )
+    assert result.status == "unknown"
+    assert result.reason == "symbolic formula exceeds 10 terms"
 
 
 def test_symbolic_fallback_finds_load_buffering_candidate() -> None:
