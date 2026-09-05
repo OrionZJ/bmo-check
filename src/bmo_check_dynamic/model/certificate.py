@@ -27,9 +27,19 @@ class TraceScope(StrictModel):
     )
 
 
+class ReadFromWitness(StrictModel):
+    # read_event 标识取得这些字节的 Load/RMW。
+    read_event: str
+    # write_event 为 None 时，这个片段读取初始值。
+    write_event: str | None
+    # address/size 精确标出宽 Load 中由该来源提供的片段。
+    address: int
+    size: int
+
+
 class CandidateWitness(StrictModel):
     window_id: str
-    read_from: tuple[tuple[str, str | None], ...] = ()
+    read_from: tuple[ReadFromWitness, ...] = ()
     coherence: tuple[tuple[str, str], ...] = ()
     source_cycle: tuple[str, ...] = ()
     validated: bool = False
@@ -67,7 +77,7 @@ class ApplicationPartitionEvidence(StrictModel):
 
 
 class DynamicCertificate(StrictModel):
-    schema_version: str = "1.0"
+    schema_version: str = "1.1"
     verdict: TraceVerdict
     scope: TraceScope
     dbt_contract_sha256: str

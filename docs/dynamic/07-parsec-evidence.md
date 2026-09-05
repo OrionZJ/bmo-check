@@ -43,6 +43,10 @@ blackscholes 有一个 7,949 事件窗口，其中 7,371 条边连接主线程�
 上述 certificate 生成于完整性元数据纳入 trace digest 之前，只作为问题定位材料，
 不是现版本可验收证书。
 
+当前分析器重新生成的 `certificate-current.json` 绑定了完整性元数据，记录 233,460
+个事件、3 个线程，并因 60 个尚未闭合用户缓冲区 effect 的 syscall 返回 UNKNOWN。
+管线在完整性门停止，因此通信边计数显示为 0，不能把它解释为程序没有通信。
+
 ## canneal：Checkin 的普通 Store 发布
 
 `AtomicPtr.h:291-297` 想在 `ENABLE_THREADS` 下使用 release store，但条件写成了

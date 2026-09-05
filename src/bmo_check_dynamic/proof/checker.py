@@ -11,6 +11,7 @@ from bmo_check_dynamic.model import (
     CandidateWitness,
     EventFlags,
     EventKind,
+    ReadFromWitness,
     TraceEvent,
     WindowResult,
 )
@@ -157,7 +158,12 @@ def check_window(
             witness = CandidateWitness(
                 window_id=window.window_id,
                 read_from=tuple(
-                    (read.event_id, write.event_id if write is not None else None)
+                    ReadFromWitness(
+                        read_event=read.event_id,
+                        write_event=write.event_id if write is not None else None,
+                        address=read.address,
+                        size=read.size,
+                    )
                     for read, write in rf
                 ),
                 coherence=tuple(
@@ -505,7 +511,12 @@ def _check_symbolic(
     witness = CandidateWitness(
         window_id=window.window_id,
         read_from=tuple(
-            (part.event.event_id, write.event_id if write is not None else None)
+            ReadFromWitness(
+                read_event=part.event.event_id,
+                write_event=write.event_id if write is not None else None,
+                address=part.address,
+                size=part.size,
+            )
             for part, write in sliced_rf
         ),
         coherence=tuple(

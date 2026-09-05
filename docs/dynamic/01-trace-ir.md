@@ -9,6 +9,7 @@
 - LOCK 和内存 XCHG 统一成为 `ATOMIC_RMW`，并保留 flags；分析器不拆改其原子区域。
 - LFENCE、SFENCE、MFENCE 保持独立事件。
 - pthread API 事件只帮助切片和解释。target 排序必须来自库内部实际执行的 atomic/Fence，不能仅凭 API 名称添加。
+- `SYSCALL` 当前只保存编号，没有闭合内核对用户缓冲区的读写。多线程轨迹含 syscall 时必须返回 `UNKNOWN`，直到 effect 与参数采集完成。
 
 `SYNC_CALL=17` 保存条件变量、barrier、semaphore 调用。`aux=(API<<1)|phase`，
 phase 为 0 表示进入、1 表示返回。API 1–9 依次为 cond_wait、cond_timedwait、

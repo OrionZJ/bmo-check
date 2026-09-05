@@ -98,6 +98,27 @@ def test_articulation_chain_is_split_into_independent_windows(tmp_path: Path) ->
     assert all(len(window.events) == 2 for window in windows)
 
 
+def test_boundary_chord_is_present_before_biconnected_split(tmp_path: Path) -> None:
+    events = (
+        TraceEvent(1, 1, 0, 0x10, EventKind.STORE, 0x1000, 4),
+        TraceEvent(1, 2, 0, 0x11, EventKind.STORE, 0x1000, 8),
+        TraceEvent(1, 3, 0, 0x12, EventKind.MFENCE),
+        TraceEvent(1, 4, 0, 0x13, EventKind.STORE, 0x1004, 4),
+        TraceEvent(2, 1, 0, 0x20, EventKind.LOAD, 0x1000, 4),
+        TraceEvent(2, 2, 0, 0x21, EventKind.LOAD, 0x1000, 4),
+        TraceEvent(3, 1, 0, 0x30, EventKind.LOAD, 0x1004, 4),
+        TraceEvent(3, 2, 0, 0x31, EventKind.LOAD, 0x1004, 4),
+    )
+    with TraceStore(tmp_path / "boundary-chord.duckdb") as store:
+        store.add_events(events, max_pages_per_access=16, batch_size=8)
+        edges = tuple(find_communication_edges(store))
+        windows, unknowns = build_windows(store, edges, max_events=20)
+
+    assert not unknowns
+    assert len(windows) == 1
+    assert EventKind.MFENCE in {event.kind for event in windows[0].events}
+
+
 def test_tls_label_does_not_hide_actual_address_overlap(tmp_path: Path) -> None:
     events = (
         TraceEvent(1, 1, 0, 0x10, EventKind.STORE, 0x7000, 8, flags=EventFlags.TLS),

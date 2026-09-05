@@ -12,6 +12,9 @@
 
 `TRACE_SAFE` 不是程序的无条件 `SAFE`。它不覆盖未执行路径、其他输入、不同地址轨迹或未来运行。工具禁止把“程序跑通”直接解释为安全证明。
 
+当前 syscall 只记录编号。多线程轨迹含 syscall 时，在用户缓冲区 effect 闭合前会
+严格返回 `UNKNOWN`；这表示模型暂不支持，不表示轨迹文件被截断。
+
 ## 动态流程
 
 ```text
@@ -72,3 +75,5 @@ uv run pytest
 ```
 
 动态路线文档位于 `docs/dynamic/`，原静态研究位于 `docs/static/`。
+D1/D2 首个严格闭环的逐项证据位于
+`docs/exec-plans/active/d1-d2-acceptance.md`。

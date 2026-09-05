@@ -137,3 +137,20 @@ def test_unsupported_record_fields_fail_validation(
     with TraceWriter(trace_dir / "events-1.bin") as writer:
         writer.write(TraceEvent(1, 1, 0, 0x10, EventKind.LOAD, address, size, flags=flags))
     assert not validate_trace(trace_dir).valid
+
+
+def test_multithread_opaque_syscall_cannot_be_trace_safe(
+    trace_manifest, tmp_path: Path
+) -> None:
+    trace_dir = tmp_path / "trace"
+    trace_manifest(trace_dir)
+    with TraceWriter(trace_dir / "events-1.bin") as writer:
+        writer.write(TraceEvent(1, 1, 1, 0, EventKind.SYSCALL, aux=0))
+    with TraceWriter(trace_dir / "events-2.bin") as writer:
+        writer.write(TraceEvent(2, 1, 2, 0, EventKind.LOAD, 0x1000, 4))
+
+    validation = validate_trace(trace_dir)
+
+    assert not validation.valid
+    assert validation.structurally_complete
+    assert "opaque syscall" in " ".join(validation.reasons)

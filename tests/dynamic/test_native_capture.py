@@ -10,7 +10,8 @@ import pytest
 
 from bmo_check_dynamic.capture import capture_program
 from bmo_check_dynamic.capture.launcher import dynamorio_version
-from bmo_check_dynamic.model import EventFlags, EventKind
+from bmo_check_dynamic.model import EventFlags, EventKind, TraceVerdict
+from bmo_check_dynamic.pipeline import analyze_trace
 from bmo_check_dynamic.trace import TraceReader
 from bmo_check_dynamic.trace import validate_trace
 from bmo_check_dynamic.trace.format import event_files
@@ -33,6 +34,10 @@ def _native_environment() -> tuple[Path, Path, str] | None:
     if not (home / "bin64" / "drrun").is_file() or not client.is_file():
         return None
     return home, client, compiler
+
+
+def _contract() -> Path:
+    return Path(__file__).resolve().parents[2] / "specs" / "dynamic" / "dbt6-mo-off.yaml"
 
 
 def test_dynamorio_version_is_read_from_cmake_package(tmp_path: Path) -> None:
@@ -100,6 +105,9 @@ def test_pthread_and_object_lifecycle_capture(tmp_path: Path) -> None:
     atomic_flags = [event.flags for event in events if event.kind == EventKind.ATOMIC_RMW]
     assert any(flags & EventFlags.LOCK_PREFIX for flags in atomic_flags)
     assert any(flags & EventFlags.XCHG for flags in atomic_flags)
+    certificate = analyze_trace(trace_dir, dbt_contract=_contract())
+    assert certificate.verdict == TraceVerdict.UNKNOWN
+    assert "opaque syscall" in " ".join(certificate.unknown_reasons)
 
 
 @pytest.mark.skipif(
@@ -137,6 +145,9 @@ def test_openmp_runtime_threads_are_captured(tmp_path: Path) -> None:
     assert manifest.complete
     assert manifest.dropped_events == 0, manifest.dropped_by_reason
     assert len(thread_ids) >= 2
+    certificate = analyze_trace(trace_dir, dbt_contract=_contract())
+    assert certificate.verdict == TraceVerdict.UNKNOWN
+    assert "opaque syscall" in " ".join(certificate.unknown_reasons)
 
 
 @pytest.mark.skipif(
@@ -194,3 +205,5 @@ def test_sync_calls_preserve_failure_and_barrier_success(tmp_path: Path) -> None
     assert returns[8] == (1 << 64) - 1
     assert all(returns[api] == 0 for api in (3, 4, 6, 9))
     assert next(event.value for event in calls if event.aux == 4) != 0
+    certificate = analyze_trace(trace_dir, dbt_contract=_contract())
+    assert certificate.verdict == TraceVerdict.TRACE_SAFE

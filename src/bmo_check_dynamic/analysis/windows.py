@@ -42,6 +42,37 @@ def build_windows(
         for left, right in zip(thread_events, thread_events[1:]):
             graph[left.event_id].add(right.event_id)
             graph[right.event_id].add(left.event_id)
+        if len(thread_events) < 2:
+            continue
+        boundaries = store.boundaries_between(
+            thread_events[0].thread_id,
+            thread_events[0].sequence,
+            thread_events[-1].sequence,
+        )
+        for boundary in boundaries:
+            category = _boundary_category(boundary.kind)
+            before = [
+                event
+                for event in thread_events
+                if event.sequence < boundary.sequence
+                and _boundary_accepts(category, event)
+            ]
+            after = [
+                event
+                for event in thread_events
+                if event.sequence > boundary.sequence
+                and _boundary_accepts(category, event)
+            ]
+            if not before or not after:
+                continue
+            # 分解前把 boundary 当作星形中心。否则 Fence 形成的弦可能跨过割点，
+            # 两个分别判 safe 的窗口合起来却存在关系环。
+            graph.setdefault(boundary.event_id, set())
+            for event in (*before, *after):
+                if event.event_id == boundary.event_id:
+                    continue
+                graph[boundary.event_id].add(event.event_id)
+                graph[event.event_id].add(boundary.event_id)
 
     # 一个关系环只能落在同一个无向双连通分量内。按普通连接分量切分会把
     # 共享割点的长链合成巨窗，既增加枚举量，也没有提供额外反例路径。
@@ -130,6 +161,14 @@ def _boundary_category(kind: EventKind) -> str:
     if kind == EventKind.LFENCE:
         return "read"
     return "write"
+
+
+def _boundary_accepts(category: str, event: TraceEvent) -> bool:
+    if category == "full":
+        return event.kind.is_memory
+    if category == "read":
+        return event.kind.is_read
+    return event.kind.is_write
 
 
 def _biconnected_components(graph: dict[str, set[str]]) -> tuple[frozenset[str], ...]:

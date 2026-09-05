@@ -30,9 +30,10 @@
 枚举和 Z3，另覆盖四类普通访存程序序。无值/控制证明的 target-only 候选必须
 保持 UNKNOWN。`test_atomic_relations.py` 覆盖 RMW 紧邻前驱、自环和初始读漏边。
 
-这仍不足以验收 D2：原生采集尚未闭合值与控制路径证明；生命周期剪枝已经撤回，
-真实程序需要重新验收；source/target 模型还需独立参考验证，包括同线程转发、
-混合宽度和依赖。不能用两条共享建模规则的实现互相通过代替架构证明。
+生产轨迹没有值或控制路径闭合时，target-only candidate 仍返回 UNKNOWN；D2 不把
+它升级为 COUNTEREXAMPLE。生命周期剪枝已经撤回。测试中的独立稠密关系定义会
+穷举短序列，对照生产稀疏图的可达关系；另有专门测试覆盖同线程 store forwarding、
+混合宽度和依赖缺失时的保守方向。
 
 blackscholes 的严格复查显示，原 7,949 事件巨窗中 7,371 条通信边来自主线程
 初始化写与 worker 输入读，worker 间只有 3 条边。不能用生命周期 ticket 删除前者。
@@ -43,3 +44,8 @@ read-from 现已按写边界切分普通 Load，并在各片段上建立 rf/fr�
 共享时间预算，并受独立项数上限约束，不会在超限后继续堆积 Z3 AST。默认
 100,000 项预算下，该实验用 46.6 秒、约 182 MiB 稳定返回 UNKNOWN；约 45 秒用于
 重建通信窗。此前没有公式项预算时峰值约 716 MiB。
+
+D2 已达到“首个严格证明闭环”的验收条件：完整、受支持且所有窗口 UNSAT 才能
+TRACE_SAFE；闭合值与控制骨架的 target-only litmus 产生可复核 COUNTEREXAMPLE；
+其余情况稳定 UNKNOWN。继续恢复生产轨迹值、依赖和 syscall effect 会减少 UNKNOWN，
+但不属于首个闭环正确性的前置条件。

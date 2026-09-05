@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from bmo_check_dynamic.model import EventFlags, TraceManifest
+from bmo_check_dynamic.model import EventFlags, EventKind, TraceManifest
 
 from .format import TraceFormatError, TraceReader, event_files
 
@@ -11,6 +11,8 @@ from .format import TraceFormatError, TraceReader, event_files
 @dataclass(frozen=True, slots=True)
 class TraceValidation:
     valid: bool
+    # structurally_complete 只描述采集、格式和序号；模型不支持不等于 trace 截断。
+    structurally_complete: bool
     event_count: int
     thread_ids: tuple[int, ...]
     reasons: tuple[str, ...]
@@ -21,6 +23,7 @@ def validate_trace(trace_dir: Path) -> TraceValidation:
     omitted_reasons = 0
     event_count = 0
     thread_ids: set[int] = set()
+    syscall_count = 0
 
     def add_reason(reason: str) -> None:
         nonlocal omitted_reasons
@@ -33,11 +36,11 @@ def validate_trace(trace_dir: Path) -> TraceValidation:
 
     manifest_path = trace_dir / "manifest.json"
     if not manifest_path.is_file():
-        return TraceValidation(False, 0, (), ("missing manifest.json",))
+        return TraceValidation(False, False, 0, (), ("missing manifest.json",))
     try:
         manifest = TraceManifest.load(manifest_path)
     except (OSError, ValueError) as error:
-        return TraceValidation(False, 0, (), (f"invalid manifest: {error}",))
+        return TraceValidation(False, False, 0, (), (f"invalid manifest: {error}",))
     if not manifest.complete:
         add_reason("trace did not reach a clean process exit")
     if manifest.exit_code not in (None, 0):
@@ -59,6 +62,8 @@ def validate_trace(trace_dir: Path) -> TraceValidation:
                 event_count += 1
                 file_event_count += 1
                 thread_ids.add(event.thread_id)
+                if event.kind == EventKind.SYSCALL:
+                    syscall_count += 1
                 old = previous.get(event.thread_id)
                 expected = 1 if old is None else old + 1
                 if event.sequence != expected:
@@ -78,6 +83,17 @@ def validate_trace(trace_dir: Path) -> TraceValidation:
         except (OSError, TraceFormatError) as error:
             # 一个坏文件不应掩盖其他线程也损坏的事实。
             add_reason(str(error))
+    structurally_complete = not reasons
+    if len(thread_ids) > 1 and syscall_count:
+        add_reason(
+            f"multi-thread trace contains {syscall_count} opaque syscall boundaries"
+        )
     if omitted_reasons:
         reasons.append(f"trace validation omitted {omitted_reasons} additional errors")
-    return TraceValidation(not reasons, event_count, tuple(sorted(thread_ids)), tuple(reasons))
+    return TraceValidation(
+        not reasons,
+        structurally_complete,
+        event_count,
+        tuple(sorted(thread_ids)),
+        tuple(reasons),
+    )

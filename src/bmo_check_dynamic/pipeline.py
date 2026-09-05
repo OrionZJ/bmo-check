@@ -5,6 +5,7 @@ import tempfile
 from itertools import chain
 from pathlib import Path
 
+from bmo_check_dynamic import __version__
 from bmo_check_dynamic.analysis import (
     analyze_application_partition,
     build_windows,
@@ -53,8 +54,8 @@ def analyze_trace(
                 working_directories=(manifest.working_directory,),
             ),
             dbt_contract_sha256=contract_sha256,
-            analyzer_version="0.2.0",
-            trace_complete=validation.valid,
+            analyzer_version=__version__,
+            trace_complete=validation.structurally_complete,
             event_count=validation.event_count,
             thread_count=len(validation.thread_ids),
             object_count=0,
@@ -144,8 +145,8 @@ def analyze_trace(
                     working_directories=(manifest.working_directory,),
                 ),
                 dbt_contract_sha256=contract_sha256,
-                analyzer_version="0.2.0",
-                trace_complete=validation.valid,
+                analyzer_version=__version__,
+                trace_complete=validation.structurally_complete,
                 event_count=store.event_count(),
                 thread_count=len(validation.thread_ids),
                 object_count=object_count,

@@ -13,3 +13,7 @@ Python launcher 在执行前保存不完整 manifest，执行后读取两个 mar
 首版支持 WSL2 和原生 Linux 的 x86-64 ELF。PE、JIT、自修改代码及跨进程共享映射不在支持范围。
 `MAP_SHARED`、匿名可执行 mmap、fork/vfork、非 `CLONE_VM` clone 和 exec 会记录
 `unsupported` drop，使完整性检查严格返回 `UNKNOWN`。
+
+当前 syscall 事件只记录编号。内核可能通过参数访问共享用户内存，因此多线程轨迹
+不能把它当无副作用边界；完整性检查会保守返回 `UNKNOWN`。后续只有在采集参数、
+返回值并由 syscall effect 表覆盖后，才能逐项解除该限制。

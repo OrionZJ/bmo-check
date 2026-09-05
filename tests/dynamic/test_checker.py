@@ -151,6 +151,9 @@ def test_two_narrow_stores_expose_store_order_candidate_to_wide_read() -> None:
     assert result.status == "unknown"
     assert result.witness is not None
     assert not result.witness.validated
+    assert {
+        (item.address, item.size) for item in result.witness.read_from
+    } == {(0x1000, 4), (0x1004, 4)}
 
 
 def test_symbolic_formula_limit_returns_unknown_before_solver() -> None:

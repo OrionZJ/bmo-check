@@ -8,7 +8,7 @@ TLS 标签不能证明地址没有逃逸。数值地址重叠时，即便对象�
 仅同类同基址的不同 generation 使用已有生命周期筛选。扫描活动集合超过
 100,000 个事件时返回 UNKNOWN，避免只读热点在产生第一条边前耗尽内存。
 
-当前求解器支持同址同宽访问，也支持一个 Store 完整覆盖较窄 Load。部分覆盖、跨 Store 拼接的 Load 和相互重叠但边界不同的写仍需 byte-level 编码，因此返回 `UNKNOWN`。
+当前求解器支持同址同宽访问、Store 完整覆盖较窄 Load，以及按重叠写边界切分的宽 Load。普通混合宽度写进入 overlap-connected coherence；混合宽度 RMW 仍返回 `UNKNOWN`。
 
 通信图按连通分量切窗，并把同一线程两端之间的 Fence/atomic/sync 边界带入窗口。窗口超过配置上限时不得拆掉关键边后继续证明。
 
