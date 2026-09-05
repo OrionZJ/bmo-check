@@ -222,7 +222,10 @@ def _communication_relations(
             coherence_pairs.append((left, right))
     for read, write in rf:
         if write is not None:
-            edges.add((write.event_id, read.event_id))
+            # 本线程 Load 可以从 store buffer 转发；只有跨线程 rf 才进入全局
+            # happens-before。把 rfi 也加边会错误收紧 source 和 target。
+            if write.thread_id != read.thread_id:
+                edges.add((write.event_id, read.event_id))
             order = order_by_location[_location(write)]
             index = order.index(write)
             later = tuple(
@@ -396,7 +399,8 @@ def _check_symbolic(
                         co_rank[read.event_id] == co_rank[write.event_id] + 1,
                     ))
             for index, write in enumerate(candidates):
-                if not add_edge((write.event_id, read.event_id), choice == index):
+                if (write.thread_id != read.thread_id and
+                        not add_edge((write.event_id, read.event_id), choice == index)):
                     return formula_limited()
             for later in writes:
                 if (later.address >= part.end_address or

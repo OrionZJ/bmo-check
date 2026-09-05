@@ -19,6 +19,23 @@ def test_initial_read_has_from_read_edges_at_every_location():
     assert (read.event_id, x.event_id) in edges
 
 
+def test_internal_read_from_does_not_block_store_forwarding():
+    store = TraceEvent(1, 1, 0, 0x10, EventKind.STORE, 0x1000, 4)
+    local_read = TraceEvent(1, 2, 0, 0x20, EventKind.LOAD, 0x1000, 4)
+    remote_read = TraceEvent(2, 1, 0, 0x30, EventKind.LOAD, 0x1000, 4)
+    writes = {(0x1000, 4): (store,)}
+
+    local_edges, _ = _communication_relations(
+        ((local_read, store),), (), writes, (store,)
+    )
+    remote_edges, _ = _communication_relations(
+        ((remote_read, store),), (), writes, (store,)
+    )
+
+    assert (store.event_id, local_read.event_id) not in local_edges
+    assert (store.event_id, remote_read.event_id) in remote_edges
+
+
 def test_rmw_is_not_its_own_from_read_successor():
     atomic = TraceEvent(1, 1, 0, 0x10, EventKind.ATOMIC_RMW, 0x1000, 4)
     edges, _ = _communication_relations(
