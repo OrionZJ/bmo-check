@@ -3,6 +3,7 @@
 #include "drreg.h"
 #include "drutil.h"
 #include "drwrap.h"
+#include "drx.h"
 
 #include <atomic>
 #include <cstdint>
@@ -58,6 +59,8 @@ enum class DropReason : size_t {
     UnknownWidth,
     RegisterReservation,
     AddressCalculation,
+    // 多地址指令展开失败会漏掉部分访存，不能拿不完整的轨迹给出 SAFE。
+    Instrumentation,
     Lifecycle,
     ModuleMetadata,
     // 首版不建模跨进程共享和动态生成代码；遇到它们必须让证书转 UNKNOWN。
@@ -67,8 +70,11 @@ enum class DropReason : size_t {
 
 constexpr const char *kDropReasonNames[] = {
     "write", "missing_thread_state", "unknown_width", "register_reservation",
-    "address_calculation", "lifecycle", "module_metadata", "unsupported",
+    "address_calculation", "instrumentation", "lifecycle", "module_metadata",
+    "unsupported",
 };
+static_assert(sizeof(kDropReasonNames) / sizeof(kDropReasonNames[0]) ==
+              static_cast<size_t>(DropReason::Count));
 
 #pragma pack(push, 1)
 struct TraceHeader {
@@ -206,6 +212,18 @@ bool is_extended_state_access(int opcode) {
     default:
         return false;
     }
+}
+
+dr_emit_flags_t expand_multi_access_instructions(void *drcontext, void *,
+                                                 instrlist_t *bb, bool, bool) {
+    // REP 和 gather/scatter 用一条指令访问多个地址。先展开它们，
+    // 后续插桩才能记录每个真实访存，而不是只记一个代表地址。
+    const bool rep_complete = drutil_expand_rep_string(drcontext, bb);
+    const bool scatter_gather_complete =
+        drx_expand_scatter_gather(drcontext, bb, nullptr);
+    if (!rep_complete || !scatter_gather_complete)
+        note_drop(DropReason::Instrumentation);
+    return DR_EMIT_DEFAULT;
 }
 
 dr_emit_flags_t instrument_instruction(void *drcontext, void *, instrlist_t *bb,
@@ -768,8 +786,10 @@ void process_exit() {
     if (module_lock != nullptr)
         dr_mutex_destroy(module_lock);
     drmgr_unregister_bb_insertion_event(instrument_instruction);
+    drmgr_unregister_bb_app2app_event(expand_multi_access_instructions);
     drmgr_unregister_tls_field(tls_index);
     drwrap_exit();
+    drx_exit();
     drutil_exit();
     drreg_exit();
     drmgr_exit();
@@ -795,7 +815,8 @@ DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[]) {
     if (module_file == INVALID_FILE)
         note_drop(DropReason::ModuleMetadata);
     module_lock = dr_mutex_create();
-    if (module_lock == nullptr || !drmgr_init() || !drutil_init() || !drwrap_init())
+    if (module_lock == nullptr || !drmgr_init() || !drutil_init() || !drwrap_init() ||
+        !drx_init())
         dr_abort();
     drreg_options_t options{sizeof(options), 3, false};
     if (drreg_init(&options) != DRREG_SUCCESS)
@@ -810,6 +831,7 @@ DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[]) {
         !drmgr_register_module_unload_event(module_unload) ||
         !drmgr_register_pre_syscall_event(pre_syscall) ||
         !drmgr_register_signal_event(signal_event) ||
+        !drmgr_register_bb_app2app_event(expand_multi_access_instructions, nullptr) ||
         !drmgr_register_bb_instrumentation_event(
             nullptr, instrument_instruction, nullptr))
         dr_abort();

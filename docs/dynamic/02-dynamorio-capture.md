@@ -2,6 +2,11 @@
 
 追踪 client 对每个 app memory operand 插入记录点，并识别 LOCK/XCHG、显式 Fence、间接分支、module、thread、signal 和 syscall。常见 allocator 与 pthread 锁 API 使用 `drwrap` 记录对象生命周期和同步边界。
 
+REP 字符串指令和 gather/scatter 可以在一条指令中访问多个地址。client
+在 app2app 阶段展开它们，再对每次真实访存插桩；展开失败记为
+`instrumentation` drop，防止不完整轨迹获得 `TRACE_SAFE`。原生验收还用精确
+PC 和宽度覆盖 push/pop、CALL/RET、x87 及 SIMD 访存。
+
 条件变量、barrier、semaphore 分别记录进入和返回，保留对象地址与返回码。
 libc 同名版本符号可能对应不同实现地址，client 枚举导出符号覆盖各版本。
 原生测试覆盖 timedwait 超时、sem_trywait 失败以及 barrier serial-thread 成功返回。

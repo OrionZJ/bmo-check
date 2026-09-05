@@ -40,6 +40,17 @@ def _contract() -> Path:
     return Path(__file__).resolve().parents[2] / "specs" / "dynamic" / "dbt6-mo-off.yaml"
 
 
+def _symbol_address(executable: Path, name: str) -> int:
+    result = subprocess.run(
+        ["nm", "-n", str(executable)], capture_output=True, text=True, check=True
+    )
+    for line in result.stdout.splitlines():
+        fields = line.split()
+        if len(fields) == 3 and fields[2] == name:
+            return int(fields[0], 16)
+    raise AssertionError(f"missing symbol {name}")
+
+
 def test_dynamorio_version_is_read_from_cmake_package(tmp_path: Path) -> None:
     cmake = tmp_path / "cmake"
     cmake.mkdir()
@@ -207,3 +218,148 @@ def test_sync_calls_preserve_failure_and_barrier_success(tmp_path: Path) -> None
     assert next(event.value for event in calls if event.aux == 4) != 0
     certificate = analyze_trace(trace_dir, dbt_contract=_contract())
     assert certificate.verdict == TraceVerdict.TRACE_SAFE
+
+
+@pytest.mark.skipif(_native_environment() is None, reason="native capture environment required")
+def test_rep_string_records_every_iteration_address(tmp_path: Path) -> None:
+    environment = _native_environment()
+    assert environment is not None
+    home, client, compiler = environment
+    executable = tmp_path / "rep-string"
+    subprocess.run(
+        [
+            compiler,
+            "-O0",
+            "-fno-pie",
+            "-no-pie",
+            str(Path(__file__).parent / "native" / "rep_string.c"),
+            "-o",
+            str(executable),
+        ],
+        check=True,
+    )
+    source = _symbol_address(executable, "rep_source")
+    target = _symbol_address(executable, "rep_target")
+    trace_dir = tmp_path / "trace"
+    manifest = capture_program(
+        (str(executable),), trace_dir, dynamorio_home=home, client_path=client
+    )
+    events = [
+        event for path in event_files(trace_dir) for event in TraceReader(path)
+    ]
+
+    assert manifest.dropped_events == 0, manifest.dropped_by_reason
+    assert {
+        event.address
+        for event in events
+        if event.kind == EventKind.LOAD and source <= event.address < source + 64
+    } >= set(range(source, source + 64))
+    assert {
+        event.address
+        for event in events
+        if event.kind == EventKind.STORE and target <= event.address < target + 64
+    } >= set(range(target, target + 64))
+
+
+@pytest.mark.skipif(
+    _native_environment() is None or "avx2" not in Path("/proc/cpuinfo").read_text(),
+    reason="native capture environment and AVX2 are required",
+)
+def test_gather_records_every_selected_address(tmp_path: Path) -> None:
+    environment = _native_environment()
+    assert environment is not None
+    home, client, compiler = environment
+    executable = tmp_path / "gather"
+    subprocess.run(
+        [
+            compiler,
+            "-O0",
+            "-mavx2",
+            "-fno-pie",
+            "-no-pie",
+            str(Path(__file__).parent / "native" / "gather.c"),
+            "-o",
+            str(executable),
+        ],
+        check=True,
+    )
+    source = _symbol_address(executable, "gather_source")
+    expected = {source + index * 4 for index in (0, 3, 7, 12, 18, 25, 33, 42)}
+    trace_dir = tmp_path / "trace"
+    manifest = capture_program(
+        (str(executable),), trace_dir, dynamorio_home=home, client_path=client
+    )
+    observed = {
+        event.address
+        for path in event_files(trace_dir)
+        for event in TraceReader(path)
+        if event.kind == EventKind.LOAD and event.address in expected
+    }
+
+    assert manifest.exit_code == 0
+    assert manifest.dropped_events == 0, manifest.dropped_by_reason
+    assert observed == expected
+
+
+@pytest.mark.skipif(_native_environment() is None, reason="native capture environment required")
+def test_stack_call_float_and_vector_memory_forms(tmp_path: Path) -> None:
+    environment = _native_environment()
+    assert environment is not None
+    home, client, compiler = environment
+    executable = tmp_path / "memory-forms"
+    subprocess.run(
+        [
+            compiler,
+            "-O0",
+            "-fno-pie",
+            "-no-pie",
+            str(Path(__file__).parent / "native" / "memory_forms.c"),
+            "-o",
+            str(executable),
+        ],
+        check=True,
+    )
+    sites = {
+        name: _symbol_address(executable, name)
+        for name in (
+            "bmo_push_site",
+            "bmo_pop_site",
+            "bmo_call_site",
+            "bmo_ret_site",
+            "bmo_fld_site",
+            "bmo_fst_site",
+            "bmo_vector_load_site",
+            "bmo_vector_store_site",
+        )
+    }
+    trace_dir = tmp_path / "trace"
+    manifest = capture_program(
+        (str(executable),), trace_dir, dynamorio_home=home, client_path=client
+    )
+    events_by_pc = {
+        address: [
+            event
+            for path in event_files(trace_dir)
+            for event in TraceReader(path)
+            if event.pc == address
+        ]
+        for address in sites.values()
+    }
+
+    assert manifest.exit_code == 0
+    assert manifest.dropped_events == 0, manifest.dropped_by_reason
+    expected = {
+        "bmo_push_site": (EventKind.STORE, 8),
+        "bmo_pop_site": (EventKind.LOAD, 8),
+        "bmo_call_site": (EventKind.STORE, 8),
+        "bmo_ret_site": (EventKind.LOAD, 8),
+        "bmo_fld_site": (EventKind.LOAD, 8),
+        "bmo_fst_site": (EventKind.STORE, 8),
+        "bmo_vector_load_site": (EventKind.LOAD, 16),
+        "bmo_vector_store_site": (EventKind.STORE, 16),
+    }
+    for name, (kind, size) in expected.items():
+        assert any(
+            event.kind == kind and event.size == size
+            for event in events_by_pc[sites[name]]
+        ), name

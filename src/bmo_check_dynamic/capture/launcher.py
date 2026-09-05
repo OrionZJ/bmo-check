@@ -111,7 +111,7 @@ def capture_program(
         executable=fingerprint(executable),
         libraries=dependency_fingerprints(executable),
         dynamorio_version=dynamorio_version(dynamorio_home),
-        client_version="0.2",
+        client_version="0.3",
         complete=False,
         limitations=(
             "trace scope excludes unexecuted paths and alternative input-dependent addresses",

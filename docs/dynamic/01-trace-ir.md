@@ -20,6 +20,6 @@ sem_post。address 保存同步对象地址；cond wait 的进入记录用 value
 
 `manifest.json` 固定 executable、library closure、argv、显式环境、DynamoRIO/client
 版本、退出状态和 dropped count。`dropped_by_reason` 区分写文件失败、线程状态
-缺失、未知宽度、寄存器不足、地址计算失败、生命周期及 module 元数据失败；总数
+缺失、未知宽度、寄存器不足、地址计算失败、多地址指令展开失败、生命周期及 module 元数据失败；总数
 非零时 verdict 必须是 `UNKNOWN`。manifest 未完成时仍允许生成报告，但 verdict
 也必须是 `UNKNOWN`。

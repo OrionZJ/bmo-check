@@ -4,7 +4,7 @@
 
 | 要求 | 权威证据 | 结论 |
 |---|---|---|
-| 访存、LOCK/XCHG、Fence、线程、同步、对象、module、间接目标、signal/syscall 采集 | `tests/dynamic/test_native_capture.py` 使用真实 DynamoRIO client 检查全部 event kind、flags 和返回码 | 通过 |
+| 访存、LOCK/XCHG、Fence、线程、同步、对象、module、间接目标、signal/syscall 采集 | `tests/dynamic/test_native_capture.py` 使用真实 DynamoRIO client 检查全部 event kind、flags 和返回码；逐地址验证 REP/gather，逐 PC 验证栈、CALL/RET、x87 和 SIMD | 通过 |
 | 截断、丢事件、异常退出、未知字段不得产生 SAFE | `test_trace_format.py`、`test_pipeline.py` 覆盖 marker、sequence、格式、drop 和退出码 | 通过 |
 | 流式存储、对象 generation、地址复用 | `TraceStore` 使用固定 batch COPY 与 DuckDB memory limit；`test_objects.py`、`test_communication.py` 覆盖 generation 和扫描上限 | 通过 |
 | 精确跨线程字节相交通信边 | `test_communication.py` 覆盖跨页、非对齐、只读、TLS escape、不同 generation 和活动集合上限 | 通过 |
@@ -22,7 +22,7 @@ export DYNAMORIO_HOME=/home/hezhj/.local/opt/dynamorio
 ~/.local/bin/uv run pytest -q
 ```
 
-结果：`161 passed in 82.55s`。
+结果：`164 passed in 85.25s`。
 
 blackscholes 当前证书位于本地实验目录
 `.bmo-check/traces/blackscholes-test/certificate-current.json`：schema 1.1、analyzer
