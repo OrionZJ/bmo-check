@@ -2,14 +2,16 @@
 
 每个窗口枚举 read-from、每地址 coherence 和 from-read。初始写是每个 read 的候选；同线程未来写不能成为该 read 的来源。coherence 必须保留同线程同地址写顺序。
 
-x86-TSO preserved order 保留 Load→Load、Load→Store、Store→Store，普通 Store→Load 可以放松。目标模型不为普通访存增加顺序；LFENCE、SFENCE、MFENCE 和 atomic 按 DBT contract 补边。同步 API 名称本身不产生 target ordering，库内部实际 atomic/Fence 才能产生。
+x86-TSO preserved order 保留 Load→Load、Load→Store、Store→Store，普通 Store→Load 可以放松。目标模型保留 RVWMO 明文规定的 overlapping-address order，但暂不使用尚未恢复的寄存器依赖；LFENCE、SFENCE、MFENCE 和 atomic 按 DBT contract 补边。同步 API 名称本身不产生 target ordering，库内部实际 atomic/Fence 才能产生。
 
 若某个关系图在 target 无环、在 source 成环，它是 target-only candidate。只有 trace 声明控制骨架闭合，且所有 read-from 的值均有记录并匹配时，candidate 才能成为 `COUNTEREXAMPLE`；否则返回带 witness 的 `UNKNOWN`。
 
 所有 target 候选均被 source 接受时，窗口为 safe。所有通信窗口 safe 且 trace 完整时，最终才是 `TRACE_SAFE`。
 
 宽 Store 完整覆盖窄 Load 时，read-from 绑定到同一个写事件，并按小端偏移比较值。
-两个不同宽度的写发生重叠，或一个 Load 需要拼接多个局部写时，当前编码仍返回
+不同宽度的普通 Store 重叠时，符号求解器把 overlap-connected 写放入同一个
+coherence rank 空间，并只给真正重叠的写生成 coherence 边。一个 Store 完整覆盖
+Load 时可以作为 read-from 来源。多个局部写拼成一次 Load、以及混合宽度原子仍返回
 `UNKNOWN`；不能用拆成独立字节的 source 过近似冒充 x86 原子访问。
 
 小窗口先用显式 read-from/coherence 枚举，便于生成直观 witness。排列超过执行预算

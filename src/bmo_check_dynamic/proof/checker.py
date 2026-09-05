@@ -27,15 +27,18 @@ def check_window(
     deadline = monotonic() + timeout_ms / 1000
     memory = tuple(event for event in window.events if event.kind.is_memory)
     writes = tuple(event for event in memory if event.kind.is_write)
+    mixed_write_overlap = False
     for index, left in enumerate(writes):
         for right in writes[index + 1 :]:
             if left.overlaps(right) and _location(left) != _location(right):
-                return WindowResult(
-                    window_id=window.window_id,
-                    event_ids=tuple(event.event_id for event in window.events),
-                    status="unknown",
-                    reason="overlapping mixed-width writes need byte-level coherence",
-                )
+                mixed_write_overlap = True
+                if left.kind == EventKind.ATOMIC_RMW or right.kind == EventKind.ATOMIC_RMW:
+                    return WindowResult(
+                        window_id=window.window_id,
+                        event_ids=tuple(event.event_id for event in window.events),
+                        status="unknown",
+                        reason="mixed-width atomic coherence is not supported",
+                    )
 
     reads = tuple(event for event in memory if event.kind.is_read)
     for read in reads:
@@ -70,7 +73,8 @@ def check_window(
     source_ppo = source_preserved_order(window.events)
     target_ppo = target_preserved_order(window.events)
     # 先决定是否转符号求解，避免在预算检查前就物化阶乘数量的 coherence 排列。
-    if len(memory) > 12 or any(len(group) > 6 for group in writes_by_location.values()):
+    if (mixed_write_overlap or len(memory) > 12 or
+            any(len(group) > 6 for group in writes_by_location.values())):
         return _check_symbolic(
             window, reads, writes, writes_by_location, source_ppo, target_ppo,
             control_flow_closed=control_flow_closed, timeout_ms=timeout_ms,
@@ -276,11 +280,12 @@ def _check_symbolic(
     event_by_id = {event.event_id: event for event in window.events}
     nodes = tuple(sorted(event_by_id))
     topological = {node: z3.Int(f"target_rank_{index}") for index, node in enumerate(nodes)}
-    solver.add(z3.Distinct(*topological.values()))
-    solver.add(*(z3.And(rank >= 0, rank < len(nodes)) for rank in topological.values()))
+    # 有向图无环只要求每条边的 rank 严格递增。无关节点可以共享 rank；强迫
+    # 数千个节点全异会制造一个与 memory model 无关的排列问题。
 
+    coherence_groups = _overlap_components(writes)
     co_rank: dict[str, z3.ArithRef] = {}
-    for location_index, location_writes in enumerate(writes_by_location.values()):
+    for location_index, location_writes in enumerate(coherence_groups):
         ranks = []
         for write_index, write in enumerate(location_writes):
             rank = z3.Int(f"co_{location_index}_{write_index}")
@@ -291,7 +296,8 @@ def _check_symbolic(
             solver.add(z3.Distinct(*ranks))
         for left in location_writes:
             for right in location_writes:
-                if left.thread_id == right.thread_id and left.sequence < right.sequence:
+                if (left.overlaps(right) and left.thread_id == right.thread_id and
+                        left.sequence < right.sequence):
                     solver.add(co_rank[left.event_id] < co_rank[right.event_id])
 
     rf_choice: dict[str, tuple[z3.ArithRef, tuple[TraceEvent, ...]]] = {}
@@ -300,10 +306,10 @@ def _check_symbolic(
     def add_edge(edge: Edge, condition: z3.BoolRef) -> None:
         conditional_edges.setdefault(edge, []).append(condition)
 
-    for location_writes in writes_by_location.values():
+    for location_writes in coherence_groups:
         for left in location_writes:
             for right in location_writes:
-                if left is not right:
+                if left is not right and left.overlaps(right):
                     add_edge(
                         (left.event_id, right.event_id),
                         co_rank[left.event_id] < co_rank[right.event_id],
@@ -335,7 +341,7 @@ def _check_symbolic(
                 continue
             conditions: list[z3.BoolRef] = [choice == -1]
             for index, source in enumerate(candidates):
-                if _location(source) != _location(later) or source is later:
+                if not source.overlaps(later) or source is later:
                     continue
                 conditions.append(
                     z3.And(
@@ -407,7 +413,7 @@ def _check_symbolic(
     )
     coherence_orders = tuple(
         tuple(sorted(location_writes, key=lambda event: model.eval(co_rank[event.event_id]).as_long()))
-        for location_writes in writes_by_location.values()
+        for location_writes in coherence_groups
     )
     selected_source_edges = {
         edge for edge, selected in selected_edges.items() if z3.is_true(model.eval(selected))
@@ -444,3 +450,28 @@ def _check_symbolic(
         reason=witness.reason,
         witness=witness,
     )
+
+
+def _overlap_components(
+    writes: tuple[TraceEvent, ...],
+) -> tuple[tuple[TraceEvent, ...], ...]:
+    """把共享任一字节的写放进同一个 coherence rank 空间。"""
+
+    remaining = set(range(len(writes)))
+    components: list[tuple[TraceEvent, ...]] = []
+    while remaining:
+        seed = remaining.pop()
+        component = {seed}
+        pending = [seed]
+        while pending:
+            current = pending.pop()
+            connected = {
+                other
+                for other in remaining
+                if writes[current].overlaps(writes[other])
+            }
+            remaining.difference_update(connected)
+            component.update(connected)
+            pending.extend(connected)
+        components.append(tuple(writes[index] for index in sorted(component)))
+    return tuple(components)

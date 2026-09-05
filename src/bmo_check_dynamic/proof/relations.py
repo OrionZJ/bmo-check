@@ -13,19 +13,44 @@ def source_preserved_order(events: tuple[TraceEvent, ...]) -> set[Edge]:
     edges: set[Edge] = set()
     by_thread = _by_thread(events)
     for thread_events in by_thread.values():
-        for left_index, left in enumerate(thread_events):
-            for right in thread_events[left_index + 1 :]:
-                if not (left.kind.is_write and right.kind.is_read):
-                    edges.add((left.event_id, right.event_id))
+        previous_read: TraceEvent | None = None
+        previous_write: TraceEvent | None = None
+        for event in thread_events:
+            if not event.kind.is_memory:
+                continue
+            # 每类只连接最近前驱即可保留同样的可达关系，避免长循环生成 O(n²)
+            # 条 source PPO。Store→Load 仍故意没有边。
+            if event.kind.is_read and previous_read is not None:
+                edges.add((previous_read.event_id, event.event_id))
+            if event.kind.is_write:
+                if previous_read is not None:
+                    edges.add((previous_read.event_id, event.event_id))
+                if previous_write is not None:
+                    edges.add((previous_write.event_id, event.event_id))
+            if event.kind.is_read:
+                previous_read = event
+            if event.kind.is_write:
+                previous_write = event
         edges.update(_boundary_edges(thread_events))
     return edges
 
 
 def target_preserved_order(events: tuple[TraceEvent, ...]) -> set[Edge]:
-    """普通 RVWMO 依赖暂不用于 SAFE；少放边只会让 target 过近似更保守。"""
+    """只加入无需寄存器数据流也能证明的 RVWMO 顺序。"""
 
     edges: set[Edge] = set()
     for thread_events in _by_thread(events).values():
+        memory = [event for event in thread_events if event.kind.is_memory]
+        for index, right in enumerate(memory):
+            if not right.kind.is_write:
+                continue
+            # RVWMO 的 overlapping-address order 会保留同 hart 上先前访存到
+            # 后续重叠 Store 的顺序；这不是从本次调度推断出来的时序。
+            edges.update(
+                (left.event_id, right.event_id)
+                for left in memory[:index]
+                if left.overlaps(right)
+            )
         edges.update(_boundary_edges(thread_events))
     return edges
 
@@ -45,25 +70,34 @@ def _boundary_edges(events: list[TraceEvent]) -> set[Edge]:
         before, after = events[:index], events[index + 1 :]
         if boundary.kind == EventKind.LFENCE:
             edges.update(
-                (left.event_id, right.event_id)
+                (left.event_id, boundary.event_id)
                 for left in before
                 if left.kind.is_read
+            )
+            edges.update(
+                (boundary.event_id, right.event_id)
                 for right in after
                 if right.kind.is_read
             )
         elif boundary.kind == EventKind.SFENCE:
             edges.update(
-                (left.event_id, right.event_id)
+                (left.event_id, boundary.event_id)
                 for left in before
                 if left.kind.is_write
+            )
+            edges.update(
+                (boundary.event_id, right.event_id)
                 for right in after
                 if right.kind.is_write
             )
         elif boundary.kind == EventKind.MFENCE:
             edges.update(
-                (left.event_id, right.event_id)
+                (left.event_id, boundary.event_id)
                 for left in before
                 if left.kind.is_memory
+            )
+            edges.update(
+                (boundary.event_id, right.event_id)
                 for right in after
                 if right.kind.is_memory
             )

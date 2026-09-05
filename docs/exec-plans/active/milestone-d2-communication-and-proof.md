@@ -33,3 +33,10 @@
 这仍不足以验收 D2：原生采集尚未闭合值与控制路径证明；生命周期剪枝已经撤回，
 真实程序需要重新验收；source/target 模型还需独立参考验证，包括同线程转发、
 混合宽度和依赖。不能用两条共享建模规则的实现互相通过代替架构证明。
+
+blackscholes 的严格复查显示，原 7,949 事件巨窗中 7,371 条通信边来自主线程
+初始化写与 worker 输入读，worker 间只有 3 条边。不能用生命周期 ticket 删除前者。
+x86 PPO 已换成保持同一可达关系的稀疏边，RVWMO 也补入明文规定的
+overlapping-address order；普通混合宽度写可进入符号 coherence。把显式窗口预算
+提高到 10,000 后，当前首个阻塞变成“宽 Load 可能由多个窄 Store 拼接”。在
+byte-level read-from 同时约束 source 原子性之前，此情况继续返回 UNKNOWN。

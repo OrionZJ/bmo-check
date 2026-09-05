@@ -62,3 +62,42 @@ def test_four_plain_program_order_pairs(left, right, preserved):
     edge = (events[0].event_id, events[1].event_id)
     assert (edge in source_preserved_order(events)) == preserved
     assert edge not in target_preserved_order(events)
+
+
+def _reachable(edges, source, target):
+    pending = [source]
+    visited = set()
+    while pending:
+        current = pending.pop()
+        if current == target:
+            return True
+        if current in visited:
+            continue
+        visited.add(current)
+        pending.extend(right for left, right in edges if left == current)
+    return False
+
+
+def test_compact_source_order_preserves_non_adjacent_store_order():
+    events = _window("store-load-store", [[(S, X), (L, Y), (S, Y)]]).events
+    edges = source_preserved_order(events)
+    assert _reachable(edges, events[0].event_id, events[2].event_id)
+    assert not _reachable(edges, events[0].event_id, events[1].event_id)
+
+
+def test_target_preserves_overlapping_address_order_before_store():
+    events = _window("overlap", [[(L, X), (S, X), (S, X)]]).events
+    edges = target_preserved_order(events)
+    assert (events[0].event_id, events[1].event_id) in edges
+    assert (events[1].event_id, events[2].event_id) in edges
+
+
+@pytest.mark.parametrize("fence", [LF, SF, MF])
+def test_fence_relation_uses_boundary_node_without_changing_reachability(fence):
+    events = _window("fence", [[(L, X), (S, Y), (fence, 0), (L, Y), (S, X)]]).events
+    source = source_preserved_order(events)
+    target = target_preserved_order(events)
+    fence_id = events[2].event_id
+    assert any(right == fence_id for _left, right in target)
+    assert any(left == fence_id for left, _right in target)
+    assert all(left != fence_id and right != fence_id for left, right in source - target)

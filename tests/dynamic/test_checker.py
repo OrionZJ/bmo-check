@@ -92,6 +92,27 @@ def test_wider_store_can_supply_contained_read() -> None:
     assert result.status == "safe"
 
 
+def test_overlapping_mixed_width_writes_use_symbolic_coherence() -> None:
+    events = (
+        TraceEvent(1, 1, 0, 0x10, EventKind.STORE, 0x1000, 8),
+        TraceEvent(1, 2, 0, 0x11, EventKind.STORE, 0x1004, 4),
+        TraceEvent(2, 1, 0, 0x20, EventKind.LOAD, 0x1004, 4),
+    )
+    result = check_window(
+        AnalysisWindow(
+            "mixed-writes",
+            events,
+            (
+                CommunicationEdge("t1:e1", "t2:e1", 0x1004, 4),
+                CommunicationEdge("t1:e2", "t2:e1", 0x1004, 4),
+            ),
+        ),
+        max_executions=100,
+        control_flow_closed=False,
+    )
+    assert result.status == "safe"
+
+
 def test_read_spanning_only_part_of_write_stays_unknown() -> None:
     events = (
         TraceEvent(1, 1, 0, 0x10, EventKind.STORE, 0x1000, 4),

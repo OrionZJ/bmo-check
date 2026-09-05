@@ -23,3 +23,10 @@
 ## Acceptance criteria
 
 所有失败都有显式 dropped/Unknown；地址复用产生新 generation；导入峰值内存不随 trace 总大小线性增长。
+
+## 当前验收证据
+
+2026-09-05 在 WSL2 使用真实 DynamoRIO client 跑过 pthread、OpenMP、同步 API 和
+不支持共享映射测试；全仓 155 项测试通过。`.complete` 现在只在 dropped 计数、
+drop reason 和 module 清单落盘后创建，证书哈希也绑定这些文件。写失败、module
+宽度溢出和 allocation 尺寸溢出都会阻止 `TRACE_SAFE`。

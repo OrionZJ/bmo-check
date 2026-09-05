@@ -34,8 +34,13 @@ swaptions 的 pthread worker 在 `HJM_Securities.cpp:83-103` 按余数修正后�
 二进制 SHA-256：
 `618310690ec0cade7c75f73fe842c0c185ab66ff4ab08f2889ee89d0812f3546`。
 
-这两项只关闭主模块的“只读输入 + 分离输出”子问题。blackscholes 仍有一个
-7,835 事件的运行库通信窗口超过当前求解上限，因此整条轨迹仍为 `UNKNOWN`。
+这两项只关闭主模块的“只读输入 + 分离输出”子问题。撤回生命周期剪枝后，
+blackscholes 有一个 7,949 事件窗口，其中 7,371 条边连接主线程初始化写与 worker
+输入读。显式把窗口预算提高到 10,000 后，普通混合宽度写已能进入 coherence，
+当前首个阻塞是宽 Load 可能由多个窄 Store 拼接，因此整条轨迹仍为 `UNKNOWN`。
+
+上述 certificate 生成于完整性元数据纳入 trace digest 之前，只作为问题定位材料，
+不是现版本可验收证书。
 
 ## canneal：Checkin 的普通 Store 发布
 

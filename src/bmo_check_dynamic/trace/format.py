@@ -105,7 +105,16 @@ def event_files(trace_dir: Path) -> tuple[Path, ...]:
 
 def trace_digest(trace_dir: Path) -> str:
     digest = hashlib.sha256()
-    for path in (trace_dir / "manifest.json", *event_files(trace_dir)):
+    metadata = (
+        trace_dir / "manifest.json",
+        trace_dir / "modules.tsv",
+        trace_dir / ".dropped",
+        trace_dir / ".drop-reasons",
+        trace_dir / ".complete",
+    )
+    # module 范围和 dropped marker 都参与 verdict；证书若不绑定它们，轨迹文件
+    # 不变时仍可替换分析范围或完整性状态。
+    for path in (*metadata, *event_files(trace_dir)):
         if not path.is_file():
             continue
         digest.update(path.name.encode("utf-8"))

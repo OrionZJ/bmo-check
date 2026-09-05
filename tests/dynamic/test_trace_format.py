@@ -5,7 +5,13 @@ from pathlib import Path
 import pytest
 
 from bmo_check_dynamic.model import EventFlags, EventKind, TraceEvent
-from bmo_check_dynamic.trace import TraceFormatError, TraceReader, TraceWriter, validate_trace
+from bmo_check_dynamic.trace import (
+    TraceFormatError,
+    TraceReader,
+    TraceWriter,
+    trace_digest,
+    validate_trace,
+)
 
 
 def test_trace_round_trip_and_validation(trace_manifest, tmp_path: Path) -> None:
@@ -25,6 +31,24 @@ def test_trace_round_trip_and_validation(trace_manifest, tmp_path: Path) -> None
     assert validation.valid
     assert validation.event_count == 3
     assert validation.thread_ids == (7,)
+
+
+def test_trace_digest_binds_module_and_completion_metadata(
+    trace_manifest, tmp_path: Path
+) -> None:
+    trace_dir = tmp_path / "trace"
+    trace_manifest(trace_dir)
+    with TraceWriter(trace_dir / "events-1.bin") as writer:
+        writer.write(TraceEvent(1, 1, 1, 0, EventKind.THREAD_START))
+    (trace_dir / "modules.tsv").write_text("0x1000\t0x2000\t/program\n")
+    (trace_dir / ".dropped").write_text("0\n")
+    (trace_dir / ".drop-reasons").write_text("")
+    (trace_dir / ".complete").touch()
+    original = trace_digest(trace_dir)
+
+    (trace_dir / "modules.tsv").write_text("0x1000\t0x3000\t/program\n")
+
+    assert trace_digest(trace_dir) != original
 
 
 def test_truncated_trace_is_unknown(trace_manifest, tmp_path: Path) -> None:
