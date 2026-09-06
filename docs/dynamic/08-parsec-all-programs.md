@@ -39,18 +39,22 @@ client 0.4 中补齐。除 facesim 使用 simsmall 外，其他
   结构校验用 216.77 秒完成，峰值 RSS 约 45 MiB；分析内存已有界，
   但原始轨迹仍需要采集预算。
 
-## 下一个突破点
+## 后续突破进展
 
 全套轨迹的 syscall 集合只包含 0、1、3、9、10、11、12、13、14、20、25、60、
-158、202、231、257、302、334 和 435。下一阶段应在采集端记录这些
-syscall 的必要参数与返回值，然后分三类闭合：
+158、202、231、257、302、334 和 435。analyzer 0.4.0 与 client 0.5
+已经记录 syscall 的六个原始参数和返回值，并完成第一版严格 effect 分类：
 
-1. 把 `read/write/writev` 的用户缓冲区记为内核读或写的精确字节范围。
-2. 把 `futex` 的 `uaddr`、operation 和返回值记入同步事件，不凭
-   syscall 名称自动添加排序边。
-3. 把 `mmap/mprotect/munmap/mremap/brk`、`clone3/rseq`、signal 和其他进程
-   状态 syscall 分别对应到 object generation、线程生命周期或无共享用户内存
-   effect。只有参数和返回值匹配支持表时才能移除 `UNKNOWN`。
+- 串行阶段的 effect 折叠进固定轨迹的初态或末态。
+- 并发期只闭合能由参数、返回值和对象生命周期复核的
+  `mmap/mprotect/munmap`、线程本地 signal mask、`rseq` 与 `clone3` 等调用。
+- `futex`、I/O、`brk`、`mremap` 等尚未建模的并发 effect 继续返回
+  `UNKNOWN`，不能凭 syscall 名称放行。
+
+代表性重跑表明 blackscholes 已从 60 个笼统边界缩小到 1 个具体 futex；
+swaptions 和 canneal 已通过 syscall 预检并进入通信边分析。当前主要阻塞点
+已经变成具体的并发 syscall effect 和过大的通信窗口，详见
+`docs/dynamic/09-syscall-effects.md`。
 
 本轮证书保存在 `.bmo-check/parsec-all-test/results/`。该目录是本地实验
 产物，不纳入 Git。

@@ -33,6 +33,9 @@ class EventKind(IntEnum):
     INDIRECT_TARGET = 32
     SYSCALL = 33
     SIGNAL = 34
+    # syscall 参数和返回值用独立记录配对，避免把 64 位参数塞进 size。
+    SYSCALL_EXIT = 35
+    SYSCALL_ARG = 36
 
     @property
     def is_memory(self) -> bool:

@@ -30,6 +30,9 @@
   `docs/dynamic/08-parsec-all-programs.md`。
 - client 增加每线程事件预算；超限显式产生 `resource_limit` drop。
 - 结构校验改为批量解包。1.1178 亿事件在约 45 MiB RSS 下扫描完成。
-- 当前 12 项均为 `UNKNOWN`；7 项完整零丢失轨迹的共同阻塞点是
-  opaque syscall effect。D3 尚未验收，下一步是 syscall 参数/effect 闭合和
-  多次 campaign 覆盖去重。
+- analyzer 0.4.0 与 client 0.5 已采集 syscall 参数和返回值，并按实际
+  地址、线程阶段及对象生命周期闭合第一批 effect；旧格式仍保守返回
+  `UNKNOWN`。
+- 代表性重跑中，swaptions 与 canneal 已越过 syscall 预检并进入通信分析；
+  blackscholes 只剩一个具体 futex。D3 尚未验收，下一步是闭合并发
+  futex/I/O 等 effect、切分大型通信窗口，并实现多次 campaign 覆盖去重。

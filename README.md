@@ -81,3 +81,4 @@ uv run pytest
 D1/D2 首个严格闭环的逐项证据位于
 `docs/exec-plans/active/d1-d2-acceptance.md`。
 PARSEC 3.0 全程序实验位于 `docs/dynamic/08-parsec-all-programs.md`。
+syscall 参数/effect 的严格闭合规则位于 `docs/dynamic/09-syscall-effects.md`。

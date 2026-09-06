@@ -10,6 +10,7 @@ import pytest
 
 from bmo_check_dynamic.capture import capture_program
 from bmo_check_dynamic.capture.launcher import dynamorio_version
+from bmo_check_dynamic.config import DynamicConfig
 from bmo_check_dynamic.model import EventFlags, EventKind, TraceVerdict
 from bmo_check_dynamic.pipeline import analyze_trace
 from bmo_check_dynamic.trace import TraceReader
@@ -118,7 +119,7 @@ def test_pthread_and_object_lifecycle_capture(tmp_path: Path) -> None:
     assert any(flags & EventFlags.XCHG for flags in atomic_flags)
     certificate = analyze_trace(trace_dir, dbt_contract=_contract())
     assert certificate.verdict == TraceVerdict.UNKNOWN
-    assert "opaque syscall" in " ".join(certificate.unknown_reasons)
+    assert "syscall 202" in " ".join(certificate.unknown_reasons)
 
 
 @pytest.mark.skipif(
@@ -156,9 +157,13 @@ def test_openmp_runtime_threads_are_captured(tmp_path: Path) -> None:
     assert manifest.complete
     assert manifest.dropped_events == 0, manifest.dropped_by_reason
     assert len(thread_ids) >= 2
-    certificate = analyze_trace(trace_dir, dbt_contract=_contract())
+    certificate = analyze_trace(
+        trace_dir,
+        dbt_contract=_contract(),
+        config=DynamicConfig(max_communication_edges=1, max_window_events=32),
+    )
     assert certificate.verdict == TraceVerdict.UNKNOWN
-    assert "opaque syscall" in " ".join(certificate.unknown_reasons)
+    assert "syscall" not in " ".join(certificate.unknown_reasons)
 
 
 @pytest.mark.skipif(
@@ -396,3 +401,26 @@ def test_native_event_budget_marks_trace_unknown(tmp_path: Path) -> None:
     validation = validate_trace(trace_dir)
     assert not validation.valid
     assert "resource_limit" in " ".join(validation.reasons)
+
+
+@pytest.mark.skipif(_native_environment() is None, reason="native capture environment required")
+def test_relative_trace_path_survives_target_cwd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    environment = _native_environment()
+    assert environment is not None
+    home, client, _compiler = environment
+    target_cwd = tmp_path / "target-cwd"
+    target_cwd.mkdir()
+    monkeypatch.chdir(tmp_path)
+
+    manifest = capture_program(
+        ("/bin/true",),
+        Path("relative-trace"),
+        dynamorio_home=home,
+        client_path=client,
+        working_directory=target_cwd,
+    )
+
+    assert manifest.complete
+    assert (tmp_path / "relative-trace" / "manifest.json").is_file()

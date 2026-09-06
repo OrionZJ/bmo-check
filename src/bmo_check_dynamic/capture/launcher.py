@@ -104,6 +104,9 @@ def capture_program(
     with executable.open("rb") as stream:
         if stream.read(5) != b"\x7fELF\x02":
             raise CaptureError("dynamic capture requires a 64-bit ELF executable")
+    # drrun 会切换到目标 cwd。先固定绝对路径，否则 client 会把相对
+    # trace 目录解释到被测程序目录，导致整条轨迹没有事件文件。
+    output_dir = output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=False)
     manifest = TraceManifest(
         trace_id=str(uuid.uuid4()),
@@ -114,7 +117,7 @@ def capture_program(
         executable=fingerprint(executable),
         libraries=dependency_fingerprints(executable),
         dynamorio_version=dynamorio_version(dynamorio_home),
-        client_version="0.4",
+        client_version="0.5",
         complete=False,
         limitations=(
             "trace scope excludes unexecuted paths and alternative input-dependent addresses",

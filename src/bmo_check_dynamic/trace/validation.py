@@ -13,6 +13,7 @@ from .format import (
     TraceFormatError,
     event_files,
 )
+from .syscalls import SyscallObservation, unsupported_syscall_effects
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,6 +32,11 @@ def validate_trace(trace_dir: Path) -> TraceValidation:
     event_count = 0
     thread_ids: set[int] = set()
     syscall_count = 0
+    saw_syscall_metadata = False
+    syscall_observations: list[SyscallObservation] = []
+    lifecycle: list[tuple[int, int, int]] = []
+    stacks: dict[int, tuple[int, int]] = {}
+    captured_munmaps: set[tuple[int, int, int]] = set()
 
     def add_reason(reason: str) -> None:
         nonlocal omitted_reasons
@@ -70,6 +76,29 @@ def validate_trace(trace_dir: Path) -> TraceValidation:
     }
     for path in files:
         file_event_count = 0
+        pending_call: dict[str, object] | None = None
+
+        def finish_pending(result: int | None = None) -> None:
+            nonlocal pending_call
+            if pending_call is None:
+                return
+            arguments = pending_call["arguments"]
+            assert isinstance(arguments, dict)
+            syscall_observations.append(
+                SyscallObservation(
+                    thread_id=int(pending_call["thread_id"]),
+                    ticket=int(pending_call["ticket"]),
+                    number=int(pending_call["number"]),
+                    arguments=tuple(
+                        int(arguments[index])
+                        for index in range(6)
+                        if index in arguments
+                    ),
+                    result=result,
+                )
+            )
+            pending_call = None
+
         try:
             with path.open("rb") as stream:
                 raw_header = stream.read(HEADER.size)
@@ -89,7 +118,13 @@ def validate_trace(trace_dir: Path) -> TraceValidation:
                         raise TraceFormatError(f"truncated event record: {path}")
                     for record in RECORD.iter_unpack(raw):
                         kind, flags, thread_id, sequence = record[:4]
-                        address, size = record[6], record[8]
+                        ticket, address, value, size, aux = (
+                            record[4],
+                            record[6],
+                            record[7],
+                            record[8],
+                            record[9],
+                        )
                         event_count += 1
                         file_event_count += 1
                         thread_ids.add(thread_id)
@@ -97,6 +132,54 @@ def validate_trace(trace_dir: Path) -> TraceValidation:
                             raise TraceFormatError(f"unknown event kind {kind}: {path}")
                         if kind == int(EventKind.SYSCALL):
                             syscall_count += 1
+                            finish_pending()
+                            pending_call = {
+                                "thread_id": thread_id,
+                                "ticket": ticket,
+                                "number": aux,
+                                "arguments": {},
+                            }
+                        elif kind == int(EventKind.SYSCALL_ARG):
+                            saw_syscall_metadata = True
+                            if (
+                                pending_call is None
+                                or int(pending_call["number"]) != value
+                                or aux >= 6
+                            ):
+                                add_reason(
+                                    f"orphan syscall argument for thread {thread_id} "
+                                    f"in {path.name}"
+                                )
+                            else:
+                                arguments = pending_call["arguments"]
+                                assert isinstance(arguments, dict)
+                                if aux in arguments:
+                                    add_reason(
+                                        f"duplicate syscall argument {aux} for thread "
+                                        f"{thread_id} in {path.name}"
+                                    )
+                                arguments[aux] = address
+                        elif kind == int(EventKind.SYSCALL_EXIT):
+                            saw_syscall_metadata = True
+                            if (
+                                pending_call is None
+                                or int(pending_call["number"]) != aux
+                            ):
+                                add_reason(
+                                    f"orphan syscall return for thread {thread_id} "
+                                    f"in {path.name}"
+                                )
+                            else:
+                                finish_pending(value)
+                        if kind in {
+                            int(EventKind.THREAD_START),
+                            int(EventKind.THREAD_END),
+                        }:
+                            lifecycle.append((ticket, kind, thread_id))
+                        elif kind == int(EventKind.THREAD_STACK):
+                            stacks[thread_id] = (address, size)
+                        elif kind == int(EventKind.MUNMAP):
+                            captured_munmaps.add((thread_id, address, size))
                         old = previous.get(thread_id)
                         expected = 1 if old is None else old + 1
                         if sequence != expected:
@@ -119,11 +202,21 @@ def validate_trace(trace_dir: Path) -> TraceValidation:
         except (OSError, TraceFormatError) as error:
             # 一个坏文件不应掩盖其他线程也损坏的事实。
             add_reason(str(error))
+        finish_pending()
     structurally_complete = not reasons
     if len(thread_ids) > 1 and syscall_count:
-        add_reason(
-            f"multi-thread trace contains {syscall_count} opaque syscall boundaries"
-        )
+        if not saw_syscall_metadata:
+            add_reason(
+                f"multi-thread trace contains {syscall_count} opaque syscall boundaries"
+            )
+        else:
+            for reason in unsupported_syscall_effects(
+                tuple(syscall_observations),
+                tuple(lifecycle),
+                stacks,
+                captured_munmaps,
+            ):
+                add_reason(reason)
     if omitted_reasons:
         reasons.append(f"trace validation omitted {omitted_reasons} additional errors")
     return TraceValidation(

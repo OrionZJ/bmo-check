@@ -14,7 +14,7 @@ namespace {
 
 constexpr char kMagic[8] = {'B', 'M', 'O', 'T', 'R', 'A', 'C', 'E'};
 constexpr uint16_t kVersionMajor = 1;
-constexpr uint16_t kVersionMinor = 0;
+constexpr uint16_t kVersionMinor = 1;
 
 enum class EventKind : uint16_t {
     Load = 1,
@@ -43,6 +43,9 @@ enum class EventKind : uint16_t {
     IndirectTarget = 32,
     Syscall = 33,
     Signal = 34,
+    // Arg 保留 64 位参数，Exit 让分析器区分成功和失败的 effect。
+    SyscallExit = 35,
+    SyscallArg = 36,
 };
 
 enum EventFlags : uint16_t {
@@ -149,6 +152,26 @@ void flush_state(ThreadState *state) {
     if (dr_write_file(state->file, state->buffer, bytes) != bytes)
         note_drop(DropReason::Write, state->used);
     state->used = 0;
+}
+
+void write_record(EventKind kind, app_pc pc, uintptr_t address, uint32_t size,
+                  uint16_t flags, uint64_t value, uint32_t aux,
+                  bool needs_ticket);
+
+void record_stack_if_available(void *drcontext) {
+    ThreadState *state = state_for(drcontext);
+    if (state == nullptr || state->stack_base != 0)
+        return;
+    dr_mcontext_t context{sizeof(context), DR_MC_CONTROL};
+    dr_mem_info_t stack{};
+    if (!dr_get_mcontext(drcontext, &context) ||
+        !dr_query_memory_ex(reinterpret_cast<const byte *>(context.xsp), &stack) ||
+        stack.size > UINT32_MAX)
+        return;
+    state->stack_base = reinterpret_cast<uintptr_t>(stack.base_pc);
+    state->stack_size = static_cast<uint32_t>(stack.size);
+    write_record(EventKind::ThreadStack, nullptr, state->stack_base,
+                 state->stack_size, 0, 0, 0, true);
 }
 
 void write_record(EventKind kind, app_pc pc, uintptr_t address, uint32_t size,
@@ -361,16 +384,7 @@ void thread_init(void *drcontext) {
             note_drop(DropReason::Write);
     }
     write_record(EventKind::ThreadStart, nullptr, 0, 0, 0, 0, 0, true);
-    dr_mcontext_t context{sizeof(context), DR_MC_CONTROL};
-    dr_mem_info_t stack{};
-    if (dr_get_mcontext(drcontext, &context) &&
-        dr_query_memory_ex(reinterpret_cast<const byte *>(context.xsp), &stack) &&
-        stack.size <= UINT32_MAX) {
-        state->stack_base = reinterpret_cast<uintptr_t>(stack.base_pc);
-        state->stack_size = static_cast<uint32_t>(stack.size);
-        write_record(EventKind::ThreadStack, nullptr, state->stack_base,
-                     state->stack_size, 0, 0, 0, true);
-    }
+    record_stack_if_available(drcontext);
     // thread_init 早于可读 app context 时保留匿名地址。它可能增加伪通信边，
     // 但不会删除真实通信，因此不能冒充“丢失了访存事件”。
 }
@@ -714,6 +728,9 @@ void module_unload(void *, const module_data_t *module) {
 }
 
 bool pre_syscall(void *drcontext, int number) {
+    // main thread 在 thread_init 阶段可能还没有可读 app context。syscall 入口
+    // 已有稳定的 xsp，在这里补记 stack，才能证明 signal/clone 参数是线程私有的。
+    record_stack_if_available(drcontext);
     constexpr int kClone = 56;
     constexpr int kFork = 57;
     constexpr int kVfork = 58;
@@ -728,7 +745,21 @@ bool pre_syscall(void *drcontext, int number) {
         note_drop(DropReason::Unsupported);
     write_record(EventKind::Syscall, nullptr, 0, 0, 0, 0,
                  static_cast<uint32_t>(number), true);
+    // 参数记录紧跟 enter，并保留原始 64 位值。后续 effect 表只
+    // 读它需要的参数，未知 syscall 仍会保留完整证据。
+    for (uint32_t index = 0; index < 6; ++index) {
+        write_record(EventKind::SyscallArg, nullptr,
+                     static_cast<uintptr_t>(
+                         dr_syscall_get_param(drcontext, static_cast<int>(index))),
+                     0, 0, static_cast<uint64_t>(number), index);
+    }
     return true;
+}
+
+void post_syscall(void *drcontext, int number) {
+    write_record(EventKind::SyscallExit, nullptr, 0, 0, 0,
+                 static_cast<uint64_t>(dr_syscall_get_result(drcontext)),
+                 static_cast<uint32_t>(number), true);
 }
 
 dr_signal_action_t signal_event(void *, dr_siginfo_t *info) {
@@ -852,6 +883,7 @@ DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[]) {
         !drmgr_register_module_load_event(module_load) ||
         !drmgr_register_module_unload_event(module_unload) ||
         !drmgr_register_pre_syscall_event(pre_syscall) ||
+        !drmgr_register_post_syscall_event(post_syscall) ||
         !drmgr_register_signal_event(signal_event) ||
         !drmgr_register_bb_app2app_event(expand_multi_access_instructions, nullptr) ||
         !drmgr_register_bb_instrumentation_event(

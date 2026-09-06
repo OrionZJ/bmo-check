@@ -10,7 +10,7 @@ from bmo_check_dynamic.model import EventFlags, EventKind, TraceEvent
 
 MAGIC = b"BMOTRACE"
 VERSION_MAJOR = 1
-VERSION_MINOR = 0
+VERSION_MINOR = 1
 HEADER = struct.Struct("<8sHHI")
 # kind, flags, thread, sequence, ticket, pc, address, value, size, aux
 RECORD = struct.Struct("<HHIQQQQQII")
