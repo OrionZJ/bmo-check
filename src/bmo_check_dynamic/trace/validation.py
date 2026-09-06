@@ -5,7 +5,14 @@ from pathlib import Path
 
 from bmo_check_dynamic.model import EventFlags, EventKind, TraceManifest
 
-from .format import TraceFormatError, TraceReader, event_files
+from .format import (
+    HEADER,
+    MAGIC,
+    RECORD,
+    VERSION_MAJOR,
+    TraceFormatError,
+    event_files,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,29 +62,58 @@ def validate_trace(trace_dir: Path) -> TraceValidation:
     # 每个线程只保留最后序号；跨文件重复不能逃过检查，也无需缓存所有 event_id。
     previous: dict[int, int] = {}
     known_flags = sum(int(flag) for flag in EventFlags)
+    known_kinds = {int(kind) for kind in EventKind}
+    memory_kinds = {
+        int(EventKind.LOAD),
+        int(EventKind.STORE),
+        int(EventKind.ATOMIC_RMW),
+    }
     for path in files:
         file_event_count = 0
         try:
-            for event in TraceReader(path):
-                event_count += 1
-                file_event_count += 1
-                thread_ids.add(event.thread_id)
-                if event.kind == EventKind.SYSCALL:
-                    syscall_count += 1
-                old = previous.get(event.thread_id)
-                expected = 1 if old is None else old + 1
-                if event.sequence != expected:
-                    add_reason(
-                        f"sequence gap or duplicate for thread {event.thread_id} "
-                        f"in {path.name}: expected {expected}, got {event.sequence}"
-                    )
-                previous[event.thread_id] = event.sequence
-                if int(event.flags) & ~known_flags:
-                    add_reason(f"unsupported flags for {event.event_id}: {int(event.flags)}")
-                if event.kind.is_memory and event.size <= 0:
-                    add_reason(f"zero-width memory event {event.event_id}")
-                if event.kind.is_memory and event.end_address > 1 << 64:
-                    add_reason(f"memory range overflows address space: {event.event_id}")
+            with path.open("rb") as stream:
+                raw_header = stream.read(HEADER.size)
+                if len(raw_header) != HEADER.size:
+                    raise TraceFormatError(f"truncated trace header: {path}")
+                magic, major, _minor, record_size = HEADER.unpack(raw_header)
+                if (
+                    magic != MAGIC
+                    or major != VERSION_MAJOR
+                    or record_size != RECORD.size
+                ):
+                    raise TraceFormatError(f"unsupported trace format: {path}")
+                # 校验只需原始字段。批量解包避免为亿级记录创建
+                # TraceEvent/Pydantic 对象，但仍然逐条检查序号、标志和地址。
+                while raw := stream.read(RECORD.size * 65536):
+                    if len(raw) % RECORD.size:
+                        raise TraceFormatError(f"truncated event record: {path}")
+                    for record in RECORD.iter_unpack(raw):
+                        kind, flags, thread_id, sequence = record[:4]
+                        address, size = record[6], record[8]
+                        event_count += 1
+                        file_event_count += 1
+                        thread_ids.add(thread_id)
+                        if kind not in known_kinds:
+                            raise TraceFormatError(f"unknown event kind {kind}: {path}")
+                        if kind == int(EventKind.SYSCALL):
+                            syscall_count += 1
+                        old = previous.get(thread_id)
+                        expected = 1 if old is None else old + 1
+                        if sequence != expected:
+                            add_reason(
+                                f"sequence gap or duplicate for thread {thread_id} "
+                                f"in {path.name}: expected {expected}, got {sequence}"
+                            )
+                        previous[thread_id] = sequence
+                        event_id = f"t{thread_id}:e{sequence}"
+                        if flags & ~known_flags:
+                            add_reason(f"unsupported flags for {event_id}: {flags}")
+                        if kind in memory_kinds and size <= 0:
+                            add_reason(f"zero-width memory event {event_id}")
+                        if kind in memory_kinds and address + size > 1 << 64:
+                            add_reason(
+                                f"memory range overflows address space: {event_id}"
+                            )
             if not file_event_count:
                 add_reason(f"empty event file: {path.name}")
         except (OSError, TraceFormatError) as error:

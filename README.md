@@ -56,6 +56,9 @@ bmo-check explain trace/run-1/certificate.json
 bmo-check locate trace/run-1 --module /path/to/module --offset 0x1234
 ```
 
+大型程序可在 capture/run/campaign 中使用 `--max-thread-events N`
+限制轨迹大小。触顶会显式返回 `UNKNOWN`，不会在截断轨迹上继续证明。
+
 `locate` 按模块内偏移汇总某条指令的实际事件、线程、宽度和 flags。它用于复核
 发布点或原子分类，不参与 verdict，也不能单独证明 `TRACE_SAFE`。
 
@@ -77,3 +80,4 @@ uv run pytest
 动态路线文档位于 `docs/dynamic/`，原静态研究位于 `docs/static/`。
 D1/D2 首个严格闭环的逐项证据位于
 `docs/exec-plans/active/d1-d2-acceptance.md`。
+PARSEC 3.0 全程序实验位于 `docs/dynamic/08-parsec-all-programs.md`。

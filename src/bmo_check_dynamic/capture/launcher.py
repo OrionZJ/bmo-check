@@ -82,9 +82,12 @@ def capture_program(
     client_path: Path,
     environment: dict[str, str] | None = None,
     working_directory: Path | None = None,
+    max_thread_events: int | None = None,
 ) -> TraceManifest:
     if not command:
         raise CaptureError("program command cannot be empty")
+    if max_thread_events is not None and max_thread_events <= 0:
+        raise CaptureError("max_thread_events must be positive")
     if platform.system() != "Linux" or platform.machine().lower() not in {
         "x86_64",
         "amd64",
@@ -111,10 +114,15 @@ def capture_program(
         executable=fingerprint(executable),
         libraries=dependency_fingerprints(executable),
         dynamorio_version=dynamorio_version(dynamorio_home),
-        client_version="0.3",
+        client_version="0.4",
         complete=False,
         limitations=(
             "trace scope excludes unexecuted paths and alternative input-dependent addresses",
+            *(
+                (f"per-thread event budget: {max_thread_events}",)
+                if max_thread_events is not None
+                else ()
+            ),
         ),
     )
     manifest_path = output_dir / "manifest.json"
@@ -127,12 +135,18 @@ def capture_program(
         raise CaptureError(f"BMoCheck DynamoRIO client not found: {client_path}")
     child_environment = os.environ.copy()
     child_environment.update(environment or {})
+    client_options = (
+        ("--max-thread-events", str(max_thread_events))
+        if max_thread_events is not None
+        else ()
+    )
     invocation = (
         str(drrun),
         "-c",
         str(client_path),
         "--trace-dir",
         str(output_dir),
+        *client_options,
         "--",
         *command,
     )

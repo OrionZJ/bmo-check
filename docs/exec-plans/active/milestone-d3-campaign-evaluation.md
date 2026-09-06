@@ -23,3 +23,13 @@
 ## Acceptance criteria
 
 每次运行保留独立证书；总体 `TRACE_SAFE` 要求所有成员 `TRACE_SAFE`；dedup 超预算时受控落盘或 `UNKNOWN`，不能被 OOM kill。
+
+## 2026-09-06 进展
+
+- 已覆盖用户指定的 12 个 PARSEC 程序，详见
+  `docs/dynamic/08-parsec-all-programs.md`。
+- client 增加每线程事件预算；超限显式产生 `resource_limit` drop。
+- 结构校验改为批量解包。1.1178 亿事件在约 45 MiB RSS 下扫描完成。
+- 当前 12 项均为 `UNKNOWN`；7 项完整零丢失轨迹的共同阻塞点是
+  opaque syscall effect。D3 尚未验收，下一步是 syscall 参数/effect 闭合和
+  多次 campaign 覆盖去重。

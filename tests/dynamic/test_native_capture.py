@@ -363,3 +363,36 @@ def test_stack_call_float_and_vector_memory_forms(tmp_path: Path) -> None:
             event.kind == kind and event.size == size
             for event in events_by_pc[sites[name]]
         ), name
+
+
+@pytest.mark.skipif(_native_environment() is None, reason="native capture environment required")
+def test_native_event_budget_marks_trace_unknown(tmp_path: Path) -> None:
+    environment = _native_environment()
+    assert environment is not None
+    home, client, compiler = environment
+    executable = tmp_path / "rep-budget"
+    subprocess.run(
+        [
+            compiler,
+            "-O0",
+            str(Path(__file__).parent / "native" / "rep_string.c"),
+            "-o",
+            str(executable),
+        ],
+        check=True,
+    )
+    trace_dir = tmp_path / "trace"
+    manifest = capture_program(
+        (str(executable),),
+        trace_dir,
+        dynamorio_home=home,
+        client_path=client,
+        max_thread_events=10,
+    )
+
+    assert manifest.complete
+    assert manifest.dropped_by_reason == {"resource_limit": 1}
+    assert "per-thread event budget: 10" in manifest.limitations
+    validation = validate_trace(trace_dir)
+    assert not validation.valid
+    assert "resource_limit" in " ".join(validation.reasons)

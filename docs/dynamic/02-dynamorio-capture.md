@@ -13,6 +13,10 @@ libc 同名版本符号可能对应不同实现地址，client 枚举导出符�
 
 普通访存写入线程私有文件，不取得全局锁。只有需要跨线程配对的事件领取 ticket。写文件或寄存器插桩失败会增加 dropped count，进程退出时写 `.dropped` 与 `.complete`。
 
+`--max-thread-events` 给大型实验设定每线程事件上限。触顶后 client
+停止记录该线程并只写一次 `resource_limit` drop，因此磁盘占用受预算
+限制，且被截断的轨迹不可能获得 `TRACE_SAFE`。
+
 Python launcher 在执行前保存不完整 manifest，执行后读取两个 marker。追踪器崩溃、被 kill 或 marker 缺失时不能伪装成空通信。
 
 首版支持 WSL2 和原生 Linux 的 x86-64 ELF。PE、JIT、自修改代码及跨进程共享映射不在支持范围。

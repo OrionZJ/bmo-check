@@ -61,6 +61,8 @@ enum class DropReason : size_t {
     AddressCalculation,
     // 多地址指令展开失败会漏掉部分访存，不能拿不完整的轨迹给出 SAFE。
     Instrumentation,
+    // 大程序可以无界写轨迹。达到用户预算后必须降为 UNKNOWN，不能截断后继续证明。
+    ResourceLimit,
     Lifecycle,
     ModuleMetadata,
     // 首版不建模跨进程共享和动态生成代码；遇到它们必须让证书转 UNKNOWN。
@@ -70,8 +72,8 @@ enum class DropReason : size_t {
 
 constexpr const char *kDropReasonNames[] = {
     "write", "missing_thread_state", "unknown_width", "register_reservation",
-    "address_calculation", "instrumentation", "lifecycle", "module_metadata",
-    "unsupported",
+    "address_calculation", "instrumentation", "resource_limit", "lifecycle",
+    "module_metadata", "unsupported",
 };
 static_assert(sizeof(kDropReasonNames) / sizeof(kDropReasonNames[0]) ==
               static_cast<size_t>(DropReason::Count));
@@ -113,11 +115,15 @@ struct ThreadState {
     // stack_base/size 由 thread init 保存，thread exit 用它关闭 generation。
     uintptr_t stack_base = 0;
     uint32_t stack_size = 0;
+    // 每个线程只报告一次超限，避免丢弃亿级事件时反复修改全局计数。
+    bool event_limit_reported = false;
 };
 
 int tls_index = -1;
 client_id_t client_id;
 char trace_dir[MAXIMUM_PATH] = {0};
+// 0 保留旧的无上限行为；大型实验由 launcher 显式设定预算。
+uint64_t max_thread_events = 0;
 std::atomic<uint64_t> global_ticket{1};
 std::atomic<uint64_t> dropped_events{0};
 std::atomic<uint64_t> dropped_by_reason[static_cast<size_t>(DropReason::Count)]{};
@@ -152,6 +158,13 @@ void write_record(EventKind kind, app_pc pc, uintptr_t address, uint32_t size,
     ThreadState *state = state_for(drcontext);
     if (state == nullptr || state->file == INVALID_FILE) {
         note_drop(DropReason::MissingThreadState);
+        return;
+    }
+    if (max_thread_events != 0 && state->sequence >= max_thread_events) {
+        if (!state->event_limit_reported) {
+            state->event_limit_reported = true;
+            note_drop(DropReason::ResourceLimit);
+        }
         return;
     }
     TraceRecord record{};
@@ -805,6 +818,15 @@ DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[]) {
             dr_snprintf(trace_dir, sizeof(trace_dir), "%s", argv[index + 1]);
             break;
         }
+    }
+    for (int index = 1; index + 1 < argc; ++index) {
+        if (std::strcmp(argv[index], "--max-thread-events") != 0)
+            continue;
+        unsigned long long value = 0;
+        if (dr_sscanf(argv[index + 1], "%llu", &value) != 1 || value == 0)
+            dr_abort();
+        max_thread_events = static_cast<uint64_t>(value);
+        break;
     }
     if (trace_dir[0] == '\0')
         dr_abort();

@@ -62,6 +62,7 @@ def _capture(args: argparse.Namespace) -> int:
         client_path=args.client,
         environment=_environment(args.env),
         working_directory=args.cwd,
+        max_thread_events=args.max_thread_events,
     )
     print(manifest.model_dump_json(indent=2))
     return 0 if manifest.complete else 2
@@ -102,6 +103,7 @@ def _run(args: argparse.Namespace) -> int:
         client_path=args.client,
         environment=_environment(args.env),
         working_directory=args.cwd,
+        max_thread_events=args.max_thread_events,
     )
     if not manifest.complete:
         print("Trace is incomplete; analysis will return UNKNOWN.", file=sys.stderr)
@@ -135,6 +137,7 @@ def _campaign(args: argparse.Namespace) -> int:
                     if item.get("working_directory")
                     else None
                 ),
+                max_thread_events=args.max_thread_events,
             )
             certificate = analyze_trace(
                 trace_dir,
@@ -198,6 +201,11 @@ def _add_capture_options(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument("--env", action="append", default=[], metavar="KEY=VALUE")
     parser.add_argument("--cwd", type=Path)
+    parser.add_argument(
+        "--max-thread-events",
+        type=int,
+        help="stop recording a thread after this many events and return UNKNOWN",
+    )
 
 
 def _add_analysis_options(parser: argparse.ArgumentParser) -> None:
