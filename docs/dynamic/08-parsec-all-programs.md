@@ -58,3 +58,40 @@ swaptions 和 canneal 已通过 syscall 预检并进入通信边分析。当前�
 
 本轮证书保存在 `.bmo-check/parsec-all-test/results/`。该目录是本地实验
 产物，不纳入 Git。
+
+## 2026-09-08：client 0.6 与应用范围复核
+
+上一节是历史基线，不能和下面的结果混为一谈。本轮使用当前 client 0.6、
+标准 futex wait/wake effect 和显式 `--application-only` 作用域。应用范围只把
+主 ELF 的普通访存交给求解器；外部运行库边仍计入原始数量，并由 DBT 的
+LOCK/XCHG/Fence contract 承担。它不是整个进程的 `mo-off` 证明。
+
+| 真实 PARSEC 运行 | 事件 | 线程 | 原始边/排除边 | verdict | 分区结果 |
+|---|---:|---:|---:|---|---|
+| blackscholes，`in_4.txt`，1 worker | 232,627 | 2 | 6 / 6 | `TRACE_SAFE` | safe，0 冲突 |
+| blackscholes，`in_4.txt`，2 workers | 234,434 | 3 | 12 / 12 | `TRACE_SAFE` | safe，0 冲突 |
+| swaptions，`-ns 1 -sm 5 -nt 1` | 888,875 | 2 | 6 / 6 | `TRACE_SAFE` | safe，0 冲突 |
+| swaptions，`-ns 2 -sm 5 -nt 2` | 1,110,828 | 3 | 67 / 67 | `TRACE_SAFE` | safe，0 冲突 |
+| canneal，`1 5 100 10.nets 1` | 970,949 | 2 | 6 / 6 | `TRACE_SAFE` | safe，0 冲突 |
+| streamcluster，单 worker小输入 | 973,339 | 3 | 0 / 0 | `UNKNOWN` | 177 个 worker 输出冲突 |
+
+因此当前已经有 5 条完整、零丢失的 `TRACE_SAFE` 运行证书，覆盖
+3 个不同的 PARSEC 程序。每条证书仍绑定自己的 trace ID、二进制哈希和实际
+命令；它们只能说明这些具体运行的主 ELF 普通通信没有发现 RVWMO 独有执行。
+
+### 资源与失败样本
+
+- streamcluster 的分区已经失败时，分析器现在直接返回 `UNKNOWN`，不会再为
+  已知不满足作用域条件的百万级运行库边构造 Python 通信图。单 worker 轨迹
+  约 973k 事件，分析约 10 秒完成，峰值约 500 MiB。
+- fluidanimate（test、1 worker）达到 300 万事件预算并记录 2 个
+  `resource_limit` drop；freqmine（1 OpenMP worker）达到 500 万预算并记录
+  1 个 drop；dedup（1 worker）达到 200 万预算并记录 1 个 drop。它们都必须是
+  `UNKNOWN`，不能因程序正常退出而放行。
+- facesim 使用官方 `-lastframe 1 -threads 1` 仍在 180 秒采集预算内未结束；
+  默认 `-lastframe 300` 的历史实验已停止，避免写出百 GB 级轨迹。
+- ferret 小输入未在采集时间预算内结束，vips 轨迹有不支持 syscall/drop，
+  raytrace 因本地缺少 `libXmu.so.6` 未形成完整证据，均不计入 SAFE。
+
+本节的证书和轨迹仍是本地 `.bmo-check`/WSL 实验产物，不纳入 Git；表中的
+统计可由对应 manifest、trace 哈希和 `bmo-check explain` 重新核对。
