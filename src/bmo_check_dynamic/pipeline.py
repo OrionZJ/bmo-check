@@ -16,6 +16,7 @@ from bmo_check_dynamic.analysis import (
 from bmo_check_dynamic.config import DynamicConfig
 from bmo_check_dynamic.analysis.communication import CommunicationLimitError
 from bmo_check_dynamic.model import (
+    ApplicationPartitionEvidence,
     DynamicCertificate,
     TraceManifest,
     TraceScope,
@@ -67,6 +68,15 @@ def analyze_trace(
             indirect_target_count=0,
             unknown_reasons=tuple(unknowns),
             assumptions=("analysis stopped at preflight; analysis counts are unavailable",),
+        )
+    if len(validation.thread_ids) == 1:
+        return _single_thread_certificate(
+            manifest,
+            validation,
+            trace_dir,
+            config,
+            contract_sha256,
+            contract.contract_version if contract else "invalid",
         )
     if validation.event_count > config.max_object_events:
         unknowns.append(
@@ -365,6 +375,56 @@ def _is_resource_exhaustion(error: Exception) -> bool:
         return True
     message = str(error).lower()
     return "out of memory" in message or "memory limit" in message
+
+
+def _single_thread_certificate(
+    manifest: TraceManifest,
+    validation: object,
+    trace_dir: Path,
+    config: DynamicConfig,
+    contract_sha256: str,
+    contract_version: str,
+) -> DynamicCertificate:
+    """完整单线程轨迹无需建立对象表，也不可能形成通信边。"""
+
+    thread_id = int(validation.thread_ids[0])
+    assumptions = [
+        f"DBT contract: {contract_version}",
+        "the complete trace contains one thread instance, so no cross-thread communication edge exists",
+        "the proof applies only to concrete addresses and the recorded event skeleton",
+    ]
+    if config.application_only:
+        assumptions.append(
+            "application scope has no external communication edge because the trace is single-threaded"
+        )
+    return DynamicCertificate(
+        verdict=TraceVerdict.TRACE_SAFE,
+        scope=TraceScope(
+            trace_ids=(manifest.trace_id,),
+            trace_sha256=(trace_digest(trace_dir),),
+            executable=manifest.executable,
+            libraries=manifest.libraries,
+            commands=(manifest.command,),
+            working_directories=(manifest.working_directory,),
+            analysis_scope="application" if config.application_only else "full",
+        ),
+        dbt_contract_sha256=contract_sha256,
+        analyzer_version=__version__,
+        trace_complete=validation.structurally_complete,
+        event_count=validation.event_count,
+        thread_count=1,
+        object_count=0,
+        unique_pc_count=0,
+        communication_edge_count=0,
+        communication_edges_complete=True,
+        indirect_target_count=0,
+        application_partition=ApplicationPartitionEvidence(
+            status="safe",
+            main_thread=thread_id,
+        ),
+        unknown_reasons=(),
+        assumptions=tuple(assumptions),
+    )
 
 
 def _unknown_certificate(

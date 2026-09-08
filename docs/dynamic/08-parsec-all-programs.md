@@ -99,3 +99,27 @@ LOCK/XCHG/Fence contract 承担。它不是整个进程的 `mo-off` 证明。
 
 本节的证书和轨迹仍是本地 `.bmo-check`/WSL 实验产物，不纳入 Git；表中的
 统计可由对应 manifest、trace 哈希和 `bmo-check explain` 重新核对。
+
+## 2026-09-09：单线程闭合与资源预算复核
+
+新增的单线程快速路径只在完整性和 syscall effect 预检通过后生效。轨迹只有一个
+线程实例时，工具不建立对象表或通信图，因为事件集合中不存在跨线程通信边；这不
+把未知线程当成私有，也不外推到其他线程配置。当前新增证书如下：
+
+| 程序 | 输入范围 | 事件 | 线程 | 采集 | verdict |
+|---|---|---:|---:|---|---|
+| ferret | 官方 `corel/lsh`，官方 query 目录裁剪为 1 张图 | 85,815 | 1 | 完整、零丢失 | `TRACE_SAFE` |
+| freqmine | 官方 `T10I4D100K_3.dat`，`OMP_NUM_THREADS=1` | 7,223,130 | 1 | 完整、零丢失 | `TRACE_SAFE` |
+| raytrace | 官方 `octahedron.obj`，`-frames 1 -res 1 1 -nthreads 1` | 8,770,726 | 1 | 完整、零丢失 | `TRACE_SAFE` |
+
+加上上一节的 6 条证书，目前共有 9 条完整 `TRACE_SAFE` 运行，覆盖 7 个不同的
+PARSEC 程序。新增三条证书分别位于本地
+`.bmo-check/recheck-results/ferret-one-single-thread.json`、
+`.bmo-check/recheck-results/freqmine-official-one20m-app.json` 和
+`.bmo-check/recheck-results/raytrace-one20m-app-single.json`；它们绑定各自的
+trace ID、二进制及实际加载库哈希。ferret 的 query 裁剪和 raytrace 的 1×1
+分辨率只扩大了可复核的小输入覆盖，不代表完整 test/native 输入已经被证明。
+
+同时，dedup 官方 test 在 20M 每线程预算下仍有 5,791,007 事件并留下未建模的
+并发 `read/write/munmap/sigmask/mremap/openat` effect；vips 单并发 test 仍有
+资源和插桩丢失；这些结果继续保持 `UNKNOWN`，没有因为程序正常退出而放行。

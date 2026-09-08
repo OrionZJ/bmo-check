@@ -186,14 +186,34 @@ def test_object_materialization_budget_returns_unknown_before_update(
     with TraceWriter(trace_dir / "events-1.bin") as writer:
         writer.write(TraceEvent(1, 1, 0, 0x10, EventKind.LOAD, 0x1000, 4))
         writer.write(TraceEvent(1, 2, 0, 0x11, EventKind.STORE, 0x1004, 4))
+    with TraceWriter(trace_dir / "events-2.bin") as writer:
+        writer.write(TraceEvent(2, 1, 0, 0x11, EventKind.STORE, 0x1004, 4))
     certificate = analyze_trace(
         trace_dir,
         dbt_contract=_contract(tmp_path),
         config=DynamicConfig(max_object_events=1),
     )
     assert certificate.verdict == TraceVerdict.UNKNOWN
-    assert certificate.event_count == 2
+    assert certificate.event_count == 3
     assert any("object identity materialization" in reason for reason in certificate.unknown_reasons)
+
+
+def test_single_thread_trace_skips_object_materialization_budget(
+    trace_manifest, tmp_path: Path
+) -> None:
+    trace_dir = tmp_path / "single-thread"
+    trace_manifest(trace_dir)
+    with TraceWriter(trace_dir / "events-1.bin") as writer:
+        writer.write(TraceEvent(1, 1, 0, 0x10, EventKind.LOAD, 0x1000, 4))
+        writer.write(TraceEvent(1, 2, 0, 0x11, EventKind.STORE, 0x1004, 4))
+    certificate = analyze_trace(
+        trace_dir,
+        dbt_contract=_contract(tmp_path),
+        config=DynamicConfig(max_object_events=1),
+    )
+    assert certificate.verdict == TraceVerdict.TRACE_SAFE
+    assert certificate.communication_edge_count == 0
+    assert certificate.assumptions[1].startswith("the complete trace contains one thread")
 
 
 def test_cross_location_cycle_is_kept_in_one_window(
