@@ -88,36 +88,42 @@ def analyze_trace(
                 store, trace_dir / "modules.tsv", manifest.executable.path
             )
             external_runtime_edges = 0
-            try:
-                raw_edge_sample = tuple(
-                    find_communication_edges(
-                        store, limit=config.max_communication_edges + 1
-                    )
-                )
-            except CommunicationLimitError as error:
-                unknowns.append(str(error))
-                raw_edge_sample = ()
             if config.application_only and application_partition.status != "safe":
+                # 分区证据已经失败时，运行库边不能进入应用范围证明。
+                # 继续构造通信图只会把百万级运行库访问搬进 Python 图，
+                # 不会改变 UNKNOWN 结论，反而可能耗尽内存。
                 unknowns.append(
                     "application-only scope requires a safe main-module partition"
                 )
-                edge_sample = raw_edge_sample
-            elif config.application_only:
-                edge_sample, external_runtime_edges = _application_edges(
-                    store,
-                    raw_edge_sample,
-                    application_partition.module_start,
-                    application_partition.module_end,
-                )
+                raw_edge_sample = ()
+                edge_sample = ()
             else:
-                edge_sample = raw_edge_sample
+                try:
+                    raw_edge_sample = tuple(
+                        find_communication_edges(
+                            store, limit=config.max_communication_edges + 1
+                        )
+                    )
+                except CommunicationLimitError as error:
+                    unknowns.append(str(error))
+                    raw_edge_sample = ()
+                if config.application_only:
+                    edge_sample, external_runtime_edges = _application_edges(
+                        store,
+                        raw_edge_sample,
+                        application_partition.module_start,
+                        application_partition.module_end,
+                    )
+                else:
+                    edge_sample = raw_edge_sample
             raw_edge_count = len(raw_edge_sample)
-            if len(edge_sample) > config.max_communication_edges:
+            edge_limit_exceeded = len(edge_sample) > config.max_communication_edges
+            if edge_limit_exceeded:
                 unknowns.append(
                     "communication edge count exceeds "
                     f"{config.max_communication_edges}"
                 )
-                edges = edge_sample[: config.max_communication_edges]
+                edges = ()
             else:
                 edges = tuple(
                     sorted(
@@ -125,9 +131,16 @@ def analyze_trace(
                         key=lambda edge: (edge.first_event, edge.second_event),
                     )
                 )
-            windows, window_unknowns = build_windows(
-                store, edges, max_events=config.max_window_events
-            )
+            if (
+                config.application_only and application_partition.status != "safe"
+            ) or edge_limit_exceeded:
+                # 上面的门已经决定 UNKNOWN；不再把不受证明约束的边送进
+                # biconnected graph，避免“已知失败”先变成内存峰值。
+                windows, window_unknowns = (), ()
+            else:
+                windows, window_unknowns = build_windows(
+                    store, edges, max_events=config.max_window_events
+                )
             unknowns.extend(window_unknowns)
             results = tuple(
                 check_window(

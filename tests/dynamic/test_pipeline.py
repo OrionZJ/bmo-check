@@ -61,6 +61,41 @@ def test_application_scope_records_and_excludes_external_runtime_edges(
     )
 
 
+def test_application_scope_stops_before_graph_when_partition_is_unknown(
+    trace_manifest, tmp_path: Path, monkeypatch
+) -> None:
+    trace_dir = tmp_path / "overlapping-workers"
+    manifest = trace_manifest(trace_dir)
+    (trace_dir / "modules.tsv").write_text(
+        f"0x1000\t0x2000\t{manifest.executable.path}\n",
+        encoding="utf-8",
+    )
+    with TraceWriter(trace_dir / "events-1.bin") as writer:
+        writer.write(TraceEvent(1, 1, 1, 0x1100, EventKind.THREAD_START))
+        writer.write(TraceEvent(1, 2, 10, 0x1101, EventKind.THREAD_END))
+    for thread, start_ticket, end_ticket in ((2, 2, 8), (3, 3, 9)):
+        with TraceWriter(trace_dir / f"events-{thread}.bin") as writer:
+            writer.write(TraceEvent(thread, 1, start_ticket, 0x1100, EventKind.THREAD_START))
+            writer.write(TraceEvent(thread, 2, start_ticket + 1, 0x1101, EventKind.STORE, 0x4000, 4))
+            writer.write(TraceEvent(thread, 3, end_ticket, 0x1102, EventKind.THREAD_END))
+
+    def unexpected_graph_scan(*_args, **_kwargs):
+        raise AssertionError("an unknown partition must not build a communication graph")
+
+    monkeypatch.setattr(
+        "bmo_check_dynamic.pipeline.find_communication_edges", unexpected_graph_scan
+    )
+    certificate = analyze_trace(
+        trace_dir,
+        dbt_contract=_contract(tmp_path),
+        config=DynamicConfig(application_only=True),
+    )
+    assert certificate.verdict == TraceVerdict.UNKNOWN
+    assert certificate.communication_edge_count == 0
+    assert not certificate.windows
+    assert any("safe main-module partition" in reason for reason in certificate.unknown_reasons)
+
+
 def test_incomplete_trace_is_unknown(trace_manifest, tmp_path: Path) -> None:
     trace_dir = tmp_path / "trace"
     trace_manifest(trace_dir, complete=False)

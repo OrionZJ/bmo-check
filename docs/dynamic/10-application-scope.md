@@ -14,7 +14,12 @@ DBT contract 承担；这些边没有被当成“没有发生”。
 `mo-off` Fence。它不能证明 libc、间接调用未覆盖的路径、其他输入或未来调度。
 要声称整个进程安全，仍必须使用默认 full scope，并闭合运行库访问的值和控制可行性。
 
+如果主模块分区已经失败，工具会立即返回 `UNKNOWN`，不再把运行库边送入通信图。
+这是资源边界而不是证明放宽：这些边没有被证明安全，分析器只是避免在已知失败的
+情况下为百万级运行库访问建立 Python 图。
+
 当前 PARSEC 复核中，使用新 client 0.6 的 blackscholes 与 swaptions 均满足主模块
 分区条件；full scope 分别留下 12 和 67 条运行库边，而 application scope 能够
-把这些被审计的外部边排除并生成 `TRACE_SAFE`。canneal 的主模块存在 worker 写冲突，
-不会被这个模式放行。
+把这些被审计的外部边排除并生成 `TRACE_SAFE`。在单 worker 的小测试输入上，
+canneal 也通过了主模块分区；多 worker 的 streamcluster 因输出范围相交仍为
+`UNKNOWN`。
