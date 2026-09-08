@@ -1,9 +1,11 @@
 # PARSEC 动态证据
 
 2026-09-05 复审：实验文件 `certificate-lifecycle.json` 中 blackscholes 和
-swaptions 的 TRACE_SAFE 结论已撤回，不可作为安全证据。旧实验用启动/结束 ticket
-及 join 数量直接删除通信边，没有证明 DBT6 目标机上的发布/acquire 路径。
-当前已停用该剪枝；下面的分区和指令点记录仍只是辅助证据。
+swaptions 的 full-scope TRACE_SAFE 结论已撤回，不可作为安全证据。旧实验用启动/结束
+ticket 及 join 数量直接删除通信边，没有证明 DBT6 目标机上的发布/acquire 路径。
+当前 full scope 只接受带 child tid 的 clone/clone3 证据或唯一 wrapper 配对；缺证据
+时保留通信边。另提供显式 `--application-only` 作用域：它只在主 ELF 分区安全时
+排除纯外部运行库边，并把数量和运行库契约写入证书，不能冒充整个进程的 full 证明。
 随后复审还发现并修复了 RMW from-read 自环及初始读漏边。修复前包含原子窗口的
 safe 结果也不构成可信证明；真实程序须在修复和模型复核完成后重新验收。
 
@@ -46,6 +48,12 @@ blackscholes 有一个 7,949 事件窗口，其中 7,371 条边连接主线程�
 当前分析器重新生成的 `certificate-current.json` 绑定了完整性元数据，记录 233,460
 个事件、3 个线程，并因 60 个尚未闭合用户缓冲区 effect 的 syscall 返回 UNKNOWN。
 管线在完整性门停止，因此通信边计数显示为 0，不能把它解释为程序没有通信。
+
+使用 client 0.6、同一 `in_4.txt` 输入重新采集后，blackscholes 的 clone3
+child-tid 交接证据把通信边从 8,419 降到 12；swaptions 的小输入轨迹降到 67 条。
+两者主 ELF 分区均为 `safe`。在 `--application-only` 作用域下，12/67 条边全部
+是外部运行库端点，因此分别得到可审计的 `TRACE_SAFE`；full scope 仍为
+`UNKNOWN`，因为运行库普通访问的值/控制可行性还没有闭合。
 
 ## canneal：Checkin 的普通 Store 发布
 

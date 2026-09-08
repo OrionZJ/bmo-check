@@ -52,6 +52,7 @@ def analyze_trace(
                 libraries=manifest.libraries,
                 commands=(manifest.command,),
                 working_directories=(manifest.working_directory,),
+                analysis_scope="application" if config.application_only else "full",
             ),
             dbt_contract_sha256=contract_sha256,
             analyzer_version=__version__,
@@ -86,15 +87,31 @@ def analyze_trace(
             application_partition = analyze_application_partition(
                 store, trace_dir / "modules.tsv", manifest.executable.path
             )
+            external_runtime_edges = 0
             try:
-                edge_sample = tuple(
+                raw_edge_sample = tuple(
                     find_communication_edges(
                         store, limit=config.max_communication_edges + 1
                     )
                 )
             except CommunicationLimitError as error:
                 unknowns.append(str(error))
-                edge_sample = ()
+                raw_edge_sample = ()
+            if config.application_only and application_partition.status != "safe":
+                unknowns.append(
+                    "application-only scope requires a safe main-module partition"
+                )
+                edge_sample = raw_edge_sample
+            elif config.application_only:
+                edge_sample, external_runtime_edges = _application_edges(
+                    store,
+                    raw_edge_sample,
+                    application_partition.module_start,
+                    application_partition.module_end,
+                )
+            else:
+                edge_sample = raw_edge_sample
+            raw_edge_count = len(raw_edge_sample)
             if len(edge_sample) > config.max_communication_edges:
                 unknowns.append(
                     "communication edge count exceeds "
@@ -134,6 +151,17 @@ def analyze_trace(
             indirect_count = int(
                 store.connection.execute("SELECT count(*) FROM events WHERE kind = 32").fetchone()[0]
             )
+            assumptions = [
+                f"DBT contract: {contract.contract_version if contract else 'invalid'}",
+                "ordinary RVWMO dependencies are omitted from the target model",
+                "lifecycle tickets do not establish target memory ordering",
+                "the proof applies only to concrete addresses and the recorded event skeleton",
+            ]
+            if config.application_only:
+                assumptions.append(
+                    "application scope excludes external-module communication edges; "
+                    "the DBT runtime contract must preserve their LOCK/XCHG and Fence paths"
+                )
             return DynamicCertificate(
                 verdict=verdict,
                 scope=TraceScope(
@@ -143,6 +171,7 @@ def analyze_trace(
                     libraries=manifest.libraries,
                     commands=(manifest.command,),
                     working_directories=(manifest.working_directory,),
+                    analysis_scope="application" if config.application_only else "full",
                 ),
                 dbt_contract_sha256=contract_sha256,
                 analyzer_version=__version__,
@@ -155,17 +184,13 @@ def analyze_trace(
                         "SELECT count(DISTINCT pc) FROM events WHERE pc <> 0"
                     ).fetchone()[0]
                 ),
-                communication_edge_count=len(edges),
+                communication_edge_count=raw_edge_count,
+                external_runtime_edge_count=external_runtime_edges,
                 indirect_target_count=indirect_count,
                 application_partition=application_partition,
                 windows=results,
                 unknown_reasons=tuple(dict.fromkeys(unknowns)),
-                assumptions=(
-                    f"DBT contract: {contract.contract_version if contract else 'invalid'}",
-                    "ordinary RVWMO dependencies are omitted from the target model",
-                    "lifecycle tickets do not establish target memory ordering",
-                    "the proof applies only to concrete addresses and the recorded event skeleton",
-                ),
+                assumptions=tuple(assumptions),
             )
     finally:
         if temporary is not None:
@@ -178,3 +203,34 @@ def _file_digest(path: Path) -> str:
         while chunk := stream.read(1024 * 1024):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _application_edges(
+    store: TraceStore,
+    edges: tuple[object, ...],
+    module_start: int,
+    module_end: int,
+) -> tuple[tuple[object, ...], int]:
+    """保留至少一端来自主 ELF 的边，外部运行库边单独计数。
+
+    application scope 只在主模块分区已经证明无 worker/main 写冲突时启用。
+    运行库普通访存不被悄悄当成安全；它们必须由 DBT 的 LOCK/XCHG/Fence
+    契约承担，并在证书中留下被排除的边数量。
+    """
+
+    event_ids = {
+        event_id
+        for edge in edges
+        for event_id in (edge.first_event, edge.second_event)
+    }
+    events = store.get_events(event_ids)
+    by_id = {event.event_id: event for event in events}
+    kept = tuple(
+        edge
+        for edge in edges
+        if (
+            module_start <= by_id[edge.first_event].pc < module_end
+            or module_start <= by_id[edge.second_event].pc < module_end
+        )
+    )
+    return kept, len(edges) - len(kept)

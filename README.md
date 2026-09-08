@@ -52,6 +52,8 @@ cmake --build src/bmo_check_dynamic/native/build -j
 ```bash
 bmo-check capture --output trace/run-1 -- ./program arg
 bmo-check analyze trace/run-1 --output trace/run-1/certificate.json
+bmo-check analyze trace/run-1 --output trace/run-1/application-certificate.json \
+  --application-only
 bmo-check run --trace trace/run-2 --output trace/run-2/certificate.json -- ./program arg
 bmo-check explain trace/run-1/certificate.json
 bmo-check locate trace/run-1 --module /path/to/module --offset 0x1234
@@ -59,6 +61,11 @@ bmo-check locate trace/run-1 --module /path/to/module --offset 0x1234
 
 大型程序可在 capture/run/campaign 中使用 `--max-thread-events N`
 限制轨迹大小。触顶会显式返回 `UNKNOWN`，不会在截断轨迹上继续证明。
+
+`--application-only` 是一个显式的分区作用域：只有在主 ELF 的 worker 输出互不
+重叠、且 worker 存活期间主线程没有冲突写入时，工具才会过滤纯外部运行库通信边。
+证书保留原始边数量和被过滤数量；运行库的 LOCK/XCHG 与 Fence 仍由 DBT contract
+承担。这个选项不能把结果解释成整个 libc 或所有输入的无条件安全。
 
 `locate` 按模块内偏移汇总某条指令的实际事件、线程、宽度和 flags。它用于复核
 发布点或原子分类，不参与 verdict，也不能单独证明 `TRACE_SAFE`。

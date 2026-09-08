@@ -21,6 +21,8 @@ class TraceScope(StrictModel):
     libraries: tuple[BinaryFingerprint, ...] = ()
     commands: tuple[tuple[str, ...], ...]
     working_directories: tuple[str, ...]
+    # full 检查所有模块；application 只把主 ELF 的普通访存交给求解器。
+    analysis_scope: str = "full"
     limitation: str = (
         "结论只覆盖已记录的线程内事件、实际地址和控制流骨架；"
         "不覆盖未执行路径、其他输入或未来调度。"
@@ -89,6 +91,8 @@ class DynamicCertificate(StrictModel):
     unique_pc_count: int
     # communication_edge_count 记录精确地址相交得到的原始候选数量。
     communication_edge_count: int
+    # application scope 丢弃的边仍计入上面的原始数量，便于审计运行库契约。
+    external_runtime_edge_count: int = 0
     indirect_target_count: int
     # 分区证据帮助解释应用访问；整体验证仍由所有 windows 决定。
     application_partition: ApplicationPartitionEvidence | None = None

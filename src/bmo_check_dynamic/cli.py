@@ -79,6 +79,7 @@ def _analysis_config(args: argparse.Namespace) -> DynamicConfig:
         max_symbolic_terms=args.max_symbolic_terms,
         database_memory_limit_mb=args.database_memory_limit_mb,
         database_path=args.database,
+        application_only=args.application_only,
     )
 
 
@@ -219,6 +220,14 @@ def _add_analysis_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--solver-timeout-ms", type=int, default=10_000)
     parser.add_argument("--max-symbolic-terms", type=int, default=100_000)
     parser.add_argument("--database-memory-limit-mb", type=int, default=512)
+    parser.add_argument(
+        "--application-only",
+        action="store_true",
+        help=(
+            "prove only the main ELF's ordinary communication after a safe partition; "
+            "external runtime edges remain covered by the DBT LOCK/XCHG contract"
+        ),
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:

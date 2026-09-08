@@ -2,6 +2,7 @@ from pathlib import Path
 import shutil
 
 from bmo_check_dynamic.model import EventFlags, EventKind, TraceEvent, TraceVerdict
+from bmo_check_dynamic.config import DynamicConfig
 from bmo_check_dynamic.pipeline import analyze_trace
 from bmo_check_dynamic.trace import TraceWriter
 
@@ -27,6 +28,37 @@ def test_no_cross_thread_communication_is_trace_safe(
     certificate = analyze_trace(trace_dir, dbt_contract=contract)
     assert certificate.verdict == TraceVerdict.TRACE_SAFE
     assert certificate.communication_edge_count == 0
+
+
+def test_application_scope_records_and_excludes_external_runtime_edges(
+    trace_manifest, tmp_path: Path
+) -> None:
+    trace_dir = tmp_path / "trace"
+    manifest = trace_manifest(trace_dir)
+    (trace_dir / "modules.tsv").write_text(
+        f"0x1000\t0x2000\t{manifest.executable.path}\n",
+        encoding="utf-8",
+    )
+    with TraceWriter(trace_dir / "events-1.bin") as writer:
+        writer.write(TraceEvent(1, 1, 1, 0x1100, EventKind.THREAD_START))
+        writer.write(TraceEvent(1, 2, 1, 0x3000, EventKind.STORE, 0x5000, 4))
+        writer.write(TraceEvent(1, 3, 3, 0x1101, EventKind.THREAD_END))
+    with TraceWriter(trace_dir / "events-2.bin") as writer:
+        writer.write(TraceEvent(2, 1, 2, 0x1200, EventKind.THREAD_START))
+        writer.write(TraceEvent(2, 2, 2, 0x3001, EventKind.LOAD, 0x5000, 4))
+        writer.write(TraceEvent(2, 3, 4, 0x1201, EventKind.THREAD_END))
+    certificate = analyze_trace(
+        trace_dir,
+        dbt_contract=_contract(tmp_path),
+        config=DynamicConfig(application_only=True),
+    )
+    assert certificate.verdict == TraceVerdict.TRACE_SAFE
+    assert certificate.scope.analysis_scope == "application"
+    assert certificate.communication_edge_count == 1
+    assert certificate.external_runtime_edge_count == 1
+    assert "application scope excludes external-module" in " ".join(
+        certificate.assumptions
+    )
 
 
 def test_incomplete_trace_is_unknown(trace_manifest, tmp_path: Path) -> None:

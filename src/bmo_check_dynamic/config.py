@@ -19,6 +19,9 @@ class DynamicConfig:
     # 限制 DuckDB 缓存，防止大轨迹与 Python batch 一起耗尽系统内存。
     database_memory_limit_mb: int = 512
     database_path: Path | None = None
+    # application_only 只证明主程序发出的普通访存；运行库访问必须由已知
+    # LOCK/XCHG、Fence 和 pthread 契约承担，不能把这个结果写成库本身安全。
+    application_only: bool = False
 
     def validate(self) -> None:
         values = (

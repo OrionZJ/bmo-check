@@ -7,7 +7,8 @@ def explain_certificate(certificate: DynamicCertificate) -> str:
     lines = [
         f"Verdict: {certificate.verdict.value}",
         f"Trace scope: {', '.join(certificate.scope.trace_ids)}",
-        f"Events/threads/communication edges: {certificate.event_count}/"
+        f"Analysis scope: {certificate.scope.analysis_scope}",
+        f"Events/threads/raw communication edges: {certificate.event_count}/"
         f"{certificate.thread_count}/{certificate.communication_edge_count}",
         f"Objects/unique PCs: {certificate.object_count}/{certificate.unique_pc_count}",
     ]
@@ -19,6 +20,11 @@ def explain_certificate(certificate: DynamicCertificate) -> str:
             f"worker conflicts={partition.worker_conflicting_ranges}, "
             f"concurrent main conflicts={partition.concurrent_main_conflicts}, "
             f"read-only shared ranges={partition.readonly_shared_ranges})"
+        )
+    if certificate.external_runtime_edge_count:
+        lines.append(
+            "External runtime edges excluded: "
+            f"{certificate.external_runtime_edge_count}"
         )
     if certificate.verdict == TraceVerdict.TRACE_SAFE:
         lines.append(
