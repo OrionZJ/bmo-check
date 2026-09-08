@@ -29,48 +29,64 @@ def analyze_application_partition(
             reasons=("thread lifetime is incomplete",),
         )
     main_thread = int(lifetimes[0][0])
-    workers = tuple(int(row[0]) for row in lifetimes[1:])
-    worker_conflicts = int(
-        store.connection.execute(
-            """
-            WITH accesses AS (
-                SELECT DISTINCT thread_id, address, size, kind IN (2, 3) AS writes
-                FROM events
-                WHERE pc >= ? AND pc < ? AND kind IN (1, 2) AND thread_id <> ?
-            )
-            SELECT count(*) FROM accesses a JOIN accesses b
-              ON a.thread_id < b.thread_id
-             AND a.address < b.address + b.size
-             AND b.address < a.address + a.size
-             AND (a.writes OR b.writes)
-            """,
-            (start, end, main_thread),
-        ).fetchone()[0]
+    worker_lifetimes = tuple(
+        (int(row[0]), int(row[1]), int(row[2])) for row in lifetimes[1:]
     )
-    readonly_ranges = int(
-        store.connection.execute(
-            """
-            WITH accesses AS (
-                SELECT DISTINCT thread_id, address, size, kind IN (2, 3) AS writes
-                FROM events
-                WHERE pc >= ? AND pc < ? AND kind IN (1, 2) AND thread_id <> ?
-            )
-            SELECT count(*) FROM accesses a JOIN accesses b
-              ON a.thread_id < b.thread_id
-             AND a.address < b.address + b.size
-             AND b.address < a.address + a.size
-             AND NOT a.writes AND NOT b.writes
-            """,
-            (start, end, main_thread),
-        ).fetchone()[0]
-    )
+    workers = tuple(row[0] for row in worker_lifetimes)
+    pair_clause, pair_params = _overlapping_worker_pairs(worker_lifetimes)
+    if not pair_params:
+        # 两个 worker 的整个生命周期没有交集，不能把地址复用当成并发写。
+        # 这不是把 ticket 当内存序，而是使用已记录的 THREAD_START/END 边界。
+        worker_conflicts = 0
+        readonly_ranges = 0
+    else:
+        worker_conflicts = int(
+            store.connection.execute(
+                f"""
+                WITH accesses AS (
+                    SELECT DISTINCT thread_id, address, size,
+                                    kind IN (2, 3) AS writes, object_id
+                    FROM events
+                    WHERE pc >= ? AND pc < ? AND kind IN (1, 2) AND thread_id <> ?
+                )
+                SELECT count(*) FROM accesses a JOIN accesses b
+                  ON a.thread_id < b.thread_id
+                 AND a.address < b.address + b.size
+                 AND b.address < a.address + a.size
+                 AND (a.writes OR b.writes)
+                 AND ({pair_clause})
+                 AND NOT ({_different_generation_sql('a', 'b')})
+                """,
+                (start, end, main_thread, *pair_params),
+            ).fetchone()[0]
+        )
+        readonly_ranges = int(
+            store.connection.execute(
+                f"""
+                WITH accesses AS (
+                    SELECT DISTINCT thread_id, address, size,
+                                    kind IN (2, 3) AS writes, object_id
+                    FROM events
+                    WHERE pc >= ? AND pc < ? AND kind IN (1, 2) AND thread_id <> ?
+                )
+                SELECT count(*) FROM accesses a JOIN accesses b
+                  ON a.thread_id < b.thread_id
+                 AND a.address < b.address + b.size
+                 AND b.address < a.address + a.size
+                 AND NOT a.writes AND NOT b.writes
+                 AND ({pair_clause})
+                 AND NOT ({_different_generation_sql('a', 'b')})
+                """,
+                (start, end, main_thread, *pair_params),
+            ).fetchone()[0]
+        )
     concurrent_main_conflicts = 0
     for thread_id, lifetime_start, lifetime_end in lifetimes[1:]:
         concurrent_main_conflicts += int(
             store.connection.execute(
                 """
                 WITH worker AS (
-                    SELECT DISTINCT address, size, kind IN (2, 3) AS writes
+                    SELECT DISTINCT address, size, kind IN (2, 3) AS writes, object_id
                     FROM events
                     WHERE pc >= ? AND pc < ? AND kind IN (1, 2) AND thread_id = ?
                 )
@@ -78,6 +94,14 @@ def analyze_application_partition(
                   ON main.address < worker.address + worker.size
                  AND worker.address < main.address + main.size
                  AND (main.kind = 2 OR worker.writes)
+                 AND NOT (
+                     main.object_id IS NOT NULL AND worker.object_id IS NOT NULL
+                     AND main.object_id <> worker.object_id
+                     AND substr(main.object_id, 1, 4) <> 'tls:'
+                     AND substr(worker.object_id, 1, 4) <> 'tls:'
+                     AND split_part(main.object_id, ':g', 1)
+                         = split_part(worker.object_id, ':g', 1)
+                 )
                 WHERE main.pc >= ? AND main.pc < ? AND main.kind IN (1, 2)
                   AND main.thread_id = ? AND main.ticket BETWEEN ? AND ?
                 """,
@@ -104,6 +128,36 @@ def analyze_application_partition(
         worker_conflicting_ranges=worker_conflicts,
         concurrent_main_conflicts=concurrent_main_conflicts,
         reasons=tuple(reasons),
+    )
+
+
+def _overlapping_worker_pairs(
+    workers: tuple[tuple[int, int, int], ...],
+) -> tuple[str, tuple[int, ...]]:
+    pairs = [
+        (left[0], right[0])
+        for index, left in enumerate(workers)
+        for right in workers[index + 1 :]
+        if left[2] >= right[1] and right[2] >= left[1]
+    ]
+    if not pairs:
+        return "", ()
+    clause = " OR ".join(
+        "(a.thread_id = ? AND b.thread_id = ?)" for _ in pairs
+    )
+    return clause, tuple(value for pair in pairs for value in pair)
+
+
+def _different_generation_sql(left: str, right: str) -> str:
+    """复用通信扫描的对象规则，避免把生命周期外的地址复用算成冲突。"""
+
+    return (
+        f"{left}.object_id IS NOT NULL AND {right}.object_id IS NOT NULL "
+        f"AND {left}.object_id <> {right}.object_id "
+        f"AND substr({left}.object_id, 1, 4) <> 'tls:' "
+        f"AND substr({right}.object_id, 1, 4) <> 'tls:' "
+        f"AND split_part({left}.object_id, ':g', 1) "
+        f"= split_part({right}.object_id, ':g', 1)"
     )
 
 
