@@ -68,6 +68,25 @@ def analyze_trace(
             unknown_reasons=tuple(unknowns),
             assumptions=("analysis stopped at preflight; analysis counts are unavailable",),
         )
+    if validation.event_count > config.max_object_events:
+        unknowns.append(
+            "object identity materialization requires "
+            f"{validation.event_count} events, exceeding budget "
+            f"{config.max_object_events}"
+        )
+        return _unknown_certificate(
+            manifest,
+            validation,
+            trace_dir,
+            config,
+            contract_sha256,
+            tuple(unknowns),
+            event_count=validation.event_count,
+            assumption=(
+                "analysis stopped before event storage and object identity "
+                "materialization; communication counts are unavailable"
+            ),
+        )
     temporary: tempfile.TemporaryDirectory[str] | None = None
     if config.database_path is None:
         temporary = tempfile.TemporaryDirectory(prefix="bmo-check-")
@@ -105,7 +124,28 @@ def analyze_trace(
                         "communication counts are unavailable"
                     ),
                 )
-            object_count = store.materialize_objects()
+            try:
+                object_count = store.materialize_objects()
+            except Exception as error:
+                if not _is_resource_exhaustion(error):
+                    raise
+                unknowns.append(
+                    "object identity materialization exhausted resources: "
+                    f"{error}"
+                )
+                return _unknown_certificate(
+                    manifest,
+                    validation,
+                    trace_dir,
+                    config,
+                    contract_sha256,
+                    tuple(unknowns),
+                    event_count=store.event_count(),
+                    assumption=(
+                        "analysis stopped when object identity materialization hit "
+                        "the storage memory limit; communication counts are unavailable"
+                    ),
+                )
             application_partition = analyze_application_partition(
                 store, trace_dir / "modules.tsv", manifest.executable.path
             )
@@ -316,6 +356,15 @@ def _file_digest(path: Path) -> str:
         while chunk := stream.read(1024 * 1024):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _is_resource_exhaustion(error: Exception) -> bool:
+    """只把可预期的内存预算失败转成 UNKNOWN，其他错误仍暴露。"""
+
+    if isinstance(error, MemoryError):
+        return True
+    message = str(error).lower()
+    return "out of memory" in message or "memory limit" in message
 
 
 def _unknown_certificate(
