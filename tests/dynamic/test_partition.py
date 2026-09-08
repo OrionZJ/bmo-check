@@ -49,3 +49,22 @@ def test_overlapping_worker_output_keeps_partition_unknown(tmp_path: Path) -> No
         )
     assert evidence.status == "unknown"
     assert evidence.worker_conflicting_ranges == 1
+
+
+def test_single_complete_thread_has_no_application_communication(tmp_path: Path) -> None:
+    with TraceStore(tmp_path / "single.duckdb") as store:
+        store.add_events(
+            (
+                TraceEvent(1, 1, 1, 0, EventKind.THREAD_START),
+                TraceEvent(1, 2, 2, 0x1010, EventKind.STORE, 0x4000, 4),
+                TraceEvent(1, 3, 3, 0, EventKind.THREAD_END),
+            ),
+            max_pages_per_access=16,
+            batch_size=5,
+        )
+        evidence = analyze_application_partition(
+            store, _module_file(tmp_path), "/app/program"
+        )
+    assert evidence.status == "safe"
+    assert evidence.main_thread == 1
+    assert evidence.worker_threads == ()

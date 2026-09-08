@@ -23,12 +23,21 @@ def analyze_application_partition(
         FROM events WHERE kind IN (10, 11) GROUP BY thread_id ORDER BY 2
         """
     ).fetchall()
-    if len(lifetimes) < 2 or any(row[1] is None or row[2] is None for row in lifetimes):
+    if not lifetimes or any(row[1] is None or row[2] is None for row in lifetimes):
         return ApplicationPartitionEvidence(
             status="unknown", module_start=start, module_end=end,
             reasons=("thread lifetime is incomplete",),
         )
     main_thread = int(lifetimes[0][0])
+    if len(lifetimes) == 1:
+        # 只有一个完整生命周期时，轨迹里不存在跨线程普通访存边。
+        # 这不是把未观察到的线程当成私有；线程集合本身由完整轨迹固定下来。
+        return ApplicationPartitionEvidence(
+            status="safe",
+            module_start=start,
+            module_end=end,
+            main_thread=main_thread,
+        )
     worker_lifetimes = tuple(
         (int(row[0]), int(row[1]), int(row[2])) for row in lifetimes[1:]
     )
