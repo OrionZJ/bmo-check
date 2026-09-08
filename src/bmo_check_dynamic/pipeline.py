@@ -85,6 +85,26 @@ def analyze_trace(
                 batch_size=config.batch_size,
             )
             unknowns.extend(storage_unknowns)
+            stored_event_count = store.event_count()
+            if stored_event_count > config.max_object_events:
+                unknowns.append(
+                    "object identity materialization requires "
+                    f"{stored_event_count} events, exceeding budget "
+                    f"{config.max_object_events}"
+                )
+                return _unknown_certificate(
+                    manifest,
+                    validation,
+                    trace_dir,
+                    config,
+                    contract_sha256,
+                    tuple(unknowns),
+                    event_count=stored_event_count,
+                    assumption=(
+                        "analysis stopped before object identity materialization; "
+                        "communication counts are unavailable"
+                    ),
+                )
             object_count = store.materialize_objects()
             application_partition = analyze_application_partition(
                 store, trace_dir / "modules.tsv", manifest.executable.path
@@ -296,6 +316,44 @@ def _file_digest(path: Path) -> str:
         while chunk := stream.read(1024 * 1024):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _unknown_certificate(
+    manifest: TraceManifest,
+    validation: object,
+    trace_dir: Path,
+    config: DynamicConfig,
+    contract_sha256: str,
+    unknowns: tuple[str, ...],
+    *,
+    event_count: int,
+    assumption: str,
+) -> DynamicCertificate:
+    """资源闸门提前结束时仍输出完整的 UNKNOWN 证书。"""
+
+    return DynamicCertificate(
+        verdict=TraceVerdict.UNKNOWN,
+        scope=TraceScope(
+            trace_ids=(manifest.trace_id,),
+            trace_sha256=(trace_digest(trace_dir),),
+            executable=manifest.executable,
+            libraries=manifest.libraries,
+            commands=(manifest.command,),
+            working_directories=(manifest.working_directory,),
+            analysis_scope="application" if config.application_only else "full",
+        ),
+        dbt_contract_sha256=contract_sha256,
+        analyzer_version=__version__,
+        trace_complete=validation.structurally_complete,
+        event_count=event_count,
+        thread_count=len(validation.thread_ids),
+        object_count=0,
+        unique_pc_count=0,
+        communication_edge_count=0,
+        indirect_target_count=0,
+        unknown_reasons=tuple(dict.fromkeys(unknowns)),
+        assumptions=(assumption,),
+    )
 
 
 def _application_edges(

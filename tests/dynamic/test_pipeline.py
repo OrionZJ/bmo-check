@@ -178,6 +178,24 @@ def test_incomplete_trace_is_unknown(trace_manifest, tmp_path: Path) -> None:
     assert certificate.unknown_reasons
 
 
+def test_object_materialization_budget_returns_unknown_before_update(
+    trace_manifest, tmp_path: Path
+) -> None:
+    trace_dir = tmp_path / "object-budget"
+    trace_manifest(trace_dir)
+    with TraceWriter(trace_dir / "events-1.bin") as writer:
+        writer.write(TraceEvent(1, 1, 0, 0x10, EventKind.LOAD, 0x1000, 4))
+        writer.write(TraceEvent(1, 2, 0, 0x11, EventKind.STORE, 0x1004, 4))
+    certificate = analyze_trace(
+        trace_dir,
+        dbt_contract=_contract(tmp_path),
+        config=DynamicConfig(max_object_events=1),
+    )
+    assert certificate.verdict == TraceVerdict.UNKNOWN
+    assert certificate.event_count == 2
+    assert any("object identity materialization" in reason for reason in certificate.unknown_reasons)
+
+
 def test_cross_location_cycle_is_kept_in_one_window(
     trace_manifest, tmp_path: Path
 ) -> None:

@@ -74,6 +74,7 @@ def _analysis_config(args: argparse.Namespace) -> DynamicConfig:
         max_executions=args.max_executions,
         max_communication_edges=args.max_communication_edges,
         max_communication_active_events=args.max_communication_active_events,
+        max_object_events=args.max_object_events,
         max_pages_per_access=args.max_pages_per_access,
         batch_size=args.batch_size,
         solver_timeout_ms=args.solver_timeout_ms,
@@ -217,6 +218,7 @@ def _add_analysis_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--max-executions", type=int, default=20_000)
     parser.add_argument("--max-communication-edges", type=int, default=100_000)
     parser.add_argument("--max-communication-active-events", type=int, default=100_000)
+    parser.add_argument("--max-object-events", type=int, default=5_000_000)
     parser.add_argument("--max-pages-per-access", type=int, default=16)
     parser.add_argument("--batch-size", type=int, default=50_000)
     parser.add_argument("--solver-timeout-ms", type=int, default=10_000)
