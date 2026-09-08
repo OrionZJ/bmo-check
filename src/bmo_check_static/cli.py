@@ -275,6 +275,7 @@ def _build_slice_report(args: argparse.Namespace) -> ProgramSliceReport:
         recovery.synchronization,
         function_effects=effect_contract.effects,
         function_integer_arguments=effect_contract.integer_arguments,
+        function_memory_arguments=effect_contract.memory_arguments,
         function_internal_objects=effect_contract.internal_objects,
     )
     shared_state = analyze_shared_state(
@@ -320,7 +321,12 @@ def _analyze(args: argparse.Namespace) -> int:
     certificate = verify_portability(
         report,
         _checker_limits(args),
-        analysis_options={"scope": args.scope},
+        analysis_options={
+            "scope": args.scope,
+            # pthread 规格决定 syscall 慢路径能否被具体 LOCK/XCHG 边界覆盖。
+            # 绑定完整文件哈希，防止改规格后误复用旧 certificate。
+            "pthread_spec_sha256": _file_sha256(args.pthread_spec),
+        },
     )
     _write_json(certificate, args.output)
     if certificate.verdict.value == "SAFE":
@@ -426,6 +432,7 @@ def _evaluate(args: argparse.Namespace) -> int:
                 recovery.synchronization,
                 function_effects=effect_contract.effects,
                 function_integer_arguments=effect_contract.integer_arguments,
+                function_memory_arguments=effect_contract.memory_arguments,
                 function_internal_objects=effect_contract.internal_objects,
                 worker_argument_base=(
                     lifecycle_proof.worker_argument_base
@@ -486,6 +493,8 @@ def _evaluate(args: argparse.Namespace) -> int:
                     "scope": args.scope,
                     "pruning_level": level.value,
                     "normal_completion_only": definition.normal_completion_only,
+                    # 同步摘要由 pthread 规格参与生成；规格变化时必须重做证书。
+                    "pthread_spec_sha256": _file_sha256(args.pthread_spec),
                     # suite 只给出机器码入口；proof 结果也写入 scope，防止
                     # 换输入或证明失败后误复用旧 certificate。
                     "partition_hints": [

@@ -91,6 +91,66 @@ def test_global_pointer_slot_and_scaled_stack_index_are_recovered() -> None:
     assert address.provenance["index_term"] == "frame@0x1000-24"
 
 
+def test_lea_stack_object_keeps_identity_when_saved_and_reloaded() -> None:
+    facts = disassemble_bytes(
+        bytes.fromhex(
+            "488d45b0"  # lea rax, [rbp - 0x50]
+            "488945e8"  # mov [rbp - 0x18], rax
+            "488b45e8"  # mov rax, [rbp - 0x18]
+            "48894808"  # mov [rax + 8], rcx
+        ),
+        address=0x1000,
+    )
+    module = ModuleFingerprint(
+        path="/bin/app",
+        role=ModuleRole.EXECUTABLE,
+        size=4096,
+        sha256=HASH,
+        elf=ElfMetadata(
+            elf_class=64,
+            little_endian=True,
+            machine="EM_X86_64",
+            elf_type="ET_EXEC",
+        ),
+    )
+    pcs = tuple(fact.pc for fact in facts)
+    control_flow = ControlFlowReport(
+        module_path=module.path,
+        module_sha256=module.sha256,
+        entry_pc=0x1000,
+        functions=(
+            FunctionFact(
+                location=_location(0x1000),
+                size=sum(len(item.raw_bytes) for item in facts),
+                block_pcs=(0x1000,),
+            ),
+        ),
+        basic_blocks=(
+            BasicBlockFact(
+                location=_location(0x1000),
+                size=sum(len(item.raw_bytes) for item in facts),
+                instruction_pcs=pcs,
+            ),
+        ),
+        coverage=CFGCoverage(
+            angr_version="test",
+            functions=1,
+            basic_blocks=1,
+            call_sites=0,
+            indirect_sites=0,
+            complete_indirect_sites=0,
+            incomplete_indirect_sites=0,
+        ),
+    )
+
+    addresses = recover_block_local_addresses(module, control_flow, facts)
+    address = addresses[(facts[-1].pc, facts[-1].memory_operands[0].operand_index)]
+
+    assert address.kind == AddressKind.STACK
+    assert address.base == "stack:frame-value@0x1000-80"
+    assert address.offset == 8
+
+
 def test_fresh_allocation_return_flows_across_cfg_edge() -> None:
     call_fact = disassemble_bytes(bytes.fromhex("e800000000"), address=0x1000)[0]
     use_fact = disassemble_bytes(bytes.fromhex("c70001000000"), address=0x1005)[0]

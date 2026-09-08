@@ -31,8 +31,14 @@ from .address_provenance import recover_address_provenance
 
 
 _ACQUIRE_APIS = {"pthread_mutex_lock", "pthread_spin_lock"}
-_RELEASE_APIS = {"pthread_mutex_unlock", "pthread_spin_unlock"}
-_BARRIER_APIS = {"pthread_barrier_wait"}
+_RELEASE_APIS = {
+    "pthread_mutex_unlock",
+    "pthread_spin_unlock",
+    "pthread_cond_signal",
+    "pthread_cond_broadcast",
+}
+_BARRIER_APIS = {"pthread_barrier_wait", "pthread_cond_wait"}
+_INTEGER_ARGUMENTS = ("rdi", "rsi", "rdx", "rcx", "r8", "r9")
 
 
 def _ordering_covers(actual: Ordering, required: Ordering) -> bool:
@@ -377,6 +383,7 @@ def extract_memory_events(
     *,
     function_effects: dict[str, str] | None = None,
     function_integer_arguments: dict[str, tuple[int, ...]] | None = None,
+    function_memory_arguments: dict[str, tuple[tuple[int, str], ...]] | None = None,
     function_internal_objects: dict[str, str] | None = None,
     worker_argument_base: str | None = None,
 ) -> MemoryEventReport:
@@ -385,6 +392,7 @@ def extract_memory_events(
             raise RuntimeError("CFG contains no recoverable functions or basic blocks")
         effect_contract = function_effects or {}
         integer_argument_contract = function_integer_arguments or {}
+        memory_argument_contract = function_memory_arguments or {}
         internal_object_contract = function_internal_objects or {}
         instruction_report = collect_instruction_facts(module)
         return_reachable_blocks = _blocks_reaching_return(
@@ -414,6 +422,9 @@ def extract_memory_events(
         for role in threads.roles:
             function_entry_arguments: dict[int, dict[str, AbstractAddress]] = {}
             seeded_function_pcs: set[int] = set()
+            role_reachable_functions = _role_functions(control_flow, threads).get(
+                role.id, set()
+            )
             if role.create_site is not None and len(role.start_targets.known_targets) == 1:
                 worker_pc = role.start_targets.known_targets[0].pc
                 seeded_function_pcs.add(worker_pc)
@@ -441,15 +452,60 @@ def extract_memory_events(
                     function_entry_arguments[worker_pc] = {
                         "rdi": call_arguments[3]
                     }
-            role_address_provenance[role.id] = recover_address_provenance(
-                module,
-                control_flow,
-                instruction_report.facts,
-                allocation_calls,
-                function_entry_arguments,
-                seeded_function_pcs,
-                role_functions.get(role.id, set()),
-            )
+            # recover_address_provenance 内部按一次函数图传播参数。大型 C++
+            # worker 往往还会经过多层 helper；每一轮先恢复已知调用实参，
+            # 再把“所有同目标 call site 都传入同一对象”的事实带入下一轮。
+            # 只有全体调用点的值相同才扩展入口，分歧或缺失仍保持 Unknown。
+            reachable = role_reachable_functions
+            for _ in range(max(1, len(reachable) + 1)):
+                report = recover_address_provenance(
+                    module,
+                    control_flow,
+                    instruction_report.facts,
+                    allocation_calls,
+                    function_entry_arguments,
+                    seeded_function_pcs,
+                    reachable,
+                )
+                candidate_calls: dict[int, list[tuple[str, AbstractAddress | None]]] = defaultdict(list)
+                for call in control_flow.call_sites:
+                    if (
+                        call.containing_function_pc not in reachable
+                        or len(call.targets.known_targets) != 1
+                    ):
+                        continue
+                    target = call.targets.known_targets[0]
+                    if (
+                        target.module_sha256 != module.sha256
+                        or target.pc not in reachable
+                    ):
+                        continue
+                    arguments = report.call_arguments.get(call.location.pc)
+                    if arguments is None:
+                        continue
+                    for register, value in zip(_INTEGER_ARGUMENTS, arguments):
+                        candidate_calls[target.pc].append((register, value))
+                expanded = {
+                    function_pc: dict(registers)
+                    for function_pc, registers in function_entry_arguments.items()
+                }
+                for target_pc, candidates in candidate_calls.items():
+                    by_register: dict[str, list[AbstractAddress | None]] = defaultdict(list)
+                    for register, value in candidates:
+                        by_register[register].append(value)
+                    for register, values in by_register.items():
+                        if (
+                            values
+                            and all(value is not None for value in values)
+                            and all(value == values[0] for value in values[1:])
+                        ):
+                            expanded.setdefault(target_pc, {})[register] = values[0]
+                if expanded == function_entry_arguments:
+                    role_address_provenance[role.id] = report
+                    break
+                function_entry_arguments = expanded
+            else:
+                role_address_provenance[role.id] = report
         instruction_to_block, block_to_function, function_names = _block_maps(
             control_flow
         )
@@ -689,6 +745,146 @@ def extract_memory_events(
                     for item in role_call_arguments
                 ]
                 event_id = f"{role}:0x{call.location.pc:x}:call"
+                if contracted_effect == "argument_access":
+                    # 只展开规格中列出的指针参数。无法恢复参数来源时仍生成
+                    # Unknown，避免把一个不完整的 libc 摘要当成无 effect。
+                    specs = memory_argument_contract.get(symbol, ())
+                    for argument_index, access_mode in specs:
+                        address = (
+                            role_call_arguments[argument_index]
+                            if argument_index < len(role_call_arguments)
+                            else None
+                        )
+                        if address is None:
+                            unknown_event_id = (
+                                f"{event_id}:arg{argument_index}:unknown"
+                            )
+                            append_event(
+                                MemoryEvent(
+                                    id=unknown_event_id,
+                                    module=module.path,
+                                    module_sha256=module.sha256,
+                                    pc=call.location.pc,
+                                    block_pc=call.block_pc,
+                                    function=function_names.get(
+                                        call.containing_function_pc
+                                    ),
+                                    function_pc=call.containing_function_pc,
+                                    kind=EventKind.UNKNOWN_MEMORY_EFFECT,
+                                    address=AbstractAddress(kind=AddressKind.UNKNOWN),
+                                    thread_role=role,
+                                    provenance={
+                                        "target_symbol": symbol,
+                                        "contracted_effect": contracted_effect,
+                                        "argument_index": argument_index,
+                                        "access_mode": access_mode,
+                                    },
+                                )
+                            )
+                            unknowns.append(
+                                UnknownFact(
+                                    kind=UnknownKind.UNKNOWN_MEMORY_EFFECT,
+                                    reason=(
+                                        f"call {symbol!r} argument {argument_index} "
+                                        "address is not recoverable"
+                                    ),
+                                    impact="the external memory access remains a MayAlias candidate",
+                                    module=module.path,
+                                    pc=call.location.pc,
+                                    function=function_names.get(
+                                        call.containing_function_pc
+                                    ),
+                                    details={"event_id": unknown_event_id},
+                                )
+                            )
+                            continue
+                        kind = (
+                            EventKind.LOAD
+                            if access_mode == "read"
+                            else EventKind.STORE
+                        )
+                        append_event(
+                            MemoryEvent(
+                                id=f"{event_id}:arg{argument_index}:{access_mode}",
+                                module=module.path,
+                                module_sha256=module.sha256,
+                                pc=call.location.pc,
+                                block_pc=call.block_pc,
+                                function=function_names.get(
+                                    call.containing_function_pc
+                                ),
+                                function_pc=call.containing_function_pc,
+                                kind=kind,
+                                address=address,
+                                # 规格通常只知道指针起点，不知道动态长度；
+                                # None 让别名层保守保留同 base 的候选冲突。
+                                size=None,
+                                source_ordering=Ordering.TSO,
+                                target_ordering=Ordering.RELAXED,
+                                thread_role=role,
+                                provenance={
+                                    "target_symbol": symbol,
+                                    "contracted_effect": contracted_effect,
+                                    "argument_index": argument_index,
+                                    "access_mode": access_mode,
+                                    "call_arguments": call_argument_details,
+                                },
+                            )
+                        )
+                    internal_object = internal_object_contract.get(symbol)
+                    if internal_object is not None:
+                        # FILE 等运行库对象不属于应用切片，但 full scope 仍
+                        # 保留这个 opaque effect，避免把库内部状态误当私有。
+                        runtime_event_id = f"{event_id}:runtime"
+                        append_event(
+                            MemoryEvent(
+                                id=runtime_event_id,
+                                module=module.path,
+                                module_sha256=module.sha256,
+                                pc=call.location.pc,
+                                block_pc=call.block_pc,
+                                function=function_names.get(
+                                    call.containing_function_pc
+                                ),
+                                function_pc=call.containing_function_pc,
+                                kind=EventKind.OPAQUE_CALL,
+                                address=AbstractAddress(
+                                    kind=AddressKind.GLOBAL,
+                                    base=internal_object,
+                                    provenance={
+                                        "contracted_effect": contracted_effect,
+                                        "target_symbol": symbol,
+                                        "runtime_internal": True,
+                                    },
+                                ),
+                                source_ordering=Ordering.UNKNOWN,
+                                target_ordering=Ordering.UNKNOWN,
+                                thread_role=role,
+                                provenance={
+                                    "target_symbol": symbol,
+                                    "contracted_effect": contracted_effect,
+                                    "internal_object": internal_object,
+                                    "runtime_internal": True,
+                                },
+                            )
+                        )
+                        unknowns.append(
+                            UnknownFact(
+                                kind=UnknownKind.UNKNOWN_MEMORY_EFFECT,
+                                reason=(
+                                    f"call {symbol!r} has an unmodeled runtime object "
+                                    f"{internal_object}"
+                                ),
+                                impact="full-process scope must retain the runtime effect",
+                                module=module.path,
+                                pc=call.location.pc,
+                                function=function_names.get(
+                                    call.containing_function_pc
+                                ),
+                                details={"event_id": runtime_event_id},
+                            )
+                        )
+                    continue
                 if contracted_effect == "thread_local":
                     # libm 可能更新 errno/fenv；把它保留为 TLS 读写，而不是假装无 effect。
                     # 后续只有在 TLS 地址没有逃逸时才能剪除这两个事件。
@@ -745,6 +941,20 @@ def extract_memory_events(
                             "target_symbol": symbol,
                             "runtime_internal": internal_object is not None,
                         },
+                    )
+                elif kind in {
+                    EventKind.ACQUIRE,
+                    EventKind.RELEASE,
+                    EventKind.BARRIER,
+                }:
+                    # 同步对象本身不是 wildcard memory effect；能恢复第一个
+                    # 指针参数时把它挂到事件上，后续 lockset 分析才能识别
+                    # 两个普通访问是否由同一把锁保护。
+                    address = (
+                        role_call_arguments[0]
+                        if role_call_arguments
+                        and role_call_arguments[0] is not None
+                        else None
                     )
                 append_event(
                     MemoryEvent(

@@ -8,7 +8,8 @@ from bmo_check_static.model import LifecycleHint, ModuleFingerprint
 
 @dataclass(frozen=True)
 class SymbolicLifecycleProof:
-    # proven 只有在每个成功 create 的 handle 都被 join 且路径闭合时才为 true。
+    # proven 只表示 create/join 数量、handle 对应和 post-join 路径已经闭合。
+    # worker 参数是否互异另由 worker_argument_base 是否存在表示。
     proven: bool
     # start_pc/post_join_pc 把证明限制在本次检查的机器码区间。
     start_pc: int
@@ -18,8 +19,8 @@ class SymbolicLifecycleProof:
     # created_handles/joined_handles 保存机器码实际传给 pthread API 的槽位。
     created_handles: tuple[int, ...]
     joined_handles: tuple[int, ...]
-    # created_arguments 保存传给 worker 的第四实参，用于证明参数对象不重叠。
-    created_arguments: tuple[int, ...]
+    # created_arguments 保存传给 worker 的第四实参；None 表示符号值未唯一化。
+    created_arguments: tuple[int | None, ...]
     # worker_argument_base 给已证明互异的第四实参一个证书内对象名。
     # 若 suite 没提供 allocation site，就使用绑定 start_pc 的生命周期名称。
     worker_argument_base: str | None
@@ -59,13 +60,19 @@ def prove_symbolic_lifecycle(
 
         class CreateProcedure(angr.SimProcedure):
             def run(self):  # type: ignore[no-untyped-def]
-                slot = self.state.solver.eval(self.state.regs.rdi)
+                slot_values = self.state.solver.eval_upto(self.state.regs.rdi, 2)
+                if len(slot_values) != 1:
+                    raise ValueError("pthread_create handle slot is not uniquely recoverable")
+                slot = slot_values[0]
                 created = tuple(self.state.globals.get("created_handles", ()))
                 arguments = tuple(self.state.globals.get("created_arguments", ()))
+                argument_values = self.state.solver.eval_upto(
+                    self.state.regs.rcx, 2
+                )
                 self.state.globals["created_handles"] = (*created, slot)
                 self.state.globals["created_arguments"] = (
                     *arguments,
-                    self.state.solver.eval(self.state.regs.rcx),
+                    argument_values[0] if len(argument_values) == 1 else None,
                 )
                 # pthread_create 成功后会写入 handle。用槽位本身作为唯一 handle，
                 # join 若读错槽或漏掉某次创建就无法通过集合比较。
@@ -79,7 +86,10 @@ def prove_symbolic_lifecycle(
 
         class JoinProcedure(angr.SimProcedure):
             def run(self):  # type: ignore[no-untyped-def]
-                handle = self.state.solver.eval(self.state.regs.rdi)
+                handle_values = self.state.solver.eval_upto(self.state.regs.rdi, 2)
+                if len(handle_values) != 1:
+                    raise ValueError("pthread_join handle is not uniquely recoverable")
+                handle = handle_values[0]
                 joined = tuple(self.state.globals.get("joined_handles", ()))
                 self.state.globals["joined_handles"] = (*joined, handle)
                 return 0
@@ -90,8 +100,13 @@ def prove_symbolic_lifecycle(
         state = project.factory.blank_state(addr=base + hint.start_pc)
         state.regs.rbp = frame
         state.regs.rsp = frame - 0x1000
+        thread_count_address = (
+            frame + hint.thread_count_stack_offset
+            if hint.thread_count_stack_offset is not None
+            else base + hint.thread_count_pc
+        )
         state.memory.store(
-            base + hint.thread_count_pc,
+            thread_count_address,
             thread_count,
             size=4,
             endness=project.arch.memory_endness,
@@ -106,7 +121,12 @@ def prove_symbolic_lifecycle(
         manager = project.factory.simulation_manager(state)
         manager.explore(find=base + hint.post_join_pc, num_find=2)
         if len(manager.found) != 1 or manager.errored or manager.unconstrained:
-            return failure("symbolic execution did not reach one closed post-join path")
+            return failure(
+                "symbolic execution did not reach one closed post-join path"
+                f" (found={len(manager.found)}, active={len(manager.active)}, deadended={len(manager.deadended)},"
+                f" errored={len(manager.errored)}, unconstrained={len(manager.unconstrained)},"
+                f" unconstrained_pcs={[item.solver.eval_upto(item.regs._ip, 2) for item in manager.unconstrained]})"
+            )
 
         found = manager.found[0]
         created = tuple(found.globals.get("created_handles", ()))
@@ -120,8 +140,12 @@ def prove_symbolic_lifecycle(
             return failure("pthread_join handles do not exactly cover created handles")
         if len(set(created)) != len(created):
             return failure("pthread_create reused one handle slot")
-        if len(arguments) != thread_count or len(set(arguments)) != len(arguments):
-            return failure("pthread_create worker arguments are not pairwise distinct")
+        if len(arguments) != thread_count:
+            return failure("pthread_create worker argument count is incomplete")
+        distinct_arguments = (
+            all(argument is not None for argument in arguments)
+            and len(set(arguments)) == len(arguments)
+        )
         return SymbolicLifecycleProof(
             proven=True,
             start_pc=hint.start_pc,
@@ -131,13 +155,21 @@ def prove_symbolic_lifecycle(
             joined_handles=joined,
             created_arguments=arguments,
             worker_argument_base=(
-                hint.worker_argument_base
-                or f"lifecycle-worker-arguments@0x{hint.start_pc:x}"
+                (
+                    hint.worker_argument_base
+                    or f"lifecycle-worker-arguments@0x{hint.start_pc:x}"
+                )
+                if distinct_arguments
+                else None
             ),
             evidence=(
                 f"machine code creates {len(created)} distinct worker handles",
                 f"machine code joins all {len(joined)} created handles",
-                f"machine code passes {len(arguments)} distinct worker arguments",
+                (
+                    f"machine code passes {len(arguments)} distinct worker arguments"
+                    if distinct_arguments
+                    else "machine code passes a shared worker argument; no disjoint partition proof is derived"
+                ),
                 "pthread_create and pthread_join returned success in the checked path",
                 "suite scope explicitly excludes failed pthread_create/join calls",
             ),

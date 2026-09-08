@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from enum import Enum
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from .common import StrictModel
 from .verdict import Verdict
@@ -84,14 +84,26 @@ class LifecycleHint(StrictModel):
     # create_pc/join_pc 指向主 ELF 中的 pthread PLT 入口。
     create_pc: int
     join_pc: int
-    # thread_count_pc 让证明器写入本次执行范围中的固定线程数。
-    thread_count_pc: int
+    # thread_count_pc 让证明器写入全局线程数；栈变量用下面的 offset。
+    thread_count_pc: int | None = None
+    # thread_count_stack_offset 绑定 rbp 相对的线程数槽位，避免把栈槽当全局地址。
+    thread_count_stack_offset: int | None = None
     # frame_pointer_offsets 列出前缀已分配、后续循环会读取的指针栈槽。
     frame_pointer_offsets: tuple[int, ...] = ()
     # worker_argument_base 可显式绑定 allocation site；缺失时生命周期证明生成本地对象名。
     worker_argument_base: str | None = None
     # assume_success 明确限定只认证 pthread create/join 均成功的执行。
     assume_success: bool = False
+
+    @model_validator(mode="after")
+    def require_thread_count_location(self) -> "LifecycleHint":
+        if (self.thread_count_pc is None) == (
+            self.thread_count_stack_offset is None
+        ):
+            raise ValueError(
+                "lifecycle hint must specify exactly one thread-count location"
+            )
+        return self
 
 
 class BenchmarkDefinition(StrictModel):

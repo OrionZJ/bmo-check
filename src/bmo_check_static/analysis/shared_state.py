@@ -170,8 +170,8 @@ def _local_direct_call_does_not_capture(
             else:
                 evidence = None
             tainted.difference_update(caller_saved)
-            if not tainted:
-                return True, evidence
+        if not tainted:
+            return True, evidence
             continue
         memory_bases = {
             candidate.reg_name(item.mem.base)
@@ -189,6 +189,11 @@ def _local_direct_call_does_not_capture(
         tainted.difference_update(written)
         if not tainted:
             return True, "materialized stack address is overwritten before it can escape"
+    if tainted.isdisjoint(caller_saved):
+        # SysV 规定 callee-saved 寄存器在返回前恢复原值。若地址只剩在这类
+        # 寄存器里，调用者拿不到它；把这种局部保存误报成 escape 会让整个
+        # worker 的栈访问退回 wildcard。
+        return True, "materialized stack address remains only in callee-saved registers"
     return False, None
 
 

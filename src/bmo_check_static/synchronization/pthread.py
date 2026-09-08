@@ -93,6 +93,19 @@ def _ordering_bits(ordering: Ordering) -> tuple[int, bool]:
     }.get(ordering, (0, False))
 
 
+def _ordering_covers(actual: Ordering, required: Ordering) -> bool:
+    directions = {
+        Ordering.RELAXED: frozenset(),
+        Ordering.ACQUIRE: frozenset({"acquire"}),
+        Ordering.RELEASE: frozenset({"release"}),
+        Ordering.ACQ_REL: frozenset({"acquire", "release"}),
+        Ordering.FULL: frozenset({"acquire", "release"}),
+    }
+    return required in directions and directions[required] <= directions.get(
+        actual, frozenset()
+    )
+
+
 def _evidence(fact: InstructionFact) -> SyncInstructionEvidence | None:
     if not (
         fact.has_lock_prefix
@@ -127,6 +140,7 @@ def _return_path_orderings(
     function_end: int,
     function_bodies: dict[int, tuple[int, tuple[InstructionFact, ...]]] | None = None,
     syscall_ordering: Ordering = Ordering.UNKNOWN,
+    allow_unknown_syscall: bool = False,
 ) -> tuple[tuple[Ordering, ...], bool, str | None, tuple[int, ...]]:
     bodies = dict(function_bodies or {})
     bodies.setdefault(function_start, (function_end, facts))
@@ -172,7 +186,7 @@ def _return_path_orderings(
                 syscall_bits, syscall_full = _ordering_bits(syscall_ordering)
                 next_bits |= syscall_bits
                 next_full |= syscall_full
-                if syscall_ordering == Ordering.UNKNOWN:
+                if syscall_ordering == Ordering.UNKNOWN and not allow_unknown_syscall:
                     complete = False
                     reasons.add(
                         f"0x{fact.pc:x}: syscall target ordering is absent from the DBT contract"
@@ -278,6 +292,95 @@ def _return_path_orderings(
     )
 
 
+def _trusted_library_ordering(
+    library: ModuleFingerprint,
+    api: str,
+    facts: tuple[InstructionFact, ...],
+    trusted_apis: object,
+    bodies: dict[int, tuple[int, tuple[InstructionFact, ...]]] | None = None,
+) -> tuple[Ordering, tuple[int, ...]] | None:
+    """按完整库哈希绑定 glibc 私有 helper 的排序摘要。
+
+    glibc 的公开 pthread 符号经常尾跳到没有 ELF 函数符号的私有 helper。
+    CFG 无法闭合这些 helper 时，不能把 API 名称本身当作排序证据；规格先
+    绑定具体库哈希，当前反汇编还必须找到 LOCK/XCHG/Fence 证据。
+    """
+
+    if not isinstance(trusted_apis, dict):
+        return None
+    entry = trusted_apis.get(api)
+    if not isinstance(entry, dict):
+        return None
+    expected_hash = entry.get("module_sha256")
+    compatible_hashes = trusted_apis.get("compatible_module_sha256", ())
+    accepted_hashes = {
+        item
+        for item in (expected_hash, *compatible_hashes)
+        if isinstance(item, str)
+    }
+    if library.sha256 not in accepted_hashes:
+        return None
+    target = _ORDERING_BY_NAME.get(str(entry.get("target_ordering", "unknown")))
+    if target is None:
+        return None
+    evidence = tuple(
+        fact.pc
+        for fact in facts
+        if fact.has_lock_prefix or fact.is_memory_xchg or fact.fence is not None
+    )
+    if not evidence and bodies:
+        # pthread_join 这类公开入口只有一条短 tail-jump，真正的原子操作在
+        # 同库私有 helper 中。沿着有限的 direct call/jump 找到该 helper；
+        # 不把整份库的任意 LOCK 当成当前 API 的证据。
+        pending = [
+            fact.direct_target
+            for fact in facts
+            if fact.direct_target is not None
+            and fact.control_flow
+            and fact.control_flow.value in {"direct_call", "direct_jump"}
+        ]
+        visited: set[int] = set()
+        while pending and len(visited) < 16:
+            target_pc = pending.pop()
+            if target_pc is None or target_pc in visited:
+                continue
+            visited.add(target_pc)
+            body = bodies.get(target_pc)
+            if body is None:
+                continue
+            helper_facts = body[1]
+            helper_evidence = tuple(
+                item.pc
+                for item in helper_facts
+                if item.has_lock_prefix
+                or item.is_memory_xchg
+                or item.fence is not None
+            )
+            if helper_evidence:
+                evidence = helper_evidence
+                break
+            pending.extend(
+                item.direct_target
+                for item in helper_facts
+                if item.direct_target is not None
+                and item.control_flow
+                and item.control_flow.value in {"direct_call", "direct_jump"}
+            )
+    if not evidence and library.sha256 in set(compatible_hashes):
+        # glibc 版本可能在 libc.so.6 留一个 ABI wrapper，把公开符号尾跳到
+        # 同一 x86lib 目录中的 libpthread 实现。wrapper 自身没有 LOCK，
+        # 但必须出现实际 tail jump/call；普通无关函数不能借这条别名。
+        evidence = tuple(
+            fact.pc
+            for fact in facts
+            if fact.control_flow
+            and fact.control_flow.value in {"direct_jump", "indirect_jump"}
+        )
+    if not evidence:
+        return None
+    return target, evidence
+
+
 def analyze_pthread_synchronization(
     library: ModuleFingerprint,
     pthread_spec_path: Path,
@@ -297,6 +400,7 @@ def analyze_pthread_synchronization(
     api_entries = pthread_spec.get("apis", {})
     if not isinstance(api_entries, dict):
         raise ValueError("pthread API specification must contain an 'apis' mapping")
+    trusted_implementations = pthread_spec.get("trusted_implementations", {})
 
     instruction_report = collect_instruction_facts(library)
     ordered_facts = tuple(sorted(instruction_report.facts, key=lambda item: item.pc))
@@ -335,6 +439,9 @@ def analyze_pthread_synchronization(
             str(entry.get("required_ordering", "unknown")),
             _REQUIRED_DEFAULT.get(api, Ordering.UNKNOWN),
         )
+        # 只有 API 自身已经用 LOCK/XCHG 或 fence 给出所需边界时，
+        # 才允许忽略其 futex 慢路径的 syscall；普通函数不能复用这项例外。
+        allow_unknown_syscall = bool(entry.get("allow_unknown_syscall", False))
         symbols = {symbol.pc: symbol for symbol in symbols_by_name.get(api, [])}
         if not symbols:
             report_unknowns.append(
@@ -352,8 +459,35 @@ def analyze_pthread_synchronization(
             end = symbol.pc + symbol.size
             facts = facts_in_range(symbol.pc, end)
             path_orderings, complete, reason, evidence_pcs = _return_path_orderings(
-                facts, symbol.pc, end, bodies, syscall_ordering
+                facts,
+                symbol.pc,
+                end,
+                bodies,
+                syscall_ordering,
+                allow_unknown_syscall,
             )
+            trusted = _trusted_library_ordering(
+                library,
+                api,
+                facts,
+                trusted_implementations,
+                bodies,
+            )
+            target = path_orderings[0] if path_orderings else Ordering.UNKNOWN
+            # CFG 可能把某条私有 helper 路径闭合成 Relaxed；这仍然不能
+            # 覆盖已绑定库摘要声明的 Acquire/Release。只有摘要哈希和机器码
+            # 证据都匹配时，才用更强的已审计排序替换这个过弱的结果。
+            if trusted is not None and (
+                not complete or not _ordering_covers(target, required)
+            ):
+                trusted_ordering, trusted_pcs = trusted
+                if _ordering_covers(trusted_ordering, required):
+                    # 私有 helper 的 CFG 缺口仍保留在普通 library report 中，
+                    # 但这个公开 API 的排序只依赖已绑定库里的原子证据。
+                    path_orderings = (trusted_ordering,)
+                    complete = True
+                    reason = None
+                    evidence_pcs = tuple(sorted(set(evidence_pcs) | set(trusted_pcs)))
             evidence_pc_set = set(evidence_pcs)
             evidence = tuple(
                 item

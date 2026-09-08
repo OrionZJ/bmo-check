@@ -17,6 +17,161 @@ functions:
   calloc:
     effect: fresh_allocation
     integer_arguments: [0, 1]
+    internal_object: "runtime:allocator"
+  _Znwm:
+    effect: fresh_allocation
+    integer_arguments: [0]
+    internal_object: "runtime:allocator"
+  _Znam:
+    effect: fresh_allocation
+    integer_arguments: [0]
+    internal_object: "runtime:allocator"
+  _ZdlPv:
+    effect: runtime_internal
+    integer_arguments: [0]
+    internal_object: "runtime:allocator"
+  _ZdaPv:
+    effect: runtime_internal
+    integer_arguments: [0]
+    internal_object: "runtime:allocator"
+  _ZNSaIcED2Ev:
+    effect: runtime_internal
+    integer_arguments: [0]
+    internal_object: "runtime:allocator"
+  _ZdlPvm:
+    effect: runtime_internal
+    integer_arguments: [0, 1]
+    internal_object: "runtime:allocator"
+  _ZdaPvm:
+    effect: runtime_internal
+    integer_arguments: [0, 1]
+    internal_object: "runtime:allocator"
+  memcpy:
+    effect: argument_access
+    integer_arguments: [0, 1, 2]
+    memory_arguments:
+      - index: 0
+        mode: write
+      - index: 1
+        mode: read
+  memmove:
+    effect: argument_access
+    integer_arguments: [0, 1, 2]
+    memory_arguments:
+      - index: 0
+        mode: write
+      - index: 1
+        mode: read
+  memset:
+    effect: argument_access
+    integer_arguments: [0, 1, 2]
+    memory_arguments:
+      - index: 0
+        mode: write
+  memcmp:
+    effect: argument_access
+    integer_arguments: [0, 1, 2]
+    memory_arguments:
+      - index: 0
+        mode: read
+      - index: 1
+        mode: read
+  bzero:
+    effect: argument_access
+    integer_arguments: [0, 1]
+    memory_arguments:
+      - index: 0
+        mode: write
+  strcmp:
+    effect: argument_access
+    integer_arguments: [0, 1]
+    memory_arguments:
+      - index: 0
+        mode: read
+      - index: 1
+        mode: read
+  strncmp:
+    effect: argument_access
+    integer_arguments: [0, 1, 2]
+    memory_arguments:
+      - index: 0
+        mode: read
+      - index: 1
+        mode: read
+  strlen:
+    effect: argument_access
+    integer_arguments: [0]
+    memory_arguments:
+      - index: 0
+        mode: read
+  strcpy:
+    effect: argument_access
+    integer_arguments: [0, 1]
+    memory_arguments:
+      - index: 0
+        mode: write
+      - index: 1
+        mode: read
+  strncpy:
+    effect: argument_access
+    integer_arguments: [0, 1, 2]
+    memory_arguments:
+      - index: 0
+        mode: write
+      - index: 1
+        mode: read
+  fopen:
+    effect: argument_access
+    integer_arguments: [0, 1]
+    memory_arguments:
+      - index: 0
+        mode: read
+      - index: 1
+        mode: read
+    internal_object: "runtime:stdio"
+  fclose:
+    effect: runtime_internal
+    integer_arguments: [0]
+    internal_object: "runtime:stdio"
+  fflush:
+    effect: runtime_internal
+    integer_arguments: [0]
+    internal_object: "runtime:stdio"
+  fread:
+    effect: argument_access
+    integer_arguments: [0, 1, 2, 3]
+    memory_arguments:
+      - index: 0
+        mode: write
+    internal_object: "runtime:stdio"
+  fwrite:
+    effect: argument_access
+    integer_arguments: [0, 1, 2, 3]
+    memory_arguments:
+      - index: 0
+        mode: read
+    internal_object: "runtime:stdio"
+  fputs:
+    effect: argument_access
+    integer_arguments: [0, 1]
+    memory_arguments:
+      - index: 0
+        mode: read
+    internal_object: "runtime:stdio"
+  getc:
+    effect: runtime_internal
+    integer_arguments: [0]
+    internal_object: "runtime:stdio"
+  fputc:
+    effect: runtime_internal
+    integer_arguments: [0, 1]
+    internal_object: "runtime:stdio"
+  atoi:
+    effect: argument_access
+    integer_arguments: [0]
+    memory_arguments:
+      - index: 0
+        mode: read
   exp:
     effect: thread_local
     integer_arguments: []
@@ -33,5 +188,11 @@ functions:
     effect: thread_local
     integer_arguments: []
   sqrtf:
+    effect: thread_local
+    integer_arguments: []
+  pow:
+    effect: thread_local
+    integer_arguments: []
+  powf:
     effect: thread_local
     integer_arguments: []

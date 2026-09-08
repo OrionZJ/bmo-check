@@ -14,12 +14,22 @@ def test_effect_contract_is_content_addressed() -> None:
     assert contract.version == "linux-runtime-effects-v4"
     assert {
         name for name, effect in contract.effects.items() if effect == "thread_local"
-    } == {"exp", "expf", "log", "logf", "sqrt", "sqrtf"}
+    } == {
+        "exp",
+        "expf",
+        "log",
+        "logf",
+        "sqrt",
+        "sqrtf",
+        "pow",
+        "powf",
+    }
     assert contract.effects["malloc"] == "fresh_allocation"
     assert contract.integer_arguments["malloc"] == (0,)
     assert contract.effects["free"] == "runtime_internal"
     assert contract.internal_objects["malloc"] == "runtime:allocator"
     assert contract.internal_objects["free"] == "runtime:allocator"
+    assert contract.memory_arguments["memcpy"] == ((0, "write"), (1, "read"))
     assert len(contract.sha256) == 64
 
 

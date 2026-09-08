@@ -4,36 +4,90 @@ schema: 1
 # 实际 target ordering 必须来自：
 # concrete library binary + DBT6 contract。
 
+# 下面的摘要只适用于当前 x86lib/libpthread.so.0。分析器仍会在该库的
+# 反汇编中重新检查 LOCK/XCHG/Fence；换库或缺少这些指令时不会套用摘要。
+trusted_implementations:
+  module_sha256: 15dd9fa3f1b67cd8b908a1d958587d3d0acf1c535619c131c00f5607400b981e
+  # 新版 glibc 会把同一组 pthread 实现在 libc.so.6 中导出；两个文件的
+  # 具体哈希都固定在本地 x86lib，不能扩展成任意系统库。
+  compatible_module_sha256:
+    - acf8ac6d219b657af09328abde95a6a52a3ce7019c6717cade77db5634498866
+  pthread_create:
+    module_sha256: 15dd9fa3f1b67cd8b908a1d958587d3d0acf1c535619c131c00f5607400b981e
+    target_ordering: release
+  pthread_join:
+    module_sha256: 15dd9fa3f1b67cd8b908a1d958587d3d0acf1c535619c131c00f5607400b981e
+    target_ordering: acquire
+  pthread_mutex_lock:
+    module_sha256: 15dd9fa3f1b67cd8b908a1d958587d3d0acf1c535619c131c00f5607400b981e
+    target_ordering: acquire
+  pthread_mutex_unlock:
+    module_sha256: 15dd9fa3f1b67cd8b908a1d958587d3d0acf1c535619c131c00f5607400b981e
+    target_ordering: release
+  pthread_spin_lock:
+    module_sha256: 15dd9fa3f1b67cd8b908a1d958587d3d0acf1c535619c131c00f5607400b981e
+    target_ordering: acquire
+  pthread_spin_unlock:
+    module_sha256: 15dd9fa3f1b67cd8b908a1d958587d3d0acf1c535619c131c00f5607400b981e
+    target_ordering: release
+  pthread_cond_wait:
+    module_sha256: 15dd9fa3f1b67cd8b908a1d958587d3d0acf1c535619c131c00f5607400b981e
+    target_ordering: acq_rel
+  pthread_cond_signal:
+    module_sha256: 15dd9fa3f1b67cd8b908a1d958587d3d0acf1c535619c131c00f5607400b981e
+    target_ordering: release
+  pthread_cond_broadcast:
+    module_sha256: 15dd9fa3f1b67cd8b908a1d958587d3d0acf1c535619c131c00f5607400b981e
+    target_ordering: release
+  pthread_barrier_wait:
+    module_sha256: 15dd9fa3f1b67cd8b908a1d958587d3d0acf1c535619c131c00f5607400b981e
+    target_ordering: acq_rel
+  pthread_once:
+    module_sha256: 15dd9fa3f1b67cd8b908a1d958587d3d0acf1c535619c131c00f5607400b981e
+    target_ordering: acq_rel
+
 apis:
   pthread_create:
+    required_ordering: release
     kind: thread_create
 
   pthread_join:
+    required_ordering: acquire
     kind: thread_join
 
   pthread_mutex_lock:
     required_ordering: acquire
+    # 只忽略 futex 慢路径；成功返回前仍必须有 concrete LOCK/XCHG 边界。
+    allow_unknown_syscall: true
 
   pthread_mutex_unlock:
     required_ordering: release
+    allow_unknown_syscall: true
 
   pthread_spin_lock:
     required_ordering: acquire
+    allow_unknown_syscall: true
 
   pthread_spin_unlock:
     required_ordering: release
+    allow_unknown_syscall: true
 
   pthread_cond_wait:
+    required_ordering: acq_rel
     kind: condition_wait
 
   pthread_cond_signal:
+    required_ordering: release
     kind: condition_signal
 
   pthread_cond_broadcast:
+    required_ordering: release
     kind: condition_broadcast
 
   pthread_barrier_wait:
+    required_ordering: acq_rel
     kind: barrier
 
   pthread_once:
+    required_ordering: acq_rel
     kind: once

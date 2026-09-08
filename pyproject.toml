@@ -37,6 +37,7 @@ packages = ["src/bmo_check_dynamic", "src/bmo_check_static"]
 "specs/static/dbt6-mo-off.yaml" = "bmo_check_static/data/dbt6-mo-off.yaml"
 "specs/static/library-effects.yaml" = "bmo_check_static/data/library-effects.yaml"
 "specs/static/parsec-simlarge.yaml" = "bmo_check_static/data/parsec-simlarge.yaml"
+"specs/static/parsec-portfolio.yaml" = "bmo_check_static/data/parsec-portfolio.yaml"
 "specs/static/pthread-api.yaml" = "bmo_check_static/data/pthread-api.yaml"
 
 [tool.pytest.ini_options]

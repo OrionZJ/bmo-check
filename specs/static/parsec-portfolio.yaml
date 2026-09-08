@@ -1,0 +1,106 @@
+schema: 1
+name: parsec-3.0-simlarge-amd64-linux.gcc-portfolio
+
+# 这个清单只描述本地已经存在的 PARSEC ELF；不带 partition hint 的项目
+# 必须保留 UNKNOWN，直到二进制自身给出可复核的生命周期和分片事实。
+benchmarks:
+  - id: blackscholes
+    executable: pkgs/apps/blackscholes/inst/amd64-linux.gcc/bin/blackscholes
+    run_directory: pkgs/apps/blackscholes/run
+    argv: ["{threads}", "in_64K.txt", "prices.txt"]
+    threads: 4
+    normal_completion_only: true
+
+  - id: swaptions
+    executable: pkgs/apps/swaptions/inst/amd64-linux.gcc/bin/swaptions
+    run_directory: pkgs/apps/swaptions/run
+    argv: ["-ns", "64", "-sm", "40000", "-nt", "{threads}"]
+    threads: 4
+    normal_completion_only: true
+
+  - id: bodytrack
+    executable: pkgs/apps/bodytrack/inst/amd64-linux.gcc/bin/bodytrack
+    run_directory: pkgs/apps/bodytrack/run
+    argv: ["sequenceB_4", "4", "4", "100", "5", "0", "1"]
+    threads: 4
+    normal_completion_only: true
+
+  - id: facesim
+    executable: pkgs/apps/facesim/inst/amd64-linux.gcc/bin/facesim
+    run_directory: pkgs/apps/facesim/run
+    argv: ["-timing", "-threads", "{threads}"]
+    threads: 4
+    normal_completion_only: true
+
+  - id: ferret
+    executable: pkgs/apps/ferret/inst/amd64-linux.gcc/bin/ferret
+    run_directory: pkgs/apps/ferret/run
+    argv: ["corel", "lsh", "queries", "{threads}", "20", "1", "output.txt"]
+    threads: 4
+    normal_completion_only: true
+
+  - id: fluidanimate
+    executable: pkgs/apps/fluidanimate/inst/amd64-linux.gcc/bin/fluidanimate
+    run_directory: pkgs/apps/fluidanimate/run
+    argv: ["{threads}", "-in", "in_300K.fluid", "-out", "out.fluid"]
+    threads: 4
+    normal_completion_only: true
+
+  - id: freqmine
+    executable: pkgs/apps/freqmine/inst/amd64-linux.gcc/bin/freqmine
+    run_directory: pkgs/apps/freqmine/run
+    argv: ["kosarak_990k.dat", "{threads}"]
+    threads: 4
+    normal_completion_only: true
+
+  - id: raytrace
+    executable: pkgs/apps/raytrace/inst/amd64-linux.gcc/bin/rtview
+    run_directory: pkgs/apps/raytrace/run
+    argv: ["-nodisplay", "-threads", "{threads}"]
+    threads: 4
+    normal_completion_only: true
+
+  - id: vips
+    executable: pkgs/apps/vips/inst/amd64-linux.gcc/bin/vips
+    run_directory: pkgs/apps/vips/run
+    argv: ["--version"]
+    threads: 4
+    normal_completion_only: true
+
+  - id: canneal
+    executable: pkgs/kernels/canneal/inst/amd64-linux.gcc/bin/canneal
+    run_directory: pkgs/kernels/canneal/run
+    argv: ["{threads}", "15000", "2000", "400000.nets", "128"]
+    threads: 4
+    normal_completion_only: true
+    # canneal 把同一个 annealer_thread 对象传给所有 worker；这里只绑定
+    # create/join 生命周期，不把共享参数误判成互不重叠的 worker 分片。
+    lifecycle_hint:
+      start_pc: 0x351a
+      post_join_pc: 0x35fc
+      create_pc: 0x2730
+      join_pc: 0x2700
+      thread_count_stack_offset: -0x114
+      assume_success: true
+
+  - id: dedup
+    executable: pkgs/kernels/dedup/inst/amd64-linux.gcc/bin/dedup
+    run_directory: pkgs/kernels/dedup/run
+    argv: ["-c", "-p", "-v", "-t", "{threads}", "-i", "media.dat", "-o", "output.dat.ddp"]
+    threads: 4
+    normal_completion_only: true
+
+  - id: streamcluster
+    executable: pkgs/kernels/streamcluster/inst/amd64-linux.gcc/bin/streamcluster
+    run_directory: pkgs/kernels/streamcluster/run
+    argv: ["10", "20", "128", "2", "5", "10", "1000", "none", "output.txt", "{threads}"]
+    threads: 4
+    normal_completion_only: true
+    lifecycle_hint:
+      start_pc: 0x3aa7
+      post_join_pc: 0x3c61
+      create_pc: 0x1340
+      join_pc: 0x1320
+      thread_count_pc: 0x207060
+      frame_pointer_offsets: [-0x80, -0x78, -0x70]
+      assume_success: true

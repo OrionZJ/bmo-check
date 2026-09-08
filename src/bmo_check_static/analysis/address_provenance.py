@@ -181,6 +181,16 @@ def _memory_value(
         saved = state.get(_frame_key(function_pc, operand.displacement))
         if saved is not None:
             return _with_evidence(saved, fact.pc)
+        if fact.mnemonic == "lea":
+            # LEA 取出的是当前函数的栈对象地址，而不是未知标量。
+            # 把它命名为独立 stack object，后续传入 worker 或 helper 时
+            # 才能继续追踪同一个对象；普通从栈槽读取的未知值仍保留为 affine。
+            return _SymbolicValue(
+                base=f"stack:{_frame_key(function_pc, operand.displacement)}",
+                indirect=False,
+                evidence_pcs=(fact.pc,),
+                object_kind=AddressKind.STACK,
+            )
         return _SymbolicValue(
             term=f"frame@0x{function_pc:x}{operand.displacement:+d}",
             coefficient=1,
@@ -302,8 +312,8 @@ def _abstract_value(value: _SymbolicValue | None) -> AbstractAddress | None:
         expression += f"+({value.term})*{value.coefficient}"
     if value.offset:
         expression += f"{value.offset:+d}"
-    if value.object_kind == AddressKind.HEAP and value.term is None:
-        kind = AddressKind.HEAP
+    if value.object_kind in {AddressKind.HEAP, AddressKind.STACK} and value.term is None:
+        kind = value.object_kind
     elif not value.indirect and value.term is None:
         kind = AddressKind.GLOBAL
     else:
@@ -342,9 +352,10 @@ def _symbolic_value(address: AbstractAddress) -> _SymbolicValue | None:
             int(item) for item in address.provenance.get("evidence_pcs", ())
         ),
         object_kind=(
-            AddressKind.HEAP
-            if address.kind == AddressKind.HEAP
-            or address.base.startswith("heap:")
+            address.kind
+            if address.kind in {AddressKind.HEAP, AddressKind.STACK}
+            else AddressKind.HEAP
+            if address.base.startswith("heap:")
             else None
         ),
         candidate_bases=tuple(
