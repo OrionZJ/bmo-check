@@ -41,7 +41,11 @@ def _deduplicate_unknowns(unknowns: list[UnknownFact]) -> tuple[UnknownFact, ...
     return tuple(result)
 
 
-def _collect_unknowns(report: ProgramSliceReport) -> tuple[UnknownFact, ...]:
+def _collect_unknowns(
+    report: ProgramSliceReport,
+    analysis_options: dict[str, object] | None = None,
+) -> tuple[UnknownFact, ...]:
+    application_scope = (analysis_options or {}).get("scope") == "application"
     recovery = report.recovery
     unknowns = list(recovery.manifest.unknowns)
     unknowns.extend(recovery.unknowns)
@@ -106,6 +110,11 @@ def _collect_unknowns(report: ProgramSliceReport) -> tuple[UnknownFact, ...]:
                 )
         for edge in report.shared_slice.synchronization:
             if not edge.complete:
+                if application_scope and not report.shared_slice.conflicts:
+                    # 应用切片已经没有跨线程冲突事件时，运行库 lifecycle 的
+                    # 未闭合 target ordering 不会给应用普通访存增加一条边。
+                    # 这条放宽只绑定 application scope；full scope 仍返回 Unknown。
+                    continue
                 unknowns.append(
                     UnknownFact(
                         kind=UnknownKind.UNKNOWN_SYNCHRONIZATION,
@@ -202,6 +211,7 @@ def _scope(
         argv=manifest.execution.argv,
         thread_count_min=manifest.execution.thread_count_min,
         thread_count_max=manifest.execution.thread_count_max,
+        analysis_scope=str((analysis_options or {}).get("scope", "full")),
         analysis_config_sha256=_analysis_config_sha256(
             manifest, limits, analysis_options
         ),
@@ -357,7 +367,7 @@ def verify_portability(
     manifest = report.recovery.manifest
     scope = _scope(manifest, limits, analysis_options)
     coverage = _coverage(report)
-    unknowns = _collect_unknowns(report)
+    unknowns = _collect_unknowns(report, analysis_options)
     proof_objects = (
         report.shared_slice.proof_objects if report.shared_slice is not None else ()
     )
@@ -382,13 +392,19 @@ def verify_portability(
     shared_slice = report.shared_slice
     assert shared_slice is not None
     if not shared_slice.conflicts:
+        reason = "all cross-thread conflicting events were removed by checked proof objects"
+        if (analysis_options or {}).get("scope") == "application":
+            reason = (
+                "application scope has no remaining cross-thread conflicting application events; "
+                "runtime ordering stays outside this certificate"
+            )
         checker = CheckerReport(
             backend=BACKEND_NAME,
             backend_version=BACKEND_VERSION,
             bounded=False,
             limits=limits,
             conclusion=CheckerConclusion.STRUCTURAL_SAFE,
-            reason="all cross-thread conflicting events were removed by checked proof objects",
+            reason=reason,
         )
         return PortabilityCertificate(
             verdict=Verdict.SAFE,

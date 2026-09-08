@@ -55,6 +55,12 @@ class ProofReason(str, Enum):
     SEQUENTIAL_MAIN_CALLEE = "SequentialMainCallee"
     # NON_RETURNING_PATH 只用于 scope 明确排除异常终止的证书。
     NON_RETURNING_PATH = "NonReturningPath"
+    # APPLICATION_RUNTIME_BOUNDARY 只在显式 application scope 下移除运行库 effect。
+    # 这些 effect 不进入应用通信图，运行库自身的 LOCK/XCHG/Fence 仍由 DBT contract 负责。
+    APPLICATION_RUNTIME_BOUNDARY = "ApplicationRuntimeBoundary"
+    # FRESH_ALLOCATION 表示每个动态调用得到的新对象，不能和另一线程的
+    # 同一 allocation site 返回值重叠；仍需保留逃逸检查。
+    FRESH_ALLOCATION = "FreshAllocation"
 
 
 class AliasRelation(str, Enum):

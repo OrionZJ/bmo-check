@@ -53,7 +53,10 @@ from bmo_check_static.evaluation import (
 )
 from bmo_check_static.proof import explain_certificate, verify_portability
 from bmo_check_static.synchronization import analyze_pthread_synchronization
-from bmo_check_static.slicing import build_shared_memory_slice
+from bmo_check_static.slicing import (
+    build_shared_memory_slice,
+    restrict_to_application_scope,
+)
 from bmo_check_static.threading import discover_pthread_threads
 
 
@@ -283,6 +286,11 @@ def _build_slice_report(args: argparse.Namespace) -> ProgramSliceReport:
     shared_slice = build_shared_memory_slice(
         events, shared_state, recovery.thread_roles
     )
+    if args.scope == "application":
+        shared_slice = restrict_to_application_scope(
+            shared_slice,
+            executable_sha256=module.sha256,
+        )
     return ProgramSliceReport(
         recovery=recovery,
         memory_events=events,
@@ -309,7 +317,11 @@ def _checker_limits(args: argparse.Namespace) -> CheckerLimits:
 
 def _analyze(args: argparse.Namespace) -> int:
     report = _build_slice_report(args)
-    certificate = verify_portability(report, _checker_limits(args))
+    certificate = verify_portability(
+        report,
+        _checker_limits(args),
+        analysis_options={"scope": args.scope},
+    )
     _write_json(certificate, args.output)
     if certificate.verdict.value == "SAFE":
         return 0
@@ -383,6 +395,7 @@ def _evaluate(args: argparse.Namespace) -> int:
             dbt_root=args.dbt_root,
             pthread_spec=args.pthread_spec,
             function_effects=args.function_effects,
+            scope=args.scope,
         )
 
         recovery_started = monotonic()
@@ -445,6 +458,11 @@ def _evaluate(args: argparse.Namespace) -> int:
                 shared_slice = build_shared_memory_slice(
                     memory_events, level_state, recovery.thread_roles
                 )
+                if args.scope == "application" and module is not None:
+                    shared_slice = restrict_to_application_scope(
+                        shared_slice,
+                        executable_sha256=module.sha256,
+                    )
                 program_report = ProgramSliceReport(
                     recovery=recovery,
                     memory_events=memory_events,
@@ -465,6 +483,7 @@ def _evaluate(args: argparse.Namespace) -> int:
                 program_report,
                 limits,
                 analysis_options={
+                    "scope": args.scope,
                     "pruning_level": level.value,
                     "normal_completion_only": definition.normal_completion_only,
                     # suite 只给出机器码入口；proof 结果也写入 scope，防止
@@ -628,6 +647,8 @@ def _evaluation_worker_command(
         str(args.analysis_memory_limit_mb),
         "--analysis-timeout-seconds",
         str(args.analysis_timeout_seconds),
+        "--scope",
+        args.scope,
         "--max-events",
         str(args.max_events),
         "--max-threads",
@@ -774,6 +795,19 @@ def _add_input_arguments(parser: argparse.ArgumentParser) -> None:
         default=_default_static_spec("library-effects.yaml"),
     )
     parser.add_argument("--output", type=Path)
+    parser.add_argument(
+        "--scope",
+        choices=("full", "application"),
+        default="full",
+        help="prove the full process or only the explicitly bounded main-ELF application scope",
+    )
+    parser.add_argument(
+        "--application-only",
+        dest="scope",
+        action="store_const",
+        const="application",
+        help="alias for --scope application",
+    )
 
 
 def _add_checker_arguments(parser: argparse.ArgumentParser) -> None:
@@ -858,6 +892,19 @@ def build_parser() -> argparse.ArgumentParser:
         default=_default_static_spec("library-effects.yaml"),
     )
     evaluate.add_argument("--output-dir", type=Path, required=True)
+    evaluate.add_argument(
+        "--scope",
+        choices=("full", "application"),
+        default="full",
+        help="prove the full process or only the explicitly bounded main-ELF application scope",
+    )
+    evaluate.add_argument(
+        "--application-only",
+        dest="scope",
+        action="store_const",
+        const="application",
+        help="alias for --scope application",
+    )
     evaluate.add_argument("--run-native", action="store_true")
     evaluate.add_argument(
         "--native-timeout-seconds", type=_positive_int, default=300

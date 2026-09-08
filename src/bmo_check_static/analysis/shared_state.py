@@ -226,6 +226,26 @@ def _addresses_may_alias(
         # runtime effect 契约把库的隐藏状态划入独立命名空间。
         # 它自身仍是 Unknown，但不能因此声称会覆盖主 ELF 的数组。
         return first_base == second_base
+    first_candidates = {
+        str(item)
+        for item in first.provenance.get("candidate_bases", ())
+        if isinstance(item, str) and not item.startswith("heap-union:")
+    }
+    second_candidates = {
+        str(item)
+        for item in second.provenance.get("candidate_bases", ())
+        if isinstance(item, str) and not item.startswith("heap-union:")
+    }
+    if first_base.startswith("heap-union:") and first_candidates:
+        if second_base.startswith("heap-union:") and second_candidates:
+            # 两个 union 都保留了真实 allocation site；候选集合不相交时，
+            # 它们不能指向同一个活跃对象。
+            return bool(first_candidates & second_candidates)
+        if second_base.startswith("heap:") or second.kind == AddressKind.HEAP:
+            return second_base in first_candidates
+    if second_base.startswith("heap-union:") and second_candidates:
+        if first_base.startswith("heap:") or first.kind == AddressKind.HEAP:
+            return first_base in second_candidates
     if first_base.startswith("heap-union:") or second_base.startswith("heap-union:"):
         # union 与任意 heap 仍可能重叠；它只能排除静态/global 对象。
         heap_prefixes = ("heap:", "heap-union:")
@@ -992,6 +1012,34 @@ def analyze_shared_state(
                     pc=min(event.pc for event in events),
                     details={"event_ids": [event.id for event in events]},
                 )
+                )
+        elif (
+            address.kind == AddressKind.HEAP
+            and isinstance(address.base, str)
+            and address.base.startswith("heap:function@")
+            and all(role != "main" for role in roles)
+            and not external_wildcards
+            and all(
+                event.address is not None
+                and event.address.provenance.get("base_indirect") is False
+                for event in events
+            )
+        ):
+            # 这个 allocation site 位于 worker 调用树内。malloc 每次调用
+            # 返回新对象；只要地址没有经过未知存储逃逸，不同 worker 的
+            # 同一 site 也不会指向同一活跃对象。
+            sharing = SharingClass.THREAD_LOCAL
+            escape = EscapeKind.NO_ESCAPE
+            proof = ProofObject(
+                id=f"proof:fresh-allocation:{index}",
+                reason=ProofReason.FRESH_ALLOCATION,
+                event_ids=tuple(event.id for event in events),
+                supporting_facts=(
+                    f"allocation site {address.base} is inside a worker call path",
+                    "fresh_allocation contract gives every dynamic call a new object",
+                    "all retained addresses use the direct allocation base",
+                    "no unknown wildcard may alias this allocation site",
+                ),
             )
         elif address.kind == AddressKind.STACK:
             function_pcs = {event.function_pc for event in events if event.function_pc is not None}
@@ -1057,18 +1105,42 @@ def analyze_shared_state(
         elif address.kind == AddressKind.AFFINE:
             escape = EscapeKind.UNKNOWN
             disjoint, evidence = prove_affine_partition(address)
-            symbolic_proof = next(
-                (
-                    item
-                    for item in partition_proofs
-                    if all(
-                        _symbolic_partition_covers_event(
-                            item, event, control_flow
+            # main 在 create 前或 join 后访问同一数组时已经被生命周期证明
+            # 移出并发阶段。它们不能阻止 worker 循环的分片证明匹配，
+            # 否则一个对象会把两个不同的 PC/栈槽混成未闭合的 Unknown。
+            concurrent_events = tuple(
+                event
+                for event in events
+                if event.id not in nonconcurrent_event_ids
+            )
+            fresh_worker_allocation = (
+                isinstance(address.base, str)
+                and address.base.startswith("heap:function@")
+                and bool(concurrent_events)
+                and all(
+                    event.thread_role not in {None, "main"}
+                    and event.address is not None
+                    and event.address.provenance.get("base_indirect") is False
+                    for event in concurrent_events
+                )
+                and not external_wildcards
+            )
+            symbolic_proof = (
+                next(
+                    (
+                        item
+                        for item in partition_proofs
+                        if all(
+                            _symbolic_partition_covers_event(
+                                item, event, control_flow
+                            )
+                            for event in concurrent_events
                         )
-                        for event in events
-                    )
-                ),
-                None,
+                    ),
+                    None,
+                )
+                if concurrent_events
+                else None
             )
             if symbolic_proof is not None:
                 disjoint = True
@@ -1090,7 +1162,21 @@ def analyze_shared_state(
                         control_flow,
                     )
                 }
-            if disjoint and writers and not uncovered_wildcards:
+            if fresh_worker_allocation:
+                sharing = SharingClass.THREAD_LOCAL
+                escape = EscapeKind.NO_ESCAPE
+                proof = ProofObject(
+                    id=f"proof:fresh-affine-allocation:{index}",
+                    reason=ProofReason.FRESH_ALLOCATION,
+                    event_ids=tuple(event.id for event in events),
+                    supporting_facts=(
+                        f"allocation site {address.base} is reached only by worker instances",
+                        "fresh_allocation call results are distinct while alive",
+                        "all concurrent addresses retain the direct allocation base",
+                        "no unknown wildcard may alias this allocation site",
+                    ),
+                )
+            elif disjoint and writers and not uncovered_wildcards:
                 sharing = SharingClass.DISJOINT_PARTITION
                 proof = ProofObject(
                     id=f"proof:affine:{index}",

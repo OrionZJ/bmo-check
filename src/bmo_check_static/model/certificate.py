@@ -34,6 +34,9 @@ class CertificateScope(StrictModel):
     argv: tuple[str, ...] = ()
     thread_count_min: int | None = None
     thread_count_max: int | None = None
+    # analysis_scope 区分整个进程和显式的主 ELF 应用通信证明。
+    # application scope 不覆盖运行库普通访存，不能当作 full scope 证书复用。
+    analysis_scope: str = "full"
     # analysis_config_sha256 绑定环境、checker bounds 和分析选项。
     analysis_config_sha256: str | None = None
 

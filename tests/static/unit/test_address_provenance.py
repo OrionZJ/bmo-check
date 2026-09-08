@@ -154,6 +154,67 @@ def test_fresh_allocation_return_flows_across_cfg_edge() -> None:
     assert address.provenance["scope"] == "function-cfg"
 
 
+def test_pointer_written_to_fresh_heap_slot_is_recovered_on_load() -> None:
+    facts = disassemble_bytes(
+        bytes.fromhex(
+            "e800000000"  # call malloc
+            "488900"      # mov [rax], rax
+            "488b08"      # mov rcx, [rax]
+            "8b11"        # mov edx, [rcx]
+        ),
+        address=0x1000,
+    )
+    module = ModuleFingerprint(
+        path="/bin/app",
+        role=ModuleRole.EXECUTABLE,
+        size=4096,
+        sha256=HASH,
+        elf=ElfMetadata(
+            elf_class=64,
+            little_endian=True,
+            machine="EM_X86_64",
+            elf_type="ET_EXEC",
+        ),
+    )
+    control_flow = ControlFlowReport(
+        module_path=module.path,
+        module_sha256=module.sha256,
+        entry_pc=0x1000,
+        functions=(
+            FunctionFact(
+                location=_location(0x1000),
+                size=sum(len(item.raw_bytes) for item in facts),
+                block_pcs=(0x1000,),
+            ),
+        ),
+        basic_blocks=(
+            BasicBlockFact(
+                location=_location(0x1000),
+                size=sum(len(item.raw_bytes) for item in facts),
+                instruction_pcs=tuple(item.pc for item in facts),
+            ),
+        ),
+        coverage=CFGCoverage(
+            angr_version="test",
+            functions=1,
+            basic_blocks=1,
+            call_sites=1,
+            indirect_sites=0,
+            complete_indirect_sites=0,
+            incomplete_indirect_sites=0,
+        ),
+    )
+
+    report = recover_address_provenance(
+        module, control_flow, facts, {0x1000: "malloc"}
+    )
+    use = facts[-1]
+    address = report.addresses[(use.pc, use.memory_operands[0].operand_index)]
+
+    assert address.kind == AddressKind.HEAP
+    assert address.base == "heap:malloc@0x1000"
+
+
 def test_pointer_loaded_from_heap_field_is_not_the_container_address() -> None:
     facts = disassemble_bytes(
         bytes.fromhex(

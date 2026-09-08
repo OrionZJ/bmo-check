@@ -76,6 +76,24 @@ class _SymbolicValue:
     evidence_pcs: tuple[int, ...] = ()
     # object_kind 区分 allocation site 与普通 global pointer slot。
     object_kind: AddressKind | None = None
+    # candidate_bases 保存 heap-union 合流前仍能追溯的 allocation site。
+    # 空集合表示没有这类精确候选，不能据此排除别名。
+    candidate_bases: tuple[str, ...] = ()
+
+
+def _heap_slot_key(value: _SymbolicValue | None) -> str | None:
+    """Return a key only for a concrete field in a known heap object."""
+
+    if (
+        value is None
+        or value.base is None
+        or value.term is not None
+        or value.coefficient
+        or value.indirect
+        or value.object_kind != AddressKind.HEAP
+    ):
+        return None
+    return f"heap-field@{value.base}{value.offset:+d}"
 
 
 def _root(register: str | None) -> str | None:
@@ -97,6 +115,7 @@ def _with_evidence(value: _SymbolicValue, pc: int) -> _SymbolicValue:
         offset=value.offset,
         evidence_pcs=tuple(dict.fromkeys((*value.evidence_pcs, pc))),
         object_kind=value.object_kind,
+        candidate_bases=value.candidate_bases,
     )
 
 
@@ -110,6 +129,7 @@ def _scaled(value: _SymbolicValue, scale: int, pc: int) -> _SymbolicValue | None
         offset=value.offset * scale,
         evidence_pcs=tuple(dict.fromkeys((*value.evidence_pcs, pc))),
         object_kind=value.object_kind,
+        candidate_bases=value.candidate_bases,
     )
 
 
@@ -130,6 +150,7 @@ def _added(
             dict.fromkeys((*left.evidence_pcs, *right.evidence_pcs, pc))
         ),
         object_kind=left.object_kind or right.object_kind,
+        candidate_bases=left.candidate_bases or right.candidate_bases,
     )
 
 
@@ -225,6 +246,12 @@ def _source_value(
             )
         if value is not None and memory.size == 8 and value.base is not None:
             base = _root(memory.base)
+            heap_slot = _heap_slot_key(value)
+            saved_heap_pointer = state.get(heap_slot) if heap_slot is not None else None
+            if saved_heap_pointer is not None:
+                # 这个字段在当前 CFG 路径上刚被明确写入指针；只复用
+                # 这条写入事实，不把任意 heap load 当成可追踪指针。
+                return _with_evidence(saved_heap_pointer, fact.pc)
             saved_pointer = (
                 base == "rip"
                 and state.get(
@@ -293,6 +320,7 @@ def _abstract_value(value: _SymbolicValue | None) -> AbstractAddress | None:
             "index_term": value.term,
             "evidence_pcs": list(value.evidence_pcs),
             "scope": "function-cfg",
+            "candidate_bases": list(value.candidate_bases),
         },
     )
 
@@ -319,6 +347,11 @@ def _symbolic_value(address: AbstractAddress) -> _SymbolicValue | None:
             or address.base.startswith("heap:")
             else None
         ),
+        candidate_bases=tuple(
+            str(item)
+            for item in address.provenance.get("candidate_bases", ())
+            if isinstance(item, str)
+        ),
     )
 
 
@@ -332,6 +365,11 @@ def _transfer(
     if fact.control_flow is not None and fact.control_flow.value.endswith("call"):
         for register in _CALLER_SAVED:
             state.pop(register, None)
+        # 任意调用都可能改写 heap；不把调用前的字段内容带过边界，
+        # 否则未知 helper 可能悄悄替换指针而仍被当成 fresh 对象。
+        for key in tuple(state):
+            if key.startswith("heap-field@"):
+                state.pop(key, None)
         if allocation_symbol is not None:
             state["rax"] = _SymbolicValue(
                 base=f"heap:{allocation_symbol}@0x{fact.pc:x}",
@@ -386,6 +424,7 @@ def _transfer(
                 indirect=False,
                 offset=value.offset,
                 evidence_pcs=value.evidence_pcs,
+                candidate_bases=value.candidate_bases,
             )
     elif destination is not None and fact.mnemonic in {"add", "sub"}:
         left = state.get(destination)
@@ -419,6 +458,7 @@ def _transfer(
                     dict.fromkeys((*left.evidence_pcs, fact.pc))
                 ),
                 object_kind=left.object_kind,
+                candidate_bases=left.candidate_bases,
             )
     elif destination is not None and fact.mnemonic == "imul":
         source = _source_value(module, fact, function_pc, state, 1)
@@ -435,6 +475,26 @@ def _transfer(
         state[destination] = _with_evidence(value, fact.pc)
 
     if fact.mnemonic in {"mov", "movabs"}:
+        heap_destination = next(
+            (
+                item
+                for item in fact.memory_operands
+                if item.operand_index == 0
+                and _root(item.base) not in {"rip", "rsp", "rbp"}
+            ),
+            None,
+        )
+        if heap_destination is not None and heap_destination.size == 8:
+            location = _memory_value(
+                module, fact, heap_destination, function_pc, state
+            )
+            key = _heap_slot_key(location)
+            if key is not None:
+                stored = _source_value(module, fact, function_pc, state, 1)
+                if stored is None:
+                    state.pop(key, None)
+                else:
+                    state[key] = stored
         memory_destination = next(
             (
                 item
@@ -476,6 +536,7 @@ def _transfer(
                         indirect=False,
                         evidence_pcs=stored.evidence_pcs,
                         object_kind=stored.object_kind,
+                        candidate_bases=stored.candidate_bases,
                     )
                 state[key] = stored
 
@@ -497,6 +558,20 @@ def recover_address_provenance(
     facts_by_pc = {fact.pc: fact for fact in facts}
     blocks = {block.location.pc: block for block in control_flow.basic_blocks}
     functions = {function.location.pc: function for function in control_flow.functions}
+    nonreturning_targets = {
+        function.location.pc
+        for function in control_flow.functions
+        if function.returning is False
+    }
+    nonreturning_call_pcs = {
+        call.location.pc
+        for call in control_flow.call_sites
+        if any(
+            target.module_sha256 == module.sha256
+            and target.pc in nonreturning_targets
+            for target in call.targets.known_targets
+        )
+    }
     # main 和 worker 可以调用同一个 helper，但传入完全不同的对象。
     # 按 role 闭包过滤 call site，避免另一个线程角色的参数污染当前入口 meet。
     reachable_functions = (
@@ -562,6 +637,11 @@ def recover_address_provenance(
                     state.clear()
                     continue
                 _transfer(module, fact, function_pc, state, allocation_calls.get(pc))
+            # 已由 CFG 标成不返回的 call 没有成功路径；继续把它的
+            # 后继状态带入 join 会让 error 分支覆盖正常返回分支，
+            # 误杀刚建立的 heap-slot 指针事实。
+            if any(pc in nonreturning_call_pcs for pc in block.instruction_pcs):
+                continue
             for successor in block.successor_pcs:
                 if successor not in function.block_pcs:
                     continue
@@ -761,6 +841,22 @@ def recover_address_provenance(
                             )
                         ),
                         object_kind=AddressKind.HEAP,
+                        candidate_bases=tuple(
+                            sorted(
+                                {
+                                    candidate
+                                    for value in values
+                                    if value is not None
+                                    for candidate in (
+                                        value.candidate_bases
+                                        or ((value.base,) if value.base else ())
+                                    )
+                                    if candidate is not None
+                                    and value.object_kind == AddressKind.HEAP
+                                    and not candidate.startswith("heap-union:")
+                                }
+                            )
+                        ),
                     )
                 if register not in target_values:
                     target_values[register] = first

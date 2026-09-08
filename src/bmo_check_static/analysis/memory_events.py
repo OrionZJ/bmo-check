@@ -420,22 +420,26 @@ def extract_memory_events(
                 call_arguments = base_address_provenance.call_arguments.get(
                     role.create_site.pc, ()
                 )
-                if len(call_arguments) > 3 and call_arguments[3] is not None:
-                    function_entry_arguments[worker_pc] = {
-                        "rdi": call_arguments[3]
-                    }
-                elif worker_argument_base is not None:
+                if worker_argument_base is not None:
                     # lifecycle 已逐个记录 create 的第四实参并证明它们互异。
-                    # 这里只恢复 worker 的入口对象，不猜测 main 栈布局。
+                    # 用同一个逻辑对象名贯穿 worker 调用树，避免把不同
+                    # create site 的精确栈表达式错误地合并成 Unknown。
                     function_entry_arguments[worker_pc] = {
                         "rdi": AbstractAddress(
-                            kind=AddressKind.GLOBAL,
+                            # lifecycle proof 已经证明每个 create 的第四实参
+                            # 来自互异对象；把它标成 HEAP，才能在 worker
+                            # helper 的参数合流时继续保留这条 ownership 事实。
+                            kind=AddressKind.HEAP,
                             base=worker_argument_base,
                             provenance={
                                 "base_indirect": False,
                                 "scope": "symbolic-lifecycle",
                             },
                         )
+                    }
+                elif len(call_arguments) > 3 and call_arguments[3] is not None:
+                    function_entry_arguments[worker_pc] = {
+                        "rdi": call_arguments[3]
                     }
             role_address_provenance[role.id] = recover_address_provenance(
                 module,

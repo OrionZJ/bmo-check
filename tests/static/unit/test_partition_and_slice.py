@@ -87,6 +87,27 @@ def test_runtime_internal_object_does_not_alias_application_arrays() -> None:
     assert not _addresses_may_alias(heap_union, application)
 
 
+def test_heap_union_candidates_only_alias_matching_allocation_site() -> None:
+    heap_union = AbstractAddress(
+        kind=AddressKind.HEAP,
+        base="heap-union:argument@0x3000:rdi",
+        provenance={
+            "candidate_bases": ["heap:malloc@0x1000", "heap:malloc@0x2000"]
+        },
+    )
+    included = AbstractAddress(
+        kind=AddressKind.HEAP,
+        base="heap:malloc@0x1000",
+    )
+    excluded = AbstractAddress(
+        kind=AddressKind.HEAP,
+        base="heap:malloc@0x4000",
+    )
+
+    assert _addresses_may_alias(heap_union, included)
+    assert not _addresses_may_alias(heap_union, excluded)
+
+
 def test_unknown_memory_effect_remains_in_slice_and_conflicts() -> None:
     unknown = MemoryEvent(
         id="worker:unknown",
