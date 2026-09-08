@@ -19,6 +19,43 @@ class CommunicationLimitError(RuntimeError):
     """扫描活动集合超限，调用者必须报告 UNKNOWN。"""
 
 
+def max_communication_page_events(
+    store: TraceStore, *, required_pc_range: tuple[int, int] | None = None
+) -> int:
+    """返回候选页中事件数的上界，供调用者在全局排序前检查预算。
+
+    这里不按地址展开交叉积，只按页聚合；超过活动集合预算时，继续排序
+    只会把必然的 UNKNOWN 变成更高的峰值内存。
+    """
+
+    page_filter = ""
+    params: tuple[int, ...] = ()
+    if required_pc_range is not None:
+        page_filter = "AND bool_or(e.pc >= ? AND e.pc < ?)"
+        params = tuple(int(value) for value in required_pc_range)
+    row = store.connection.execute(
+        f"""
+        WITH eligible_pages AS (
+            SELECT ep.page
+            FROM event_pages ep
+            JOIN events e USING (event_id)
+            GROUP BY ep.page
+            HAVING count(DISTINCT e.thread_id) > 1
+               AND count(*) FILTER (WHERE e.kind IN (2, 3)) > 0
+               {page_filter}
+        ), page_sizes AS (
+            SELECT ep.page, count(*) AS event_count
+            FROM event_pages ep
+            JOIN eligible_pages p USING (page)
+            GROUP BY ep.page
+        )
+        SELECT coalesce(max(event_count), 0) FROM page_sizes
+        """,
+        params,
+    ).fetchone()
+    return int(row[0] or 0)
+
+
 @dataclass(frozen=True, slots=True)
 class _ThreadHandoff:
     # parent_thread 是记录 create/join 的线程；其他 worker 不能冒充父线程。
@@ -34,9 +71,18 @@ class _ThreadHandoff:
 
 
 def find_communication_edges(
-    store: TraceStore, *, limit: int | None = None, max_active_events: int = 100_000
+    store: TraceStore,
+    *,
+    limit: int | None = None,
+    max_active_events: int = 100_000,
+    required_pc_range: tuple[int, int] | None = None,
 ) -> Iterator[CommunicationEdge]:
-    """只保留真实地址重叠且至少一端写入的跨线程访问。"""
+    """只保留真实地址重叠且至少一端写入的跨线程访问。
+
+    ``required_pc_range`` 只缩小候选页集合：页上至少要出现一个来自主
+    ELF 的访存。页内仍保留所有线程和模块的事件，所以不会漏掉主程序与
+    运行库之间的边，也不会改变 application scope 的外部边计数。
+    """
 
     # 单线程轨迹不可能产生通信边。跳过同页自连接，否则循环和库初始化会把
     # 同一页上的大量事件展开成无意义的二次方候选。
@@ -45,8 +91,15 @@ def find_communication_edges(
 
     handoffs = _thread_handoffs(store)
 
-    cursor = store.connection.execute(
+    page_filter = ""
+    page_params: tuple[int, ...] = ()
+    if required_pc_range is not None:
+        page_filter = """
+               AND bool_or(e.pc >= ? AND e.pc < ?)
         """
+        page_params = tuple(int(value) for value in required_pc_range)
+    page_cursor = store.connection.execute(
+        f"""
         WITH eligible_pages AS (
             SELECT ep.page
             FROM event_pages ep
@@ -54,72 +107,108 @@ def find_communication_edges(
             GROUP BY ep.page
             HAVING count(DISTINCT e.thread_id) > 1
                AND count(*) FILTER (WHERE e.kind IN (2, 3)) > 0
+               {page_filter}
         )
-        SELECT ep.page, e.event_id, e.thread_id, e.ticket, e.address, e.size,
-               e.kind, e.object_id
-        FROM event_pages ep
-        JOIN eligible_pages p USING (page)
-        JOIN events e USING (event_id)
-        ORDER BY ep.page, e.address, e.event_id
-        """
+        SELECT page FROM eligible_pages
+        """,
+        page_params,
     )
-    current_page: int | None = None
-    active: list[tuple[str, int, int, int, int, int, str | None]] = []
     emitted = 0
-    while rows := cursor.fetchmany(10_000):
-        for page_value, event_id_value, thread, ticket, address, size, kind, object_id in rows:
+    while pages := page_cursor.fetchmany(1_000):
+        for (page_value,) in pages:
             page = int(page_value)
-            start = int(address)
-            end = start + int(size)
-            if page != current_page:
-                current_page = page
-                active.clear()
-            active = [candidate for candidate in active if candidate[2] > start]
-            event_id = str(event_id_value)
-            for other_id, other_start, other_end, other_thread, other_ticket, other_kind, other_object in active:
-                if other_thread == int(thread):
-                    continue
-                if int(kind) not in (2, 3) and other_kind not in (2, 3):
-                    continue
-                if _is_thread_handoff_edge(
-                    event_id,
-                    int(thread),
-                    int(ticket),
-                    int(kind),
-                    other_id,
-                    other_thread,
-                    other_ticket,
-                    other_kind,
-                    handoffs,
-                ):
-                    continue
-                if (
-                    object_id is not None and other_object is not None
-                    and object_id != other_object
-                    and not str(object_id).startswith("tls:")
-                    and not str(other_object).startswith("tls:")
-                    and str(object_id).rsplit(":g", 1)[0]
-                    == str(other_object).rsplit(":g", 1)[0]
-                ):
-                    continue
-                overlap_start = max(start, other_start)
-                overlap_end = min(end, other_end)
-                if overlap_start >= overlap_end or overlap_start >> 12 != page:
-                    continue
-                first, second = sorted((event_id, other_id))
-                yield CommunicationEdge(first, second, overlap_start, overlap_end - overlap_start)
-                emitted += 1
-                if limit is not None and emitted >= limit:
-                    return
-            # 同址只读事件也会累积；输出边上限无法限制这个集合。
-            if len(active) >= max_active_events:
-                raise CommunicationLimitError(
-                    f"communication active set exceeds {max_active_events} events"
-                )
-            active.append(
-                (event_id, start, end, int(thread), int(ticket), int(kind),
-                 None if object_id is None else str(object_id))
+            # 每页单独排序，避免 DuckDB 为整个轨迹建立一个无法受控的
+            # ORDER BY；active 只保存当前页的地址区间。
+            cursor = store.connection.execute(
+                """
+                SELECT e.event_id, e.thread_id, e.ticket, e.address, e.size,
+                       e.kind, e.object_id, e.pc
+                FROM event_pages ep
+                JOIN events e USING (event_id)
+                WHERE ep.page = ?
+                ORDER BY e.address, e.event_id
+                """,
+                (page,),
             )
+            active: list[tuple[str, int, int, int, int, int, str | None, int]] = []
+            while rows := cursor.fetchmany(10_000):
+                for (
+                    event_id_value,
+                    thread,
+                    ticket,
+                    address,
+                    size,
+                    kind,
+                    object_id,
+                    pc,
+                ) in rows:
+                    start = int(address)
+                    end = start + int(size)
+                    active = [candidate for candidate in active if candidate[2] > start]
+                    event_id = str(event_id_value)
+                    for (
+                        other_id,
+                        other_start,
+                        other_end,
+                        other_thread,
+                        other_ticket,
+                        other_kind,
+                        other_object,
+                        _other_pc,
+                    ) in active:
+                        if other_thread == int(thread):
+                            continue
+                        if int(kind) not in (2, 3) and other_kind not in (2, 3):
+                            continue
+                        if _is_thread_handoff_edge(
+                            event_id,
+                            int(thread),
+                            int(ticket),
+                            int(kind),
+                            other_id,
+                            other_thread,
+                            other_ticket,
+                            other_kind,
+                            handoffs,
+                        ):
+                            continue
+                        if (
+                            object_id is not None and other_object is not None
+                            and object_id != other_object
+                            and not str(object_id).startswith("tls:")
+                            and not str(other_object).startswith("tls:")
+                            and str(object_id).rsplit(":g", 1)[0]
+                            == str(other_object).rsplit(":g", 1)[0]
+                        ):
+                            continue
+                        overlap_start = max(start, other_start)
+                        overlap_end = min(end, other_end)
+                        if overlap_start >= overlap_end or overlap_start >> 12 != page:
+                            continue
+                        first, second = sorted((event_id, other_id))
+                        yield CommunicationEdge(
+                            first, second, overlap_start, overlap_end - overlap_start
+                        )
+                        emitted += 1
+                        if limit is not None and emitted >= limit:
+                            return
+                    # 同址只读事件也会累积；输出边上限无法限制这个集合。
+                    if len(active) >= max_active_events:
+                        raise CommunicationLimitError(
+                            f"communication active set exceeds {max_active_events} events"
+                        )
+                    active.append(
+                        (
+                            event_id,
+                            start,
+                            end,
+                            int(thread),
+                            int(ticket),
+                            int(kind),
+                            None if object_id is None else str(object_id),
+                            int(pc),
+                        )
+                    )
 
 
 def _thread_handoffs(store: TraceStore) -> dict[int, _ThreadHandoff]:

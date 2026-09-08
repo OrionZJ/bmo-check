@@ -6,6 +6,7 @@ from bmo_check_dynamic.analysis.communication import CommunicationLimitError
 
 from bmo_check_dynamic.analysis import (
     find_communication_edges,
+    max_communication_page_events,
 )
 from bmo_check_dynamic.analysis.windows import (
     _biconnected_components,
@@ -141,6 +142,22 @@ def test_communication_limit_is_applied_inside_query(tmp_path: Path) -> None:
         assert len(tuple(find_communication_edges(store, limit=3))) == 3
 
 
+def test_required_pc_range_skips_pages_without_application_access(
+    tmp_path: Path,
+) -> None:
+    events = (
+        TraceEvent(1, 1, 0, 0x3000, EventKind.STORE, 0x1000, 4),
+        TraceEvent(2, 1, 0, 0x4000, EventKind.LOAD, 0x1000, 4),
+        TraceEvent(1, 2, 0, 0x1100, EventKind.STORE, 0x2000, 4),
+        TraceEvent(2, 2, 0, 0x4000, EventKind.LOAD, 0x2000, 4),
+    )
+    with TraceStore(tmp_path / "pc-filter.duckdb") as store:
+        store.add_events(events, max_pages_per_access=16, batch_size=4)
+        edges = tuple(find_communication_edges(store, required_pc_range=(0x1000, 0x2000)))
+    assert len(edges) == 1
+    assert edges[0].address == 0x2000
+
+
 def test_biconnected_split_handles_deep_graph_without_python_recursion() -> None:
     graph: dict[str, set[str]] = {}
     for index in range(2_500):
@@ -176,6 +193,16 @@ def test_active_set_limit_covers_readonly_hotspot(tmp_path: Path) -> None:
         store.add_events(events, max_pages_per_access=16, batch_size=4)
         with pytest.raises(CommunicationLimitError, match="active set"):
             tuple(find_communication_edges(store, max_active_events=3))
+
+
+def test_page_event_budget_is_computed_before_scan(tmp_path: Path) -> None:
+    events = tuple(
+        TraceEvent(1, sequence, 0, 0x10, EventKind.LOAD, 0x1000, 4)
+        for sequence in range(1, 10)
+    ) + (TraceEvent(2, 1, 0, 0x20, EventKind.STORE, 0x1000, 4),)
+    with TraceStore(tmp_path / "page-budget.duckdb") as store:
+        store.add_events(events, max_pages_per_access=16, batch_size=4)
+        assert max_communication_page_events(store) == 10
 
 
 def test_thread_create_join_handoff_is_not_a_communication_window(

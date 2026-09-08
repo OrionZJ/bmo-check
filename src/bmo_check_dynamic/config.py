@@ -11,6 +11,8 @@ class DynamicConfig:
     max_window_events: int = 64
     max_executions: int = 20_000
     max_communication_edges: int = 100_000
+    # 通信扫描按页维护活动集合；先检查最热页，避免排序前就占满内存。
+    max_communication_active_events: int = 100_000
     max_pages_per_access: int = 16
     batch_size: int = 50_000
     solver_timeout_ms: int = 10_000
@@ -28,6 +30,7 @@ class DynamicConfig:
             self.max_window_events,
             self.max_executions,
             self.max_communication_edges,
+            self.max_communication_active_events,
             self.max_pages_per_access,
             self.batch_size,
             self.solver_timeout_ms,

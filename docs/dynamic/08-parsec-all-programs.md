@@ -73,7 +73,7 @@ LOCK/XCHG/Fence contract 承担。它不是整个进程的 `mo-off` 证明。
 | swaptions，`-ns 1 -sm 5 -nt 1` | 888,875 | 2 | 6 / 6 | `TRACE_SAFE` | safe，0 冲突 |
 | swaptions，`-ns 2 -sm 5 -nt 2` | 1,110,828 | 3 | 67 / 67 | `TRACE_SAFE` | safe，0 冲突 |
 | canneal，`1 5 100 10.nets 1` | 970,949 | 2 | 6 / 6 | `TRACE_SAFE` | safe，0 冲突 |
-| streamcluster，单 worker小输入 | 973,339 | 3 | 0 / 0 | `UNKNOWN` | 177 个 worker 输出冲突 |
+| streamcluster，单 worker小输入 | 973,339 | 3 | 0 / 0 | `UNKNOWN` | 应用分区已 safe；候选页 352,993 事件超过活动集合预算 |
 
 因此当前已经有 5 条完整、零丢失的 `TRACE_SAFE` 运行证书，覆盖
 3 个不同的 PARSEC 程序。每条证书仍绑定自己的 trace ID、二进制哈希和实际
@@ -81,9 +81,11 @@ LOCK/XCHG/Fence contract 承担。它不是整个进程的 `mo-off` 证明。
 
 ### 资源与失败样本
 
-- streamcluster 的分区已经失败时，分析器现在直接返回 `UNKNOWN`，不会再为
-  已知不满足作用域条件的百万级运行库边构造 Python 通信图。单 worker 轨迹
-  约 973k 事件，分析约 10 秒完成，峰值约 500 MiB。
+- streamcluster 的两个 worker 生命周期不重叠时，地址复用不再被误算成并发
+  输出冲突，应用分区现在为 `safe`。但候选页仍有 352,993 个事件，超过默认
+  100,000 活动集合预算；分析器在全局排序前返回 `UNKNOWN`，避免重现此前的
+  多 GiB 峰值。该轨迹仍不能给出 `TRACE_SAFE`，直到通信页能在更细的范围内
+  流式切分。
 - fluidanimate（test、1 worker）达到 300 万事件预算并记录 2 个
   `resource_limit` drop；freqmine（1 OpenMP worker）达到 500 万预算并记录
   1 个 drop；dedup（1 worker）达到 200 万预算并记录 1 个 drop。它们都必须是

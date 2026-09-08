@@ -10,6 +10,7 @@ from bmo_check_dynamic.analysis import (
     analyze_application_partition,
     build_windows,
     find_communication_edges,
+    max_communication_page_events,
 )
 from bmo_check_dynamic.config import DynamicConfig
 from bmo_check_dynamic.analysis.communication import CommunicationLimitError
@@ -98,15 +99,51 @@ def analyze_trace(
                 raw_edge_sample = ()
                 edge_sample = ()
             else:
-                try:
-                    raw_edge_sample = tuple(
-                        find_communication_edges(
-                            store, limit=config.max_communication_edges + 1
-                        )
+                required_pc_range = None
+                if config.application_only:
+                    application_memory = int(
+                        store.connection.execute(
+                            """
+                            SELECT count(*) FROM events
+                            WHERE kind IN (1, 2, 3) AND pc >= ? AND pc < ?
+                            """,
+                            (
+                                application_partition.module_start,
+                                application_partition.module_end,
+                            ),
+                        ).fetchone()[0]
                     )
-                except CommunicationLimitError as error:
-                    unknowns.append(str(error))
+                    # 没有主 ELF 访存时仍扫描全部页，保留“只有运行库边”的
+                    # 审计计数；有主 ELF 访存时才可安全地跳过不可能进入
+                    # application scope 的热页。
+                    if application_memory:
+                        required_pc_range = (
+                            application_partition.module_start,
+                            application_partition.module_end,
+                        )
+                max_page_events = max_communication_page_events(
+                    store, required_pc_range=required_pc_range
+                )
+                if max_page_events > config.max_communication_active_events:
+                    unknowns.append(
+                        "communication page has "
+                        f"{max_page_events} events, exceeding active-set limit "
+                        f"{config.max_communication_active_events}"
+                    )
                     raw_edge_sample = ()
+                else:
+                    try:
+                        raw_edge_sample = tuple(
+                            find_communication_edges(
+                                store,
+                                limit=config.max_communication_edges + 1,
+                                max_active_events=config.max_communication_active_events,
+                                required_pc_range=required_pc_range,
+                            )
+                        )
+                    except CommunicationLimitError as error:
+                        unknowns.append(str(error))
+                        raw_edge_sample = ()
                 if config.application_only:
                     edge_sample, external_runtime_edges = _application_edges(
                         store,
