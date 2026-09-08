@@ -14,6 +14,9 @@ LOCK/XCHG、显式 Fence 和 pthread/系统调用契约仍由 DBT contract 承�
 `communication_edge_count` 中，只有两端 PC 都在外部运行库的边会从窗口中排除，
 其数量写入 `external_runtime_edge_count`。
 
+应用 PC 范围内只要出现 `ATOMIC_RMW`，就不会走这个快速路径；原子访问可能与
+普通访问共同发布数据，必须回到通信扫描和窗口求解。
+
 因此该模式回答的是一个更窄的问题：主程序的普通共享数据是否需要额外的
 `mo-off` Fence。它不能证明 libc、间接调用未覆盖的路径、其他输入或未来调度。
 要声称整个进程安全，仍必须使用默认 full scope，并闭合运行库访问的值和控制可行性。
