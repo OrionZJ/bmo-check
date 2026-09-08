@@ -8,6 +8,9 @@
 - 每线程序号必须从 1 连续递增；缺口、重复、未知 flags 和越界地址均拒绝验证。
 - LOCK 和内存 XCHG 统一成为 `ATOMIC_RMW`，并保留 flags；分析器不拆改其原子区域。
 - LFENCE、SFENCE、MFENCE 保持独立事件。
+- 成功的私有 FUTEX_WAIT 在 DuckDB 落盘时补成 `FUTEX_WAIT` 事件，地址是被等待的
+  4 字节同步字；它保留 syscall 的 ticket 和返回序号，避免与原始 `SYSCALL_EXIT`
+  共享 event id。失败等待、wake 以及未知操作不会补事件。
 - pthread API 事件只帮助切片和解释。target 排序必须来自库内部实际执行的 atomic/Fence，不能仅凭 API 名称添加。
 - `SYSCALL` 记录 enter 和编号。只有 effect 表能用后续参数/返回值闭合的调用才可继续证明；其他多线程 syscall 仍为 `UNKNOWN`。
 - Trace format 1.1 用 `SYSCALL_ARG` 保留六个 64 位参数，并用

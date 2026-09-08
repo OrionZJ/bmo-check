@@ -15,7 +15,7 @@ def source_preserved_order(events: tuple[TraceEvent, ...]) -> set[Edge]:
     for thread_events in by_thread.values():
         previous_read: TraceEvent | None = None
         previous_write: TraceEvent | None = None
-        for event in thread_events:
+        for index, event in enumerate(thread_events):
             if not event.kind.is_memory:
                 continue
             # 每类只连接最近前驱即可保留同样的可达关系，避免长循环生成 O(n²)
@@ -27,6 +27,13 @@ def source_preserved_order(events: tuple[TraceEvent, ...]) -> set[Edge]:
                     edges.add((previous_read.event_id, event.event_id))
                 if previous_write is not None:
                     edges.add((previous_write.event_id, event.event_id))
+            if event.kind.is_read:
+                # 同一 hart 的 Store→Load 同址访问不能退回初始值；store
+                # forwarding 和 RVWMO overlapping-address order 都保留这条边。
+                for previous in reversed(thread_events[:index]):
+                    if previous.kind.is_write and previous.overlaps(event):
+                        edges.add((previous.event_id, event.event_id))
+                        break
             if event.kind.is_read:
                 previous_read = event
             if event.kind.is_write:
@@ -42,15 +49,21 @@ def target_preserved_order(events: tuple[TraceEvent, ...]) -> set[Edge]:
     for thread_events in _by_thread(events).values():
         memory = [event for event in thread_events if event.kind.is_memory]
         for index, right in enumerate(memory):
-            if not right.kind.is_write:
-                continue
             # RVWMO 的 overlapping-address order 会保留同 hart 上先前访存到
             # 后续重叠 Store 的顺序；这不是从本次调度推断出来的时序。
-            edges.update(
-                (left.event_id, right.event_id)
-                for left in memory[:index]
-                if left.overlaps(right)
-            )
+            if right.kind.is_write:
+                edges.update(
+                    (left.event_id, right.event_id)
+                    for left in memory[:index]
+                    if left.overlaps(right)
+                )
+            if right.kind.is_read:
+                # RVWMO 的同址 Store→Load 不能从前序写回到初始写，
+                # 否则会制造不可能的 read-from 候选。
+                for left in reversed(memory[:index]):
+                    if left.kind.is_write and left.overlaps(right):
+                        edges.add((left.event_id, right.event_id))
+                        break
         edges.update(_boundary_edges(thread_events))
     return edges
 
@@ -101,7 +114,7 @@ def _boundary_edges(events: list[TraceEvent]) -> set[Edge]:
                 for right in after
                 if right.kind.is_memory
             )
-        elif boundary.kind == EventKind.ATOMIC_RMW:
+        elif boundary.kind in {EventKind.ATOMIC_RMW, EventKind.FUTEX_WAIT}:
             edges.update(
                 (left.event_id, boundary.event_id)
                 for left in before

@@ -71,7 +71,7 @@ def _dense_source(events):
         (left.event_id, right.event_id)
         for index, left in enumerate(memory)
         for right in memory[index + 1 :]
-        if not (left.kind.is_write and right.kind.is_read)
+        if not (left.kind.is_write and right.kind.is_read) or left.overlaps(right)
     }
     return pairs | _boundary_pairs(events)
 
@@ -82,7 +82,10 @@ def _dense_target(events):
         (left.event_id, right.event_id)
         for index, left in enumerate(memory)
         for right in memory[index + 1 :]
-        if right.kind.is_write and left.overlaps(right)
+        if (
+            (right.kind.is_write or right.kind.is_read and left.kind.is_write)
+            and left.overlaps(right)
+        )
     }
     return pairs | _boundary_pairs(events)
 

@@ -36,14 +36,17 @@ class EventKind(IntEnum):
     # syscall 参数和返回值用独立记录配对，避免把 64 位参数塞进 size。
     SYSCALL_EXIT = 35
     SYSCALL_ARG = 36
+    # 成功的 FUTEX_WAIT 只读取同步字，不写普通数据；分析器把它作为
+    # 带 read-from 的同步边界，而不是把整个 syscall 当作无条件 Fence。
+    FUTEX_WAIT = 37
 
     @property
     def is_memory(self) -> bool:
-        return self in {self.LOAD, self.STORE, self.ATOMIC_RMW}
+        return self in {self.LOAD, self.STORE, self.ATOMIC_RMW, self.FUTEX_WAIT}
 
     @property
     def is_read(self) -> bool:
-        return self in {self.LOAD, self.ATOMIC_RMW}
+        return self in {self.LOAD, self.ATOMIC_RMW, self.FUTEX_WAIT}
 
     @property
     def is_write(self) -> bool:
@@ -53,6 +56,7 @@ class EventKind(IntEnum):
     def is_boundary(self) -> bool:
         return self in {
             self.ATOMIC_RMW,
+            self.FUTEX_WAIT,
             self.LFENCE,
             self.SFENCE,
             self.MFENCE,
@@ -86,6 +90,8 @@ class TraceEvent:
 
     @property
     def event_id(self) -> str:
+        if self.kind == EventKind.FUTEX_WAIT:
+            return f"t{self.thread_id}:sys{self.ticket}"
         return f"t{self.thread_id}:e{self.sequence}"
 
     @property

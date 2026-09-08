@@ -156,7 +156,7 @@ def _minimal_boundaries(
 
 def _boundary_category(kind: EventKind) -> str:
     # Atomic 和 MFENCE 对保留端点都建立完整顺序，因此同一切点可共用一个代表。
-    if kind in {EventKind.ATOMIC_RMW, EventKind.MFENCE}:
+    if kind in {EventKind.ATOMIC_RMW, EventKind.FUTEX_WAIT, EventKind.MFENCE}:
         return "full"
     if kind == EventKind.LFENCE:
         return "read"

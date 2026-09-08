@@ -176,3 +176,35 @@ def test_active_set_limit_covers_readonly_hotspot(tmp_path: Path) -> None:
         store.add_events(events, max_pages_per_access=16, batch_size=4)
         with pytest.raises(CommunicationLimitError, match="active set"):
             tuple(find_communication_edges(store, max_active_events=3))
+
+
+def test_thread_create_join_handoff_is_not_a_communication_window(
+    tmp_path: Path,
+) -> None:
+    events = (
+        TraceEvent(1, 1, 1, 0x10, EventKind.THREAD_START),
+        TraceEvent(1, 2, 2, 0x20, EventKind.STORE, 0x4000, 8),
+        TraceEvent(1, 3, 3, 0x25, EventKind.THREAD_CREATE),
+        TraceEvent(2, 1, 4, 0x30, EventKind.THREAD_START),
+        TraceEvent(2, 2, 5, 0x40, EventKind.LOAD, 0x4000, 8),
+        TraceEvent(2, 3, 6, 0x50, EventKind.THREAD_END),
+        TraceEvent(1, 4, 7, 0x55, EventKind.THREAD_JOIN),
+        TraceEvent(1, 5, 8, 0x60, EventKind.THREAD_END),
+    )
+    with TraceStore(tmp_path / "initialization.duckdb") as store:
+        store.add_events(events, max_pages_per_access=16, batch_size=16)
+        assert tuple(find_communication_edges(store)) == ()
+
+
+def test_missing_join_keeps_initialization_to_worker_write(tmp_path: Path) -> None:
+    events = (
+        TraceEvent(1, 1, 1, 0x10, EventKind.THREAD_START),
+        TraceEvent(1, 2, 2, 0x20, EventKind.STORE, 0x4000, 8),
+        TraceEvent(2, 1, 3, 0x30, EventKind.THREAD_START),
+        TraceEvent(2, 2, 4, 0x40, EventKind.STORE, 0x4000, 8),
+        TraceEvent(2, 3, 5, 0x50, EventKind.THREAD_END),
+        TraceEvent(1, 3, 6, 0x60, EventKind.THREAD_END),
+    )
+    with TraceStore(tmp_path / "initialization-write.duckdb") as store:
+        store.add_events(events, max_pages_per_access=16, batch_size=16)
+        assert len(tuple(find_communication_edges(store))) == 1

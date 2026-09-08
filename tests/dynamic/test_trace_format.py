@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from bmo_check_dynamic.model import EventFlags, EventKind, TraceEvent
+from bmo_check_dynamic.storage import TraceStore
 from bmo_check_dynamic.trace import (
     TraceFormatError,
     TraceReader,
@@ -154,3 +155,22 @@ def test_multithread_opaque_syscall_cannot_be_trace_safe(
     assert not validation.valid
     assert validation.structurally_complete
     assert "opaque syscall" in " ".join(validation.reasons)
+
+
+def test_successful_futex_wait_is_materialized_as_a_read_boundary(tmp_path: Path) -> None:
+    events = (
+        TraceEvent(1, 1, 1, 0, EventKind.SYSCALL, aux=202),
+        TraceEvent(1, 2, 1, 0, EventKind.SYSCALL_ARG, address=0x4000, value=202, aux=0),
+        TraceEvent(1, 3, 1, 0, EventKind.SYSCALL_ARG, address=0x109, value=202, aux=1),
+        TraceEvent(1, 4, 1, 0, EventKind.SYSCALL_ARG, value=202, aux=2),
+        TraceEvent(1, 5, 1, 0, EventKind.SYSCALL_ARG, value=202, aux=3),
+        TraceEvent(1, 6, 1, 0, EventKind.SYSCALL_ARG, value=202, aux=4),
+        TraceEvent(1, 7, 1, 0, EventKind.SYSCALL_ARG, value=202, aux=5),
+        TraceEvent(1, 8, 2, 0, EventKind.SYSCALL_EXIT, value=0, aux=202),
+    )
+    with TraceStore(tmp_path / "futex.duckdb") as store:
+        store.add_events(events, max_pages_per_access=16, batch_size=16)
+        rows = store.connection.execute(
+            "SELECT kind, address, size FROM events WHERE kind = 37"
+        ).fetchall()
+    assert rows == [(37, 0x4000, 4)]

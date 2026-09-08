@@ -120,6 +120,10 @@ struct ThreadState {
     uint32_t stack_size = 0;
     // 每个线程只报告一次超限，避免丢弃亿级事件时反复修改全局计数。
     bool event_limit_reported = false;
+    // clone_flags 只在当前 syscall 前后配对，用来识别 pthread 的 CLONE_THREAD。
+    // fork/clone 进程不能伪装成同一地址空间的 ThreadCreate 边界。
+    uint64_t pending_clone_flags = 0;
+    int pending_syscall = -1;
 };
 
 int tls_index = -1;
@@ -731,6 +735,12 @@ bool pre_syscall(void *drcontext, int number) {
     // main thread 在 thread_init 阶段可能还没有可读 app context。syscall 入口
     // 已有稳定的 xsp，在这里补记 stack，才能证明 signal/clone 参数是线程私有的。
     record_stack_if_available(drcontext);
+    ThreadState *state = state_for(drcontext);
+    if (state != nullptr) {
+        state->pending_syscall = number;
+        state->pending_clone_flags =
+            number == 56 ? static_cast<uint64_t>(dr_syscall_get_param(drcontext, 0)) : 0;
+    }
     constexpr int kClone = 56;
     constexpr int kFork = 57;
     constexpr int kVfork = 58;
@@ -757,9 +767,23 @@ bool pre_syscall(void *drcontext, int number) {
 }
 
 void post_syscall(void *drcontext, int number) {
+    const intptr_t result = dr_syscall_get_result(drcontext);
     write_record(EventKind::SyscallExit, nullptr, 0, 0, 0,
-                 static_cast<uint64_t>(dr_syscall_get_result(drcontext)),
+                 static_cast<uint64_t>(result),
                  static_cast<uint32_t>(number), true);
+    ThreadState *state = state_for(drcontext);
+    constexpr uint64_t kCloneThread = 0x00010000;
+    if (state != nullptr && number == 56 && result > 0 &&
+        (state->pending_clone_flags & kCloneThread) != 0) {
+        // pthread_create 的 wrapper 在部分 glibc 版本绑定到内部符号；
+        // clone 返回的 child tid 是更稳定的父子交接证据。
+        write_record(EventKind::ThreadCreate, nullptr,
+                     static_cast<uintptr_t>(result), 0, 0, 0, 0, true);
+    }
+    if (state != nullptr) {
+        state->pending_syscall = -1;
+        state->pending_clone_flags = 0;
+    }
 }
 
 dr_signal_action_t signal_event(void *, dr_siginfo_t *info) {

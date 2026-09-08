@@ -2,7 +2,7 @@
 
 每个窗口枚举 read-from、每地址 coherence 和 from-read。初始写是每个 read 的候选；同线程未来写不能成为该 read 的来源。coherence 必须保留同线程同地址写顺序。只有跨线程 `rfe` 进入全局关系图；同线程 `rfi` 允许 x86 store forwarding，不凭空生成全局 Store→Load 边。
 
-x86-TSO preserved order 保留 Load→Load、Load→Store、Store→Store，普通 Store→Load 可以放松。目标模型保留 RVWMO 明文规定的 overlapping-address order，但暂不使用尚未恢复的寄存器依赖；LFENCE、SFENCE、MFENCE 和 atomic 按 DBT contract 补边。同步 API 名称本身不产生 target ordering，库内部实际 atomic/Fence 才能产生。
+x86-TSO preserved order 保留 Load→Load、Load→Store、Store→Store，普通 Store→Load 可以放松。目标模型保留 RVWMO 明文规定的 overlapping-address order，也保留同一 hart 上重叠 Store→Load 的顺序；否则一次本地写后读可能错误地从初始写取值。暂不使用尚未恢复的寄存器依赖；LFENCE、SFENCE、MFENCE 和 atomic 按 DBT contract 补边。同步 API 名称本身不产生 target ordering，库内部实际 atomic/Fence 才能产生。
 
 若某个关系图在 target 无环、在 source 成环，它是 target-only candidate。只有 trace 声明控制骨架闭合，且所有 read-from 的值均有记录并匹配时，candidate 才能成为 `COUNTEREXAMPLE`；否则返回带 witness 的 `UNKNOWN`。
 
@@ -18,6 +18,10 @@ read-from，但所有片段仍共用一个 Load 事件参与程序序和关系�
 小窗口先用显式 read-from/coherence 枚举，便于生成直观 witness。排列超过执行预算
 时改用 Z3 直接求“target 无环且 source 有环”；`UNSAT` 才能关闭窗口，超时仍返回
 `UNKNOWN`。默认窗口上限为 64 个保留事件，超过上限不会自动扩大。
+
+`FUTEX_WAIT` 在成功返回时作为一个同步字的 read boundary，和普通 load 一样参加
+read-from，同时把边界前后的内存事件连接起来。这样不会把整个 syscall 错当成
+全局 Fence，也不会让等待操作在通信图中消失。
 
 RMW 在关系图中共用一个读写节点，内部读到内部写不生成 from-read 自环。
 原子读必须来自 coherence 中紧邻的前驱写；读初始值时该 RMW 必须是首个写。

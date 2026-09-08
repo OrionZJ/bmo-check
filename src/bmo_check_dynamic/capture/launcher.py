@@ -107,6 +107,7 @@ def capture_program(
     # drrun 会切换到目标 cwd。先固定绝对路径，否则 client 会把相对
     # trace 目录解释到被测程序目录，导致整条轨迹没有事件文件。
     output_dir = output_dir.resolve()
+    client_path = client_path.resolve()
     output_dir.mkdir(parents=True, exist_ok=False)
     manifest = TraceManifest(
         trace_id=str(uuid.uuid4()),
@@ -117,7 +118,7 @@ def capture_program(
         executable=fingerprint(executable),
         libraries=dependency_fingerprints(executable),
         dynamorio_version=dynamorio_version(dynamorio_home),
-        client_version="0.5",
+        client_version="0.6",
         complete=False,
         limitations=(
             "trace scope excludes unexecuted paths and alternative input-dependent addresses",

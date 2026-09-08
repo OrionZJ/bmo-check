@@ -65,6 +65,7 @@ class TraceStore:
         page_rows: list[tuple[str, int]] = []
         unsupported: list[str] = []
         count = 0
+        pending_syscalls: dict[int, dict[str, object]] = {}
         for event in events:
             rows.append(
                 (
@@ -82,6 +83,67 @@ class TraceStore:
                 )
             )
             count += 1
+            if event.kind == EventKind.SYSCALL:
+                pending_syscalls[event.thread_id] = {
+                    "number": event.aux,
+                    "ticket": event.ticket,
+                    "sequence": event.sequence,
+                    "arguments": {},
+                }
+            elif event.kind == EventKind.SYSCALL_ARG:
+                pending = pending_syscalls.get(event.thread_id)
+                if pending is not None and event.aux < 6:
+                    arguments = pending["arguments"]
+                    assert isinstance(arguments, dict)
+                    arguments[event.aux] = event.address
+            elif event.kind == EventKind.SYSCALL_EXIT:
+                pending = pending_syscalls.pop(event.thread_id, None)
+                if pending is not None:
+                    arguments = pending["arguments"]
+                    assert isinstance(arguments, dict)
+                    number = int(pending["number"])
+                    operation = int(arguments.get(1, -1))
+                    # WAIT_BITSET/WAIT_PRIVATE 成功返回时，内核只读取同步字。
+                    # 把它物化为读事件，才能让后续证明检查真实 read-from；
+                    # wake、失败 wait 和未知 op 继续由 syscall effect 门拦截。
+                    if (
+                        number == 202
+                        and len(arguments) == 6
+                        and operation in {0x80, 0x81, 0x108, 0x109}
+                        and event.value == 0
+                    ):
+                        synthetic = TraceEvent(
+                            thread_id=event.thread_id,
+                            sequence=event.sequence,
+                            ticket=event.ticket,
+                            pc=0,
+                            kind=EventKind.FUTEX_WAIT,
+                            address=int(arguments[0]),
+                            size=4,
+                            value=0,
+                            aux=operation,
+                        )
+                        rows.append(
+                            (
+                                synthetic.event_id,
+                                synthetic.thread_id,
+                                synthetic.sequence,
+                                synthetic.ticket,
+                                synthetic.pc,
+                                int(synthetic.kind),
+                                synthetic.address,
+                                synthetic.size,
+                                synthetic.value,
+                                int(synthetic.flags),
+                                synthetic.aux,
+                            )
+                        )
+                        first = synthetic.address >> 12
+                        last = (synthetic.end_address - 1) >> 12
+                        page_rows.extend(
+                            (synthetic.event_id, page)
+                            for page in range(first, last + 1)
+                        )
             if event.kind.is_memory:
                 first = event.address >> 12
                 last = (event.end_address - 1) >> 12
@@ -257,7 +319,7 @@ class TraceStore:
         rows = self.connection.execute(
             "SELECT thread_id, sequence, ticket, pc, kind, address, size, value, flags, aux "
             "FROM events WHERE thread_id = ? AND sequence BETWEEN ? AND ? "
-            "AND kind IN (3, 4, 5, 6) ORDER BY sequence",
+            "AND kind IN (3, 4, 5, 6, 37) ORDER BY sequence",
             (thread_id, first, last),
         ).fetchall()
         return tuple(_row_to_event(row) for row in rows)

@@ -27,6 +27,13 @@ def test_concurrent_futex_remains_unknown() -> None:
     assert reasons == ("concurrent syscall 202 has an unsupported memory effect (1 call)",)
 
 
+def test_successful_private_futex_wait_is_closed_by_materialized_read() -> None:
+    call = _call(202, (0x3000, 0x109, 0, 0, 0, 0))
+    assert unsupported_syscall_effects(
+        (call,), _concurrent_lifecycle(), {1: (0x7000, 0x1000)}, set()
+    ) == ()
+
+
 def test_private_nonfixed_mmap_is_a_fresh_object() -> None:
     call = _call(9, (0, 0x2000, 3, 0x22, (1 << 64) - 1, 0))
     assert unsupported_syscall_effects(

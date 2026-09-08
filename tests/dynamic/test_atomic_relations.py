@@ -7,6 +7,10 @@ from bmo_check_dynamic.proof.checker import (
     _atomic_read_from_valid,
     _communication_relations,
 )
+from bmo_check_dynamic.proof.relations import (
+    source_preserved_order,
+    target_preserved_order,
+)
 
 
 def test_initial_read_has_from_read_edges_at_every_location():
@@ -34,6 +38,14 @@ def test_internal_read_from_does_not_block_store_forwarding():
 
     assert (store.event_id, local_read.event_id) not in local_edges
     assert (store.event_id, remote_read.event_id) in remote_edges
+
+
+def test_same_address_store_to_load_is_preserved_in_both_models():
+    store = TraceEvent(1, 1, 0, 0x10, EventKind.STORE, 0x1000, 4)
+    load = TraceEvent(1, 2, 0, 0x20, EventKind.LOAD, 0x1000, 4)
+    events = (store, load)
+    assert (store.event_id, load.event_id) in source_preserved_order(events)
+    assert (store.event_id, load.event_id) in target_preserved_order(events)
 
 
 def test_rmw_is_not_its_own_from_read_successor():
