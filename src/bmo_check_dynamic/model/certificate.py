@@ -79,7 +79,7 @@ class ApplicationPartitionEvidence(StrictModel):
 
 
 class DynamicCertificate(StrictModel):
-    schema_version: str = "1.1"
+    schema_version: str = "1.2"
     verdict: TraceVerdict
     scope: TraceScope
     dbt_contract_sha256: str
@@ -93,6 +93,9 @@ class DynamicCertificate(StrictModel):
     communication_edge_count: int
     # application scope 丢弃的边仍计入上面的原始数量，便于审计运行库契约。
     external_runtime_edge_count: int = 0
+    # false 表示使用了“已验证线程交接 + 应用无共享写”的充分条件，
+    # 没有枚举运行库边；这不扩大 application scope 的适用范围。
+    communication_edges_complete: bool = True
     indirect_target_count: int
     # 分区证据帮助解释应用访问；整体验证仍由所有 windows 决定。
     application_partition: ApplicationPartitionEvidence | None = None

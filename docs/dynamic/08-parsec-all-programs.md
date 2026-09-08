@@ -73,27 +73,29 @@ LOCK/XCHG/Fence contract 承担。它不是整个进程的 `mo-off` 证明。
 | swaptions，`-ns 1 -sm 5 -nt 1` | 888,875 | 2 | 6 / 6 | `TRACE_SAFE` | safe，0 冲突 |
 | swaptions，`-ns 2 -sm 5 -nt 2` | 1,110,828 | 3 | 67 / 67 | `TRACE_SAFE` | safe，0 冲突 |
 | canneal，`1 5 100 10.nets 1` | 970,949 | 2 | 6 / 6 | `TRACE_SAFE` | safe，0 冲突 |
-| streamcluster，单 worker小输入 | 973,339 | 3 | 0 / 0 | `UNKNOWN` | 应用分区已 safe；候选页 352,993 事件超过活动集合预算 |
+| streamcluster，单 worker小输入 | 973,339 | 3 | 0 / 0（未枚举） | `TRACE_SAFE` | safe 分区 + 完整线程交接；外部边由 contract 承担 |
 
-因此当前已经有 5 条完整、零丢失的 `TRACE_SAFE` 运行证书，覆盖
-3 个不同的 PARSEC 程序。每条证书仍绑定自己的 trace ID、二进制哈希和实际
+因此当前已经有 6 条完整、零丢失的 `TRACE_SAFE` 运行证书，覆盖
+4 个不同的 PARSEC 程序。每条证书仍绑定自己的 trace ID、二进制哈希和实际
 命令；它们只能说明这些具体运行的主 ELF 普通通信没有发现 RVWMO 独有执行。
 
 ### 资源与失败样本
 
 - streamcluster 的两个 worker 生命周期不重叠时，地址复用不再被误算成并发
-  输出冲突，应用分区现在为 `safe`。但候选页仍有 352,993 个事件，超过默认
-  100,000 活动集合预算；分析器在全局排序前返回 `UNKNOWN`，避免重现此前的
-  多 GiB 峰值。该轨迹仍不能给出 `TRACE_SAFE`，直到通信页能在更细的范围内
-  流式切分。
+  输出冲突；create/start/end/join 交接也完整，因此应用分区充分条件直接给出
+  `TRACE_SAFE`。证书将 `communication_edges_complete=false` 写明，运行库边
+  没有被枚举，不能把这个结果外推成 full scope 安全。
 - fluidanimate（test、1 worker）达到 300 万事件预算并记录 2 个
   `resource_limit` drop；freqmine（1 OpenMP worker）达到 500 万预算并记录
-  1 个 drop；dedup（1 worker）达到 200 万预算并记录 1 个 drop。它们都必须是
+  1 个 drop；dedup（1 worker）在 500 万预算下仍记录 1 个 drop。它们都必须是
   `UNKNOWN`，不能因程序正常退出而放行。
+- bodytrack 的一帧串行输入在 1,000 万事件预算下仍有 `resource_limit` drop，
+  因此没有把不完整轨迹纳入 SAFE。
 - facesim 使用官方 `-lastframe 1 -threads 1` 仍在 180 秒采集预算内未结束；
   默认 `-lastframe 300` 的历史实验已停止，避免写出百 GB 级轨迹。
 - ferret 小输入未在采集时间预算内结束，vips 轨迹有不支持 syscall/drop，
-  raytrace 因本地缺少 `libXmu.so.6` 未形成完整证据，均不计入 SAFE。
+  raytrace 的最小一帧运行在 1,000 万事件预算下仍有 `resource_limit` drop，
+  均不计入 SAFE。
 
 本节的证书和轨迹仍是本地 `.bmo-check`/WSL 实验产物，不纳入 Git；表中的
 统计可由对应 manifest、trace 哈希和 `bmo-check explain` 重新核对。

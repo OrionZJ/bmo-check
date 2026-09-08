@@ -11,6 +11,7 @@ from bmo_check_dynamic.analysis import (
     build_windows,
     find_communication_edges,
     max_communication_page_events,
+    thread_handoffs_complete,
 )
 from bmo_check_dynamic.config import DynamicConfig
 from bmo_check_dynamic.analysis.communication import CommunicationLimitError
@@ -89,6 +90,7 @@ def analyze_trace(
                 store, trace_dir / "modules.tsv", manifest.executable.path
             )
             external_runtime_edges = 0
+            communication_edges_complete = True
             if config.application_only and application_partition.status != "safe":
                 # 分区证据已经失败时，运行库边不能进入应用范围证明。
                 # 继续构造通信图只会把百万级运行库访问搬进 Python 图，
@@ -98,6 +100,13 @@ def analyze_trace(
                 )
                 raw_edge_sample = ()
                 edge_sample = ()
+            elif config.application_only and thread_handoffs_complete(store):
+                # 主模块分区已经逐字节排除了 worker/主线程的并发写重叠，
+                # create/start/end/join 又提供了生命周期边界。此时继续枚举
+                # 运行库热页不会增加应用证明，只会把外部边搬进内存。
+                raw_edge_sample = ()
+                edge_sample = ()
+                communication_edges_complete = False
             else:
                 required_pc_range = None
                 if config.application_only:
@@ -212,6 +221,11 @@ def analyze_trace(
                     "application scope excludes external-module communication edges; "
                     "the DBT runtime contract must preserve their LOCK/XCHG and Fence paths"
                 )
+                if not communication_edges_complete:
+                    assumptions.append(
+                        "verified thread handoffs plus a disjoint application partition "
+                        "closed ordinary application writes; runtime edges were not enumerated"
+                    )
             return DynamicCertificate(
                 verdict=verdict,
                 scope=TraceScope(
@@ -236,6 +250,7 @@ def analyze_trace(
                 ),
                 communication_edge_count=raw_edge_count,
                 external_runtime_edge_count=external_runtime_edges,
+                communication_edges_complete=communication_edges_complete,
                 indirect_target_count=indirect_count,
                 application_partition=application_partition,
                 windows=results,

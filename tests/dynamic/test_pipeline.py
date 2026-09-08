@@ -96,6 +96,41 @@ def test_application_scope_stops_before_graph_when_partition_is_unknown(
     assert any("safe main-module partition" in reason for reason in certificate.unknown_reasons)
 
 
+def test_application_partition_can_close_without_runtime_graph(
+    trace_manifest, tmp_path: Path, monkeypatch
+) -> None:
+    trace_dir = tmp_path / "disjoint-workers"
+    manifest = trace_manifest(trace_dir)
+    (trace_dir / "modules.tsv").write_text(
+        f"0x1000\t0x2000\t{manifest.executable.path}\n",
+        encoding="utf-8",
+    )
+    with TraceWriter(trace_dir / "events-1.bin") as writer:
+        writer.write(TraceEvent(1, 1, 1, 0x1100, EventKind.THREAD_START))
+        writer.write(TraceEvent(1, 2, 2, 0x1101, EventKind.THREAD_CREATE, address=2))
+        writer.write(TraceEvent(1, 3, 10, 0x1102, EventKind.THREAD_JOIN, aux=2))
+        writer.write(TraceEvent(1, 4, 11, 0x1103, EventKind.THREAD_END))
+    with TraceWriter(trace_dir / "events-2.bin") as writer:
+        writer.write(TraceEvent(2, 1, 3, 0x1200, EventKind.THREAD_START))
+        writer.write(TraceEvent(2, 2, 4, 0x1104, EventKind.STORE, 0x5000, 4))
+        writer.write(TraceEvent(2, 3, 9, 0x1201, EventKind.THREAD_END))
+
+    def unexpected_graph_scan(*_args, **_kwargs):
+        raise AssertionError("a closed disjoint partition must not scan runtime edges")
+
+    monkeypatch.setattr(
+        "bmo_check_dynamic.pipeline.find_communication_edges", unexpected_graph_scan
+    )
+    certificate = analyze_trace(
+        trace_dir,
+        dbt_contract=_contract(tmp_path),
+        config=DynamicConfig(application_only=True),
+    )
+    assert certificate.verdict == TraceVerdict.TRACE_SAFE
+    assert not certificate.communication_edges_complete
+    assert certificate.windows == ()
+
+
 def test_incomplete_trace_is_unknown(trace_manifest, tmp_path: Path) -> None:
     trace_dir = tmp_path / "trace"
     trace_manifest(trace_dir, complete=False)

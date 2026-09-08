@@ -19,6 +19,12 @@ class CommunicationLimitError(RuntimeError):
     """扫描活动集合超限，调用者必须报告 UNKNOWN。"""
 
 
+def thread_handoffs_complete(store: TraceStore) -> bool:
+    """返回每个已记录 worker 是否都有唯一 create/join 交接证据。"""
+
+    return bool(_thread_handoffs(store))
+
+
 def max_communication_page_events(
     store: TraceStore, *, required_pc_range: tuple[int, int] | None = None
 ) -> int:
