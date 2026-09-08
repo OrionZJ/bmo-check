@@ -104,9 +104,37 @@ def analyze_trace(
                 # 主模块分区已经逐字节排除了 worker/主线程的并发写重叠，
                 # create/start/end/join 又提供了生命周期边界。此时继续枚举
                 # 运行库热页不会增加应用证明，只会把外部边搬进内存。
-                raw_edge_sample = ()
-                edge_sample = ()
-                communication_edges_complete = False
+                application_atomic_count = int(
+                    store.connection.execute(
+                        """
+                        SELECT count(*) FROM events
+                        WHERE kind = 3 AND pc >= ? AND pc < ?
+                        """,
+                        (
+                            application_partition.module_start,
+                            application_partition.module_end,
+                        ),
+                    ).fetchone()[0]
+                )
+                if application_atomic_count == 0:
+                    raw_edge_sample = ()
+                    edge_sample = ()
+                    communication_edges_complete = False
+                else:
+                    # 原子访问可能和普通访问共同发布数据；不能把它从
+                    # “无共享普通写”的充分条件里悄悄删除。
+                    try:
+                        raw_edge_sample = tuple(
+                            find_communication_edges(
+                                store,
+                                limit=config.max_communication_edges + 1,
+                                max_active_events=config.max_communication_active_events,
+                            )
+                        )
+                    except CommunicationLimitError as error:
+                        unknowns.append(str(error))
+                        raw_edge_sample = ()
+                    edge_sample = raw_edge_sample
             else:
                 required_pc_range = None
                 if config.application_only:
