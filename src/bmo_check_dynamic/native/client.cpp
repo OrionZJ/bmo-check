@@ -736,12 +736,28 @@ bool pre_syscall(void *drcontext, int number) {
     // 已有稳定的 xsp，在这里补记 stack，才能证明 signal/clone 参数是线程私有的。
     record_stack_if_available(drcontext);
     ThreadState *state = state_for(drcontext);
+    constexpr int kClone = 56;
+    constexpr int kClone3 = 435;
     if (state != nullptr) {
         state->pending_syscall = number;
-        state->pending_clone_flags =
-            number == 56 ? static_cast<uint64_t>(dr_syscall_get_param(drcontext, 0)) : 0;
+        state->pending_clone_flags = 0;
+        if (number == kClone) {
+            state->pending_clone_flags = static_cast<uint64_t>(
+                dr_syscall_get_param(drcontext, 0));
+        } else if (number == kClone3) {
+            // clone3 把 flags 放在 clone_args 的首字段；只在安全读取成功时
+            // 生成 ThreadCreate，否则保留保守的无交接证据状态。
+            uint64_t flags = 0;
+            size_t bytes_read = 0;
+            const uintptr_t args = static_cast<uintptr_t>(
+                dr_syscall_get_param(drcontext, 0));
+            if (args != 0 && dr_safe_read(reinterpret_cast<const void *>(args),
+                                           sizeof(flags), &flags, &bytes_read) &&
+                bytes_read == sizeof(flags)) {
+                state->pending_clone_flags = flags;
+            }
+        }
     }
-    constexpr int kClone = 56;
     constexpr int kFork = 57;
     constexpr int kVfork = 58;
     constexpr int kExecve = 59;
@@ -773,7 +789,7 @@ void post_syscall(void *drcontext, int number) {
                  static_cast<uint32_t>(number), true);
     ThreadState *state = state_for(drcontext);
     constexpr uint64_t kCloneThread = 0x00010000;
-    if (state != nullptr && number == 56 && result > 0 &&
+    if (state != nullptr && (number == 56 || number == 435) && result > 0 &&
         (state->pending_clone_flags & kCloneThread) != 0) {
         // pthread_create 的 wrapper 在部分 glibc 版本绑定到内部符号；
         // clone 返回的 child tid 是更稳定的父子交接证据。
