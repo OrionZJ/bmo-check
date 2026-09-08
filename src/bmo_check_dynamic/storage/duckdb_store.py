@@ -109,7 +109,7 @@ class TraceStore:
                     if (
                         number == 202
                         and len(arguments) == 6
-                        and operation in {0x80, 0x81, 0x108, 0x109}
+                        and (operation & ~(0x80 | 0x100)) in {0, 9}
                         and event.value == 0
                     ):
                         synthetic = TraceEvent(

@@ -111,13 +111,17 @@ def _effect_is_closed(
     # clone3 在新线程可运行前读完参数。参数必须留在创建者 stack。
     if number == 435:
         return _local_or_null(args[0], args[1], stack) and args[0] != 0
-    # 成功的 WAIT_BITSET/WAIT_PRIVATE 只比较同步字，TraceStore 已把它
-    # 物化为 FUTEX_WAIT read-from 事件；WAKE、失败 wait 和其他 op 仍需
-    # 配对信息，不能只凭 syscall 编号放行。
+    # WAIT/WAIT_BITSET 成功时只比较同步字，TraceStore 已把它物化为
+    # FUTEX_WAIT read-from 事件。WAKE 只操作内核等待队列，不读写用户字节；
+    # REQUEUE、PI 和未知 op 仍需额外配对信息，不能只凭 syscall 编号放行。
     if number == 202:
-        operation = args[1]
-        return operation in {0x80, 0x81, 0x108, 0x109} and call.result == 0
-    # futex 及并发 I/O 仍可以参与通信环，本阶段不推测它们的排序。
+        base_operation = args[1] & ~(0x80 | 0x100)
+        if base_operation in {0, 9}:
+            return call.result == 0
+        if base_operation in {1, 10}:
+            return call.result is not None and call.result >= 0
+        return False
+    # 其他 futex 及并发 I/O 仍可以参与通信环，本阶段不推测它们的排序。
     return False
 
 

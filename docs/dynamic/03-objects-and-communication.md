@@ -23,8 +23,9 @@ native client 优先用 clone 返回的 child tid 配对 THREAD_CREATE；wrapper
 pthread handle 时，必须存在唯一的时间候选。出现缺失、重复或歧义时保留所有边，
 宁可让窗口变大，也不能把两个 worker 的发布边界接反。
 
-成功的 FUTEX_WAIT 会在落盘时物化为 `FUTEX_WAIT` 读事件。它只读取同步字并保留
-read-from 边；FUTEX_WAKE、失败等待和未知 futex 操作仍由 syscall effect 门拒绝。
+成功的 FUTEX_WAIT/WAIT_BITSET 会在落盘时物化为 `FUTEX_WAIT` 读事件。它只读取同步字并保留
+read-from 边。成功的 FUTEX_WAKE/WAKE_BITSET 不访问用户字节，可以闭合 syscall effect；
+失败等待、requeue、PI 和未知 futex 操作仍由 syscall effect 门拒绝。
 
 DuckDB 缓存受 `--database-memory-limit-mb` 硬限制。轨迹按 batch 导入，数据库在
 达到上限后使用临时落盘；不能依赖操作系统在内存耗尽后杀死分析器。

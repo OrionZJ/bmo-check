@@ -20,7 +20,7 @@ def test_serial_external_effect_is_folded_into_trace_state() -> None:
 
 
 def test_concurrent_futex_remains_unknown() -> None:
-    call = _call(202, (0x3000, 0, 1, 0, 0, 0))
+    call = _call(202, (0x3000, 8, 1, 0, 0, 0))
     reasons = unsupported_syscall_effects(
         (call,), _concurrent_lifecycle(), {1: (0x7000, 0x1000)}, set()
     )
@@ -29,6 +29,13 @@ def test_concurrent_futex_remains_unknown() -> None:
 
 def test_successful_private_futex_wait_is_closed_by_materialized_read() -> None:
     call = _call(202, (0x3000, 0x109, 0, 0, 0, 0))
+    assert unsupported_syscall_effects(
+        (call,), _concurrent_lifecycle(), {1: (0x7000, 0x1000)}, set()
+    ) == ()
+
+
+def test_successful_futex_wake_has_no_user_memory_effect() -> None:
+    call = _call(202, (0x3000, 0x81, 1, 0, 0, 0))
     assert unsupported_syscall_effects(
         (call,), _concurrent_lifecycle(), {1: (0x7000, 0x1000)}, set()
     ) == ()

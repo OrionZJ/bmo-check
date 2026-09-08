@@ -19,9 +19,11 @@ read-from，但所有片段仍共用一个 Load 事件参与程序序和关系�
 时改用 Z3 直接求“target 无环且 source 有环”；`UNSAT` 才能关闭窗口，超时仍返回
 `UNKNOWN`。默认窗口上限为 64 个保留事件，超过上限不会自动扩大。
 
-`FUTEX_WAIT` 在成功返回时作为一个同步字的 read boundary，和普通 load 一样参加
-read-from，同时把边界前后的内存事件连接起来。这样不会把整个 syscall 错当成
-全局 Fence，也不会让等待操作在通信图中消失。
+`FUTEX_WAIT/WAIT_BITSET` 在成功返回时作为一个同步字的 read boundary，和普通 load 一样参加
+read-from，同时把边界前后的内存事件连接起来。成功的 `FUTEX_WAKE/WAKE_BITSET` 不读写
+用户字节，但仍要作为已闭合的 syscall effect 记录。这样不会把整个 syscall 错当成全局
+Fence，也不会让等待操作在通信图中消失；失败等待、requeue、PI 和未知 futex 操作仍返回
+`UNKNOWN`。
 
 RMW 在关系图中共用一个读写节点，内部读到内部写不生成 from-read 自环。
 原子读必须来自 coherence 中紧邻的前驱写；读初始值时该 RMW 必须是首个写。
