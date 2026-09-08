@@ -117,6 +117,7 @@ def _local_direct_call_does_not_capture(
     argument_registers = ("rdi", "rsi", "rdx", "rcx", "r8", "r9")
     caller_saved = {"rax", "rcx", "rdx", "rsi", "rdi", "r8", "r9", "r10", "r11"}
     tainted_stack_argument: int | None = None
+    evidence: str | None = None
     for candidate in instructions[start_index + 1 :]:
         candidate_operands = list(candidate.operands)
         names = [

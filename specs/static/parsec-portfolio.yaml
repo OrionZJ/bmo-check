@@ -17,6 +17,25 @@ benchmarks:
     argv: ["-ns", "64", "-sm", "40000", "-nt", "{threads}"]
     threads: 4
     normal_completion_only: true
+    partition_hints:
+      - worker_pc: 0x4603
+        loop_pc: 0x46e8
+        item_count_pc: 0x2070b0
+        thread_count_pc: 0x2070ac
+        start_offset: -64
+        end_offset: -60
+        induction_offset: -56
+        item_count: 64
+        object_base: "heap:malloc@0x516f"
+        element_size: 104
+    lifecycle_hint:
+      start_pc: 0x575c
+      post_join_pc: 0x5820
+      create_pc: 0x0b00
+      join_pc: 0x0af0
+      thread_count_pc: 0x2070ac
+      frame_pointer_offsets: [-104, -120]
+      assume_success: true
 
   - id: bodytrack
     executable: pkgs/apps/bodytrack/inst/amd64-linux.gcc/bin/bodytrack
