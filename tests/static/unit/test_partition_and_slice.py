@@ -9,14 +9,20 @@ from bmo_check_static.model import (
     Ordering,
     ProofObject,
     ProofReason,
+    PruningCoverage,
     ProgramOrderEdge,
+    SharedMemorySlice,
     SharedStateReport,
+    SynchronizationEdge,
     ThreadDiscoveryReport,
     UnknownFact,
     UnknownKind,
 )
 from bmo_check_static.pruning import prove_affine_partition
-from bmo_check_static.slicing import build_shared_memory_slice
+from bmo_check_static.slicing import (
+    build_shared_memory_slice,
+    restrict_to_application_scope,
+)
 from bmo_check_static.analysis.shared_state import (
     _addresses_may_alias,
     _fresh_worker_event,
@@ -217,6 +223,50 @@ def test_unknown_memory_effect_remains_in_slice_and_conflicts() -> None:
     assert shared_slice.coverage.unknown_events == 1
     assert shared_slice.conflicts
     assert shared_slice.unknowns == (fact,)
+
+
+def test_application_scope_removes_runtime_sync_edges_with_their_call() -> None:
+    runtime = MemoryEvent(
+        id="worker:malloc",
+        module="app",
+        module_sha256="a" * 64,
+        pc=0x1000,
+        kind=EventKind.OPAQUE_CALL,
+        address=AbstractAddress(
+            kind=AddressKind.GLOBAL,
+            base="runtime:allocator",
+            provenance={"runtime_internal": True},
+        ),
+        thread_role="worker",
+        provenance={"runtime_internal": True},
+    )
+    join = MemoryEvent(
+        id="main:join",
+        module="app",
+        module_sha256="a" * 64,
+        pc=0x2000,
+        kind=EventKind.THREAD_JOIN,
+        thread_role="main",
+    )
+    scoped = restrict_to_application_scope(
+        SharedMemorySlice(
+            events=(runtime, join),
+            coverage=PruningCoverage(total_events=2, remaining_shared_events=2),
+            synchronization=(
+                SynchronizationEdge(
+                    source_event=runtime.id,
+                    target_event=join.id,
+                    kind="pthread_join",
+                    complete=True,
+                ),
+            ),
+        ),
+        executable_sha256="a" * 64,
+    )
+
+    assert tuple(event.id for event in scoped.events) == (join.id,)
+    assert scoped.synchronization == ()
+    assert scoped.proof_objects[-1].reason == ProofReason.APPLICATION_RUNTIME_BOUNDARY
 
 
 def test_shared_state_proof_round_trip() -> None:

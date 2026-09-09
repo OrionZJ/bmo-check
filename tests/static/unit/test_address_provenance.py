@@ -882,3 +882,175 @@ def test_call_argument_address_source_is_recorded_before_call_clobber() -> None:
     assert first_argument is not None
     assert first_argument.kind == AddressKind.GLOBAL
     assert first_argument.base == "app@0x2000"
+
+
+def test_stack_argument_flows_into_framed_direct_callee() -> None:
+    caller_facts = disassemble_bytes(
+        bytes.fromhex(
+            "488d45f0"      # rax = address of caller local
+            "50"            # push the seventh argument
+            "e8f61f0000"    # call 0x3000
+            "4883c408"      # discard the outgoing stack argument
+        ),
+        address=0x1000,
+    )
+    callee_facts = disassemble_bytes(
+        bytes.fromhex(
+            "488b4510"      # rax = [rbp + 16], the first stack argument
+            "488b00"        # dereference the caller local
+            "c3"
+        ),
+        address=0x3000,
+    )
+    module = ModuleFingerprint(
+        path="/bin/app",
+        role=ModuleRole.EXECUTABLE,
+        size=0x4000,
+        sha256=HASH,
+        elf=ElfMetadata(
+            elf_class=64,
+            little_endian=True,
+            machine="EM_X86_64",
+            elf_type="ET_EXEC",
+        ),
+    )
+    caller_pcs = tuple(item.pc for item in caller_facts)
+    callee_pcs = tuple(item.pc for item in callee_facts)
+    control_flow = ControlFlowReport(
+        module_path=module.path,
+        module_sha256=module.sha256,
+        entry_pc=0x1000,
+        functions=(
+            FunctionFact(
+                location=_location(0x1000),
+                size=sum(len(item.raw_bytes) // 2 for item in caller_facts),
+                block_pcs=(0x1000,),
+            ),
+            FunctionFact(
+                location=_location(0x3000),
+                size=sum(len(item.raw_bytes) // 2 for item in callee_facts),
+                block_pcs=(0x3000,),
+            ),
+        ),
+        basic_blocks=(
+            BasicBlockFact(
+                location=_location(0x1000),
+                size=sum(len(item.raw_bytes) // 2 for item in caller_facts),
+                instruction_pcs=caller_pcs,
+            ),
+            BasicBlockFact(
+                location=_location(0x3000),
+                size=sum(len(item.raw_bytes) // 2 for item in callee_facts),
+                instruction_pcs=callee_pcs,
+            ),
+        ),
+        call_sites=(
+            CallSite(
+                location=_location(0x1005),
+                containing_function_pc=0x1000,
+                block_pc=0x1000,
+                kind=CallKind.DIRECT,
+                targets=IndirectTargetSet(
+                    known_targets=(_location(0x3000),), complete=True
+                ),
+                return_pc=0x100a,
+            ),
+        ),
+        coverage=CFGCoverage(
+            angr_version="test",
+            functions=2,
+            basic_blocks=2,
+            call_sites=1,
+            indirect_sites=0,
+            complete_indirect_sites=0,
+            incomplete_indirect_sites=0,
+        ),
+    )
+
+    report = recover_address_provenance(
+        module, control_flow, (*caller_facts, *callee_facts)
+    )
+
+    use = callee_facts[1]
+    address = report.addresses[(use.pc, use.memory_operands[0].operand_index)]
+    assert address.kind == AddressKind.STACK
+    assert address.base == "stack:frame-value@0x1000-16"
+    assert report.stack_call_arguments[0x1005][0] is not None
+
+
+def test_stack_argument_flows_into_rsp_only_callee() -> None:
+    caller_facts = disassemble_bytes(
+        bytes.fromhex("488d45f050e8f61f00004883c408"), address=0x1000
+    )
+    callee_facts = disassemble_bytes(
+        bytes.fromhex("488b442408488b00c3"), address=0x3000
+    )
+    module = ModuleFingerprint(
+        path="/bin/app",
+        role=ModuleRole.EXECUTABLE,
+        size=0x4000,
+        sha256=HASH,
+        elf=ElfMetadata(
+            elf_class=64,
+            little_endian=True,
+            machine="EM_X86_64",
+            elf_type="ET_EXEC",
+        ),
+    )
+    caller_pcs = tuple(item.pc for item in caller_facts)
+    callee_pcs = tuple(item.pc for item in callee_facts)
+    control_flow = ControlFlowReport(
+        module_path=module.path,
+        module_sha256=module.sha256,
+        entry_pc=0x1000,
+        functions=(
+            FunctionFact(
+                location=_location(0x1000), size=14, block_pcs=(0x1000,)
+            ),
+            FunctionFact(
+                location=_location(0x3000), size=9, block_pcs=(0x3000,)
+            ),
+        ),
+        basic_blocks=(
+            BasicBlockFact(
+                location=_location(0x1000),
+                size=14,
+                instruction_pcs=caller_pcs,
+            ),
+            BasicBlockFact(
+                location=_location(0x3000),
+                size=9,
+                instruction_pcs=callee_pcs,
+            ),
+        ),
+        call_sites=(
+            CallSite(
+                location=_location(0x1005),
+                containing_function_pc=0x1000,
+                block_pc=0x1000,
+                kind=CallKind.DIRECT,
+                targets=IndirectTargetSet(
+                    known_targets=(_location(0x3000),), complete=True
+                ),
+                return_pc=0x100a,
+            ),
+        ),
+        coverage=CFGCoverage(
+            angr_version="test",
+            functions=2,
+            basic_blocks=2,
+            call_sites=1,
+            indirect_sites=0,
+            complete_indirect_sites=0,
+            incomplete_indirect_sites=0,
+        ),
+    )
+
+    report = recover_address_provenance(
+        module, control_flow, (*caller_facts, *callee_facts)
+    )
+
+    use = callee_facts[1]
+    address = report.addresses[(use.pc, use.memory_operands[0].operand_index)]
+    assert address.kind == AddressKind.STACK
+    assert address.base == "stack:frame-value@0x1000-16"

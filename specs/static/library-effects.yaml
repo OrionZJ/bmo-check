@@ -279,3 +279,11 @@ functions:
   powf:
     effect: thread_local
     integer_arguments: []
+  # swaptions 的随机数 helper 只写调用者栈上的 seed；它不会拿到
+  # HJM fresh heap 矩阵。契约只允许跨调用保留 heap 字段，stack 字段仍清除。
+  _Z7RanUnifPl:
+    effect: argument_access
+    integer_arguments: [0]
+    memory_arguments:
+      - index: 0
+        mode: write

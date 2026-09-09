@@ -72,6 +72,15 @@ def restrict_to_application_scope(
         if edge.source_event not in removed_ids
         and edge.target_event not in removed_ids
     )
+    # 删除运行库调用后，不能留下指向已删除节点的 pthread 边。
+    # 否则 checker 会把边的两个端点都当成缺失事件，连仍然有效的 join
+    # 也会被误报成不支持输入。
+    synchronization = tuple(
+        edge
+        for edge in shared_slice.synchronization
+        if edge.source_event not in removed_ids
+        and edge.target_event not in removed_ids
+    )
     conflicts = tuple(
         conflict
         for conflict in shared_slice.conflicts
@@ -113,6 +122,7 @@ def restrict_to_application_scope(
         update={
             "events": events,
             "program_order": program_order,
+            "synchronization": synchronization,
             "conflicts": conflicts,
             "proof_objects": (*shared_slice.proof_objects, proof),
             "coverage": coverage,

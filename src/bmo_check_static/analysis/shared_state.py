@@ -281,7 +281,10 @@ def _addresses_may_alias(
     return True
 
 
-def _fresh_worker_address(address: AbstractAddress) -> bool:
+def _fresh_worker_address(
+    address: AbstractAddress,
+    worker_allocation_bases: frozenset[str] = frozenset(),
+) -> bool:
     """判断地址是否只来自 worker 内部的 fresh allocation。"""
 
     bases = {
@@ -291,10 +294,16 @@ def _fresh_worker_address(address: AbstractAddress) -> bool:
     }
     if not bases and isinstance(address.base, str):
         bases.add(address.base)
-    return bool(bases) and all(base.startswith("heap:function@") for base in bases)
+    return bool(bases) and all(
+        base.startswith("heap:function@") or base in worker_allocation_bases
+        for base in bases
+    )
 
 
-def _fresh_worker_event(event: MemoryEvent) -> bool:
+def _fresh_worker_event(
+    event: MemoryEvent,
+    worker_allocation_bases: frozenset[str] = frozenset(),
+) -> bool:
     """只有直接指向 fresh allocation、且不在 main 的事件才可互相排除。"""
 
     address = event.address
@@ -302,8 +311,31 @@ def _fresh_worker_event(event: MemoryEvent) -> bool:
         event.thread_role not in {None, "main"}
         and address is not None
         and address.provenance.get("base_indirect") is False
-        and _fresh_worker_address(address)
+        and _fresh_worker_address(address, worker_allocation_bases)
     )
+
+
+def _reachable_worker_callees(
+    worker_pc: int, control_flow: ControlFlowReport
+) -> set[int]:
+    """返回从 worker 入口沿已封闭直接调用边能到达的函数。"""
+
+    # helper 里的访问可能不再落在 worker 的循环基本块中；只有调用图
+    # 仍能从已验证的 worker 入口到达它时，才能把外层分片事实带过去。
+    graph: dict[int, set[int]] = defaultdict(set)
+    for call in control_flow.call_sites:
+        for target in call.targets.known_targets:
+            if target.module_sha256 == control_flow.module_sha256:
+                graph[call.containing_function_pc].add(target.pc)
+    reachable = {worker_pc}
+    pending = [worker_pc]
+    while pending:
+        current = pending.pop()
+        for target in graph.get(current, ()):
+            if target not in reachable:
+                reachable.add(target)
+                pending.append(target)
+    return reachable
 
 
 def _symbolic_partition_covers_event(
@@ -333,6 +365,16 @@ def _symbolic_partition_covers_event(
     )
     if not (direct_match or owner_match):
         return False
+
+    if owner_match and not direct_match:
+        # 子对象由 worker 的某个分片元素产生，helper 的机器码可能位于
+        # 另一个函数。调用图不闭合时不能排除 helper 从别的入口访问该对象。
+        return (
+            event.function_pc is not None
+            and event.function_pc in _reachable_worker_callees(
+                proof.worker_pc, control_flow
+            )
+        )
 
     function = next(
         (
@@ -906,6 +948,18 @@ def analyze_shared_state(
         | nonreturning_ids
         | main_callee_ids
     )
+    worker_functions = {
+        function_pc
+        for role in threads.roles
+        for target in role.start_targets.known_targets
+        if target.module_sha256 == control_flow.module_sha256
+        for function_pc in _reachable_worker_callees(target.pc, control_flow)
+    }
+    worker_allocation_bases = frozenset(
+        f"heap:malloc@0x{call.location.pc:x}"
+        for call in control_flow.call_sites
+        if call.containing_function_pc in worker_functions
+    )
     wildcard_events = {
         event.id: event
         for event in memory_events.events
@@ -923,6 +977,14 @@ def analyze_shared_state(
         roles = tuple(sorted({event.thread_role or "unknown" for event in events}))
         readers = tuple(event.id for event in events if event.kind in _READ_KINDS)
         writers = tuple(event.id for event in events if event.kind in _WRITE_KINDS)
+        # 生命周期证明已经把 create 前、join 后和不返回路径标成非并发。
+        # 这些事件仍属于同一 alias group，但不能拿来阻止 worker 对象的
+        # fresh/partition 证明，否则主线程的初始化访问会伪装成竞态。
+        concurrent_events = tuple(
+            event
+            for event in events
+            if event.id not in nonconcurrent_event_ids
+        )
         sharing = SharingClass.SHARED_KNOWN
         escape = EscapeKind.UNKNOWN
         proof: ProofObject | None = None
@@ -931,13 +993,18 @@ def analyze_shared_state(
             event_id
             for event_id, wildcard in wildcard_events.items()
             if event_id not in {event.id for event in events}
+            and event_id not in nonconcurrent_event_ids
             and wildcard.address is not None
             and _addresses_may_alias(address, wildcard.address)
             # 两边都明确来自 worker 内部 fresh allocation 时，
             # 不同动态线程拿到的是不同活跃对象；未知指针不能走这条捷径。
-            and not (_fresh_worker_event(wildcard) and all(
-                _fresh_worker_event(item) for item in events
-            ))
+            and not (
+                _fresh_worker_event(wildcard, worker_allocation_bases)
+                and all(
+                    _fresh_worker_event(item, worker_allocation_bases)
+                    for item in concurrent_events
+                )
+            )
         }
         if (
             roles == ("main",)
@@ -1063,13 +1130,14 @@ def analyze_shared_state(
                 )
         elif (
             address.kind == AddressKind.HEAP
-            and _fresh_worker_address(address)
-            and all(role != "main" for role in roles)
+            and _fresh_worker_address(address, worker_allocation_bases)
+            and bool(concurrent_events)
+            and all(event.thread_role not in {None, "main"} for event in concurrent_events)
             and not external_wildcards
             and all(
                 event.address is not None
                 and event.address.provenance.get("base_indirect") is False
-                for event in events
+                for event in concurrent_events
             )
         ):
             # 这个 allocation site 位于 worker 调用树内。malloc 每次调用
@@ -1155,13 +1223,8 @@ def analyze_shared_state(
             # main 在 create 前或 join 后访问同一数组时已经被生命周期证明
             # 移出并发阶段。它们不能阻止 worker 循环的分片证明匹配，
             # 否则一个对象会把两个不同的 PC/栈槽混成未闭合的 Unknown。
-            concurrent_events = tuple(
-                event
-                for event in events
-                if event.id not in nonconcurrent_event_ids
-            )
             fresh_worker_allocation = (
-                _fresh_worker_address(address)
+                _fresh_worker_address(address, worker_allocation_bases)
                 and bool(concurrent_events)
                 and all(
                     event.thread_role not in {None, "main"}

@@ -375,6 +375,32 @@ def _address(
     )
 
 
+def _canonical_stack_address(address: AbstractAddress) -> AbstractAddress:
+    """把 LEA 产生的 stack object 还原为共享状态使用的 frame+offset。"""
+
+    if address.kind != AddressKind.STACK or not address.base:
+        return address
+    match = re.fullmatch(
+        r"stack:frame-value@0x([0-9a-fA-F]+)([+-][0-9]+)?", address.base
+    )
+    if match is None:
+        return address
+    offset = address.offset + int(match.group(2) or 0)
+    base = f"frame@0x{int(match.group(1), 16):x}"
+    return address.model_copy(
+        update={
+            "base": base,
+            "offset": offset,
+            "expression": f"{base}{offset:+d}" if offset else base,
+            "provenance": {
+                **address.provenance,
+                "canonical_stack_base": base,
+                "canonical_stack_offset": offset,
+            },
+        }
+    )
+
+
 def _event_ordering(fact: InstructionFact) -> tuple[Ordering, Ordering]:
     if fact.has_lock_prefix or fact.is_memory_xchg:
         return Ordering.FULL, Ordering.ACQ_REL
@@ -525,11 +551,30 @@ def extract_memory_events(
             for function in control_flow.functions
             if function.returning is False
         }
+        function_symbols_by_pc = {
+            function.location.pc: function.location.symbol
+            for function in control_flow.functions
+            if function.location.symbol
+        }
+
+        def resolved_effect_symbol(call: CallSite) -> str | None:
+            """把同一 ELF 内部 direct call 绑定到函数事实的符号。"""
+
+            if call.target_symbol is not None:
+                return call.target_symbol
+            if len(call.targets.known_targets) != 1:
+                return None
+            target = call.targets.known_targets[0]
+            if target.module_sha256 != module.sha256:
+                return None
+            return function_symbols_by_pc.get(target.pc)
+
         allocation_calls = {
-            call.location.pc: call.target_symbol
+            call.location.pc: resolved_effect_symbol(call)
             for call in control_flow.call_sites
-            if call.target_symbol is not None
-            and effect_contract.get(call.target_symbol) == "fresh_allocation"
+            if resolved_effect_symbol(call) is not None
+            and effect_contract.get(resolved_effect_symbol(call))
+            == "fresh_allocation"
         }
         # allocator、线程局部 helper 和只改运行库私有状态的调用不会替换
         # 应用对象的字段。只有契约明确给出这条边界时才能保留字段事实；
@@ -537,8 +582,8 @@ def extract_memory_events(
         preserve_heap_field_call_pcs = {
             call.location.pc
             for call in control_flow.call_sites
-            if call.target_symbol is not None
-            and effect_contract.get(call.target_symbol)
+            if resolved_effect_symbol(call) is not None
+            and effect_contract.get(resolved_effect_symbol(call))
             in {"fresh_allocation", "thread_local", "runtime_internal"}
         }
         base_address_provenance = recover_address_provenance(
@@ -548,6 +593,30 @@ def extract_memory_events(
             allocation_calls,
             preserve_heap_field_call_pcs=preserve_heap_field_call_pcs,
         )
+        # argument_access helper 可能只会修改一个已知栈对象。若它的
+        # 所有声明实参都恢复为 Stack，就只保留 heap 字段摘要；stack
+        # 字段仍会被清掉，避免把 helper 的写入漏进后续路径。
+        preserve_heap_only_call_pcs = {
+            call.location.pc
+            for call in control_flow.call_sites
+            if resolved_effect_symbol(call) is not None
+            and effect_contract.get(resolved_effect_symbol(call))
+            == "argument_access"
+            and all(
+                call.location.pc in base_address_provenance.call_arguments
+                and index < len(base_address_provenance.call_arguments[call.location.pc])
+                and (
+                argument := base_address_provenance.call_arguments[
+                        call.location.pc
+                    ][index]
+                )
+                is not None
+                and argument.kind == AddressKind.STACK
+                for index, _ in memory_argument_contract.get(
+                    resolved_effect_symbol(call), ()
+                )
+            )
+        }
         role_functions = _role_functions(control_flow, threads)
         role_address_provenance = {}
         for role in threads.roles:
@@ -620,6 +689,7 @@ def extract_memory_events(
                     seeded_globals=base_address_provenance.published_globals,
                     preserve_heap_field_call_pcs=preserve_heap_field_call_pcs,
                     immutable_heap_field_keys=immutable_heap_field_keys,
+                    preserve_heap_only_call_pcs=preserve_heap_only_call_pcs,
                 )
                 if role.create_site is not None and len(role.start_targets.known_targets) == 1:
                     immutable_heap_field_keys = _stable_published_heap_fields(
@@ -791,9 +861,11 @@ def extract_memory_events(
             for role in sorted(roles):
                 provenance_addresses = role_address_provenance[role].addresses
                 for operand in fact.memory_operands:
-                    address = provenance_addresses.get(
-                        (fact.pc, operand.operand_index)
-                    ) or _address(module, fact, operand, function_pc)
+                    address = _canonical_stack_address(
+                        provenance_addresses.get(
+                            (fact.pc, operand.operand_index)
+                        ) or _address(module, fact, operand, function_pc)
+                    )
                     for effect_index, kind in enumerate(_memory_kinds(fact, operand)):
                         event_id = (
                             f"{role}:0x{fact.pc:x}:m{operand.operand_index}:{effect_index}"
