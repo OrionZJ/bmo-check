@@ -24,6 +24,9 @@ class SymbolicLifecycleProof:
     # worker_argument_base 给已证明互异的第四实参一个证书内对象名。
     # 若 suite 没提供 allocation site，就使用绑定 start_pc 的生命周期名称。
     worker_argument_base: str | None
+    # worker_argument_alias_base 命名所有 worker 共享的第四实参。
+    # 它只允许证明“主线程初始化后 worker 只读”，不能推出线程间不相交。
+    worker_argument_alias_base: str | None
     # evidence 记录闭合条件或首个失败原因。
     evidence: tuple[str, ...]
 
@@ -43,6 +46,7 @@ def prove_symbolic_lifecycle(
             joined_handles=(),
             created_arguments=(),
             worker_argument_base=hint.worker_argument_base,
+            worker_argument_alias_base=hint.worker_argument_alias_base,
             evidence=(reason,),
         )
 
@@ -118,6 +122,22 @@ def prove_symbolic_lifecycle(
                 size=project.arch.bytes,
                 endness=project.arch.memory_endness,
             )
+        for offset, value in hint.global_pointer_values:
+            # 中途入口只允许使用清单明确绑定的初始化结果；否则全局指针
+            # 会保持符号值，create/join 槽位无法证明唯一对应关系。
+            state.memory.store(
+                base + offset,
+                value,
+                size=project.arch.bytes,
+                endness=project.arch.memory_endness,
+            )
+        for offset, value in hint.stack_scalar_values:
+            state.memory.store(
+                frame + offset,
+                value,
+                size=4,
+                endness=project.arch.memory_endness,
+            )
         manager = project.factory.simulation_manager(state)
         manager.explore(find=base + hint.post_join_pc, num_find=2)
         if len(manager.found) != 1 or manager.errored or manager.unconstrained:
@@ -162,6 +182,7 @@ def prove_symbolic_lifecycle(
                 if distinct_arguments
                 else None
             ),
+            worker_argument_alias_base=hint.worker_argument_alias_base,
             evidence=(
                 f"machine code creates {len(created)} distinct worker handles",
                 f"machine code joins all {len(joined)} created handles",

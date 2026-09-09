@@ -38,6 +38,13 @@ _RELEASE_APIS = {
     "pthread_cond_broadcast",
 }
 _BARRIER_APIS = {"pthread_barrier_wait", "pthread_cond_wait"}
+_OPENMP_BARRIER_APIS = {
+    "GOMP_parallel",
+    "GOMP_parallel_end",
+    "GOMP_barrier",
+}
+_OPENMP_ACQUIRE_APIS = {"GOMP_critical_start"}
+_OPENMP_RELEASE_APIS = {"GOMP_critical_end"}
 _INTEGER_ARGUMENTS = ("rdi", "rsi", "rdx", "rcx", "r8", "r9")
 
 
@@ -430,6 +437,14 @@ def _memory_kinds(
 def _summary_ordering(
     symbol: str, reports: tuple[SynchronizationReport, ...]
 ) -> tuple[Ordering | None, str | None]:
+    # GOMP_parallel 返回前包含隐式 worker 汇合；它不是 pthread 库摘要，
+    # 但并行区的 barrier 边界仍必须进入应用切片，不能当作普通 opaque call。
+    if symbol in _OPENMP_BARRIER_APIS:
+        return Ordering.ACQ_REL, None
+    if symbol in _OPENMP_ACQUIRE_APIS:
+        return Ordering.ACQUIRE, None
+    if symbol in _OPENMP_RELEASE_APIS:
+        return Ordering.RELEASE, None
     summaries = [
         summary
         for report in reports
@@ -506,6 +521,12 @@ def _call_event_kind(symbol: str, ordering: Ordering | None) -> EventKind:
         return EventKind.THREAD_CREATE
     if symbol == "pthread_join":
         return EventKind.THREAD_JOIN
+    if symbol in _OPENMP_BARRIER_APIS:
+        return EventKind.BARRIER
+    if symbol in _OPENMP_ACQUIRE_APIS:
+        return EventKind.ACQUIRE
+    if symbol in _OPENMP_RELEASE_APIS:
+        return EventKind.RELEASE
     if ordering is None:
         return EventKind.OPAQUE_CALL
     if symbol in _ACQUIRE_APIS:

@@ -16,9 +16,25 @@ from bmo_check_static.model import (
     ThreadCreateFact,
     ThreadDiscoveryReport,
     ThreadJoinFact,
+    ThreadParallelFact,
     ThreadRole,
     UnknownFact,
     UnknownKind,
+)
+
+
+# GCC OpenMP lowering把并行函数地址作为 GOMP_parallel 的第一个参数传入。
+# 这些调用没有 pthread_create 那样的 handle，但返回前仍是一个隐式
+# 的 worker 阶段；恢复它们才能避免把 worker 代码误归到 main 线程。
+_OPENMP_PARALLEL_APIS = frozenset(
+    {
+        "GOMP_parallel",
+        "GOMP_parallel_start",
+        "GOMP_parallel_loop_static_start",
+        "GOMP_parallel_loop_dynamic_start",
+        "GOMP_parallel_loop_guided_start",
+        "GOMP_parallel_loop_runtime_start",
+    }
 )
 
 
@@ -200,9 +216,62 @@ def discover_pthread_threads(
         role_id = f"pthread@{call.location.pc:x}"
         recovered_creates.append((call, role_id, targets, argument_origin))
 
+    # OpenMP worker 没有可供 join 的 pthread handle。这里只恢复实际传给
+    # runtime 的 callback；角色按并行区入口分开，后面的隐式 barrier 才能
+    # 只连接本阶段的 worker 事件。
+    openmp_entries: list[tuple[object, str, IndirectTargetSet, str | None]] = []
+    for call in control_flow.call_sites:
+        if call.target_symbol not in _OPENMP_PARALLEL_APIS:
+            continue
+        callback_pc, origin, constant = _definition_before_call(
+            context, call.block_pc, call.location.pc, "rdi"
+        )
+        callback_valid = (
+            constant
+            and callback_pc is not None
+            and _executable_pc(module, callback_pc)
+        )
+        if callback_valid:
+            target = _location(module, callback_pc, symbols.get(callback_pc))
+            targets = IndirectTargetSet(
+                known_targets=(target,),
+                complete=True,
+                evidence=(
+                    "SysV first argument has a block-local constant OpenMP callback",
+                ),
+            )
+            # 角色按并行区入口而不是 callback 地址命名；同一 callback
+            # 在两个阶段复用时，两个阶段不能共享同一组事件边界。
+            role_id = f"openmp@{call.location.pc:x}"
+        else:
+            targets = IndirectTargetSet(
+                complete=False,
+                reason=(
+                    "OpenMP parallel callback is not a proven executable constant"
+                ),
+            )
+            role_id = f"openmp@{call.location.pc:x}"
+            unknowns.append(
+                UnknownFact(
+                    kind=UnknownKind.UNKNOWN_THREAD_ENTRY,
+                    reason=targets.reason or "OpenMP callback is unknown",
+                    impact="reachable OpenMP worker code may be missing",
+                    module=module.path,
+                    pc=call.location.pc,
+                )
+            )
+        entry = (call, role_id, targets, origin)
+        openmp_entries.append(entry)
+
     role_roots: dict[str, tuple[int, ...]] = {"main": (main_function.pc,)}
     for _, role_id, targets, _ in recovered_creates:
         role_roots[role_id] = tuple(item.pc for item in targets.known_targets)
+    for _, role_id, targets, _ in openmp_entries:
+        # role_id 按 call site 区分并行阶段；这里仍用 setdefault 保留该
+        # 阶段 callback 的单一入口。
+        role_roots.setdefault(
+            role_id, tuple(item.pc for item in targets.known_targets)
+        )
     reachability = _role_reachability(control_flow, role_roots)
 
     for call, role_id, targets, argument_origin in recovered_creates:
@@ -239,7 +308,79 @@ def discover_pthread_threads(
             )
         )
 
-    child_roles = tuple(item.id for item in roles if item.id != "main")
+    # OpenMP 入口没有 pthread handle，因此不写入 creates；否则下面的
+    # pthread_join 会错误地要求它们存在一个可 join 的角色。
+    openmp_roles: dict[str, list[tuple[str, bool]]] = {}
+    parallel_regions: list[ThreadParallelFact] = []
+    for call, role_id, targets, argument_origin in openmp_entries:
+        parent, parent_complete = _containing_role(
+            reachability, call.containing_function_pc
+        )
+        openmp_roles.setdefault(role_id, []).append((parent, parent_complete))
+        if call.target_symbol == "GOMP_parallel":
+            # 只有合并式 GOMP_parallel 在同一个调用返回前完成隐式 join。
+            # *_parallel_start 需要另找对应的 GOMP_parallel_end，暂不凭
+            # callback 地址猜测它们的阶段边界。
+            parallel_regions.append(
+                ThreadParallelFact(
+                    call_site=call.location,
+                    parent_role=parent,
+                    worker_role=role_id,
+                    start_targets=targets,
+                    complete=targets.complete and parent_complete,
+                )
+            )
+        if not parent_complete:
+            unknowns.append(
+                UnknownFact(
+                    kind=UnknownKind.REACHING_DEFINITION_FAILURE,
+                    reason=(
+                        "OpenMP parallel site is reachable from zero or multiple roles"
+                    ),
+                    impact="the OpenMP worker parent role is unknown",
+                    module=module.path,
+                    pc=call.location.pc,
+                )
+            )
+        # create_site 只用于把角色定位回第一个并行区入口；重复入口通过
+        # role_id 合并，不改变每个 callback 的函数可达集合。
+        if not any(role.id == role_id for role in roles):
+            roles.append(
+                ThreadRole(
+                    id=role_id,
+                    parent_role=parent,
+                    create_site=call.location,
+                    start_targets=targets,
+                    argument_origin=argument_origin,
+                    complete=targets.complete and parent_complete,
+                )
+            )
+
+    if openmp_roles:
+        updated_roles: list[ThreadRole] = []
+        for role in roles:
+            entries = openmp_roles.get(role.id)
+            if not entries:
+                updated_roles.append(role)
+                continue
+            parents = {parent for parent, _ in entries}
+            complete = role.complete and len(parents) == 1 and all(
+                parent_complete for _, parent_complete in entries
+            )
+            parent = next(iter(parents)) if len(parents) == 1 else "unknown"
+            updated_roles.append(
+                role.model_copy(
+                    update={"parent_role": parent, "complete": complete}
+                )
+            )
+        roles = updated_roles
+
+    # 只有 pthread 角色参与 pthread_join 的 handle 映射。
+    child_roles = tuple(
+        item.id
+        for item in roles
+        if item.id != "main" and item.id.startswith("pthread@")
+    )
     joins: list[ThreadJoinFact] = []
     for call in control_flow.call_sites:
         if call.target_symbol != "pthread_join":
@@ -277,5 +418,6 @@ def discover_pthread_threads(
         roles=tuple(roles),
         creates=tuple(creates),
         joins=tuple(joins),
+        parallel_regions=tuple(parallel_regions),
         unknowns=tuple(unknowns),
     )

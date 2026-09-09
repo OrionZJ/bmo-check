@@ -90,6 +90,12 @@ class LifecycleHint(StrictModel):
     thread_count_stack_offset: int | None = None
     # frame_pointer_offsets 列出前缀已分配、后续循环会读取的指针栈槽。
     frame_pointer_offsets: tuple[int, ...] = ()
+    # global_pointer_values 给从中途入口开始的证明补上已经完成的全局分配。
+    # 每个值都绑定本 ELF 的 offset；不提供时，未知全局指针不能被当成唯一句柄槽。
+    global_pointer_values: tuple[tuple[int, int], ...] = ()
+    # stack_scalar_values 给中途入口的循环计数器绑定已知整数；它们不能
+    # 复用 frame_pointer_offsets 的指针宽度，否则边界比较会保持未知。
+    stack_scalar_values: tuple[tuple[int, int], ...] = ()
     # worker_argument_base 可显式绑定 allocation site；缺失时生命周期证明生成本地对象名。
     worker_argument_base: str | None = None
     # worker_argument_alias_base 只给共享 worker 参数命名，供地址传播跨过

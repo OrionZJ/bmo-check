@@ -90,6 +90,22 @@ benchmarks:
     argv: ["{threads}", "-in", "in_300K.fluid", "-out", "out.fluid"]
     threads: 4
     normal_completion_only: true
+    # main 已把 thread 数组和每个 pthread handle 槽位建立好；从创建循环
+    # 入口开始证明，可把初始化阶段和 join 后路径从并发 alias 图中移除。
+    lifecycle_hint:
+      start_pc: 0x6e81
+      post_join_pc: 0x6f2a
+      create_pc: 0x13a0
+      join_pc: 0x1370
+      thread_count_stack_offset: -0x50
+      frame_pointer_offsets: [-0x40]
+      global_pointer_values:
+        - [0x20a338, 0x73000000]
+      stack_scalar_values:
+        - [-0x54, 0]
+        - [-0x58, 0]
+        - [-0x4c, 0]
+      assume_success: true
 
   - id: freqmine
     executable: pkgs/apps/freqmine/inst/amd64-linux.gcc/bin/freqmine

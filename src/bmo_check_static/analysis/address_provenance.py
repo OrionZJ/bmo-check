@@ -1135,6 +1135,19 @@ def recover_address_provenance(
         for function_pc, function in functions.items()
     }
 
+    # 先记录同一 ELF 内部 call 的目标。后面会为“构造器给调用者对象
+    # 写入 fresh 指针字段”的函数建立摘要；调用者只有在目标和实参都
+    # 可证明时才会接收这条摘要。
+    internal_call_targets = {
+        call.location.pc: call.targets.known_targets[0].pc
+        for call in control_flow.call_sites
+        if call.containing_function_pc in reachable_functions
+        if len(call.targets.known_targets) == 1
+        and call.targets.known_targets[0].module_sha256 == module.sha256
+        and call.targets.known_targets[0].pc in reachable_functions
+    }
+    function_field_summaries: dict[int, dict[str, _SymbolicValue]] = {}
+
     # fresh-return helper 可能在返回前初始化一组指针字段。把摘要按调用点
     # 重新命名后，caller 才能继续解析下一层的 [object + index]；摘要只在
     # 返回基址唯一且函数没有发布对象时使用，分支不确定时仍回退 Unknown。
@@ -1192,6 +1205,65 @@ def recover_address_provenance(
         for base, summary in summaries_by_base.items():
             if base not in passed_bases and base not in global_bases:
                 state.update(summary)
+
+    def apply_function_field_summary(
+        state: dict[str, _SymbolicValue],
+        call_pc: int,
+        argument_state: dict[str, _SymbolicValue] | None = None,
+    ) -> None:
+        """把已验证的内部构造器字段写入映射回 caller 对象。"""
+
+        target_pc = internal_call_targets.get(call_pc)
+        summary = function_field_summaries.get(target_pc)
+        if target_pc is None or not summary:
+            return
+        entry_registers = entry_values.get(target_pc, {})
+        actual_registers = argument_state or state
+        for key, value in summary.items():
+            for register in _INTEGER_ARGUMENTS:
+                entry = entry_registers.get(register)
+                actual = actual_registers.get(register)
+                if (
+                    entry is None
+                    or actual is None
+                    or entry.base is None
+                    or actual.base is None
+                    or entry.indirect
+                    or actual.indirect
+                    or entry.object_kind not in {AddressKind.HEAP, AddressKind.STACK}
+                    or actual.object_kind not in {AddressKind.HEAP, AddressKind.STACK}
+                ):
+                    continue
+                for prefix in ("heap-field@", "heap-field-summary@"):
+                    source_prefix = f"{prefix}{entry.base}"
+                    if not key.startswith(source_prefix):
+                        continue
+                    # 字段摘要只替换 receiver 的对象基址。当前 canneal
+                    # 构造器的 receiver 偏移为零；如果 caller 还有额外
+                    # 偏移，保留原后缀会扩大候选范围，但不会伪造 NoAlias。
+                    mapped_key = (
+                        f"{prefix}{actual.base}{key[len(source_prefix):]}"
+                    )
+                    mapped_value = value
+                    if (
+                        value.object_kind == AddressKind.HEAP
+                        and value.base is not None
+                        and value.fresh_call_pc is not None
+                    ):
+                        # 同一个构造器 call site 可以被不同 worker 执行多次。
+                        # 用 caller call site 区分 fresh 对象，不能把不同
+                        # 线程的 new 结果错误合并成同一个 allocation。
+                        mapped_value = replace(
+                            value,
+                            base=f"heap:ctor@0x{call_pc:x}",
+                            fresh_call_pc=call_pc,
+                            candidate_bases=(value.base,),
+                        )
+                    state[mapped_key] = mapped_value
+                    break
+                else:
+                    continue
+                break
 
     create_call_pcs = {
         call.location.pc
@@ -1256,6 +1328,11 @@ def recover_address_provenance(
                             conflicting_heap_field_summaries.add(key)
                         elif key not in conflicting_heap_field_summaries:
                             observed_heap_field_summaries[key] = value
+                argument_state = {
+                    register: state[register]
+                    for register in _INTEGER_ARGUMENTS
+                    if register in state
+                } if pc in internal_call_targets else None
                 _transfer(
                     module,
                     fact,
@@ -1267,6 +1344,7 @@ def recover_address_provenance(
                     pc in preserve_heap_only_call_pcs,
                 )
                 apply_allocation_field_summary(state, pc)
+                apply_function_field_summary(state, pc, argument_state)
                 restore_private_allocation_summaries(state, fact)
                 for key, value in state.items():
                     if key.startswith("heap-field-summary@"):
@@ -1370,6 +1448,11 @@ def recover_address_provenance(
                             published = True
                 if fact.mnemonic == "ret":
                     returns.append(state.get("rax"))
+                argument_state = {
+                    register: state[register]
+                    for register in _INTEGER_ARGUMENTS
+                    if register in state
+                } if pc in internal_call_targets else None
                 _transfer(
                     module,
                     fact,
@@ -1381,6 +1464,7 @@ def recover_address_provenance(
                     pc in preserve_heap_only_call_pcs,
                 )
                 apply_allocation_field_summary(state, pc)
+                apply_function_field_summary(state, pc, argument_state)
                 restore_private_allocation_summaries(state, fact)
         fresh_return = bool(returns) and not published and all(
             value is not None
@@ -1504,7 +1588,7 @@ def recover_address_provenance(
     def merge_stack_argument_values(
         values: list[_SymbolicValue | None], target_pc: int, offset: int
     ) -> _SymbolicValue | None:
-        """只合并明确属于 heap 的栈实参，未知或混合类型直接放弃。"""
+        """合并可证明来自同一对象的栈实参；未知或混合类型直接放弃。"""
 
         if not values or any(value is None for value in values):
             return None
@@ -1512,6 +1596,37 @@ def recover_address_provenance(
         first = concrete[0]
         if all(value == first for value in concrete[1:]):
             return first
+
+        # 同一个内部 helper 可能同时被主线程和 worker 调用。
+        # 如果所有 call site 都把同一个 caller 栈对象传进来，只是
+        # 经过不同的常量偏移，丢掉这条事实会让 helper 的 this 指针
+        # 重新变成 affine/unknown。这里把不同偏移折叠到对象基址，
+        # 只扩大可能访问的范围，不把两个不同栈帧误判成同一对象。
+        if all(
+            value.object_kind == AddressKind.STACK
+            and not value.indirect
+            and value.base is not None
+            and value.term is None
+            and value.coefficient == 0
+            and value.base == first.base
+            for value in concrete
+        ):
+            return _SymbolicValue(
+                base=first.base,
+                indirect=False,
+                offset=(
+                    first.offset
+                    if all(value.offset == first.offset for value in concrete)
+                    else 0
+                ),
+                evidence_pcs=tuple(
+                    dict.fromkeys(
+                        pc for value in concrete for pc in value.evidence_pcs
+                    )
+                ),
+                object_kind=AddressKind.STACK,
+            )
+
         if any(
             value.object_kind != AddressKind.HEAP
             or value.indirect
@@ -1613,6 +1728,11 @@ def recover_address_provenance(
                             offset: state.get(_call_stack_key(offset))
                             for offset in range(0, _STACK_ARGUMENT_SLOTS * 8, 8)
                         }
+                    argument_state = {
+                        register: state[register]
+                        for register in _INTEGER_ARGUMENTS
+                        if register in state
+                    } if pc in internal_call_targets else None
                     _transfer(
                         module,
                         fact,
@@ -1624,6 +1744,7 @@ def recover_address_provenance(
                         pc in preserve_heap_only_call_pcs,
                     )
                     apply_allocation_field_summary(state, pc)
+                    apply_function_field_summary(state, pc, argument_state)
                     restore_private_allocation_summaries(state, fact)
         for target_pc, call_pcs in calls_by_target.items():
             if not call_pcs <= observed.keys():
@@ -1637,76 +1758,114 @@ def recover_address_provenance(
                 if first is None:
                     continue
                 if any(value != first for value in values[1:]):
-                    if not all(
+                    # 同一个 helper 可能从多个路径收到同一 caller 栈帧里的
+                    # this/数组地址。这里保留栈对象基址；若只差常量偏移，
+                    # 折叠到基址会扩大别名范围，但不会把不同栈帧合成一个对象。
+                    if all(
+                        value is not None
+                        and value.object_kind == AddressKind.STACK
+                        and not value.indirect
+                        and value.base is not None
+                        and value.term is None
+                        and value.coefficient == 0
+                        and value.base == first.base
+                        for value in values
+                    ):
+                        first = _SymbolicValue(
+                            base=first.base,
+                            indirect=False,
+                            offset=(
+                                first.offset
+                                if all(
+                                    value is not None
+                                    and value.offset == first.offset
+                                    for value in values
+                                )
+                                else 0
+                            ),
+                            evidence_pcs=tuple(
+                                dict.fromkeys(
+                                    pc
+                                    for value in values
+                                    if value is not None
+                                    for pc in value.evidence_pcs
+                                )
+                            ),
+                            object_kind=AddressKind.STACK,
+                        )
+                    elif not all(
                         value is not None
                         and value.object_kind == AddressKind.HEAP
                         for value in values
                     ):
                         continue
-                    # 多个 call site 可以传入不同 malloc 对象。这里只保留
-                    # “一定是 heap”，不声称这些 allocation site 彼此 NoAlias。
-                    first = _SymbolicValue(
-                        base=f"heap-union:argument@0x{target_pc:x}:{register}",
-                        indirect=False,
-                        evidence_pcs=tuple(
-                            dict.fromkeys(
-                                pc
-                                for value in values
-                                if value is not None
-                                for pc in value.evidence_pcs
-                            )
-                        ),
-                        object_kind=AddressKind.HEAP,
-                        candidate_bases=tuple(
-                            sorted(
-                                {
-                                    candidate
+                    if first.object_kind == AddressKind.STACK:
+                        pass
+                    else:
+                        # 多个 call site 可以传入不同 malloc 对象。这里只保留
+                        # “一定是 heap”，不声称这些 allocation site 彼此 NoAlias。
+                        first = _SymbolicValue(
+                            base=f"heap-union:argument@0x{target_pc:x}:{register}",
+                            indirect=False,
+                            evidence_pcs=tuple(
+                                dict.fromkeys(
+                                    pc
                                     for value in values
                                     if value is not None
-                                    for candidate in (
-                                        value.candidate_bases
-                                        or ((value.base,) if value.base else ())
-                                    )
-                                    if candidate is not None
-                                    and value.object_kind == AddressKind.HEAP
-                                    and not candidate.startswith("heap-union:")
-                                }
-                            )
-                        ),
-                        owner_base=(
-                            values[0].owner_base
-                            if all(
-                                value.owner_base == values[0].owner_base
-                                for value in values
-                            )
-                            else None
-                        ),
-                        owner_term=(
-                            values[0].owner_term
-                            if all(
-                                value.owner_term == values[0].owner_term
-                                for value in values
-                            )
-                            else None
-                        ),
-                        owner_coefficient=(
-                            values[0].owner_coefficient
-                            if all(
-                                value.owner_coefficient
-                                == values[0].owner_coefficient
-                                for value in values
-                            )
-                            else None
-                        ),
-                        fresh_call_pc=(
-                            values[0].fresh_call_pc
-                            if all(
-                                value.fresh_call_pc == values[0].fresh_call_pc
-                                for value in values
-                            )
-                            else None
-                        ),
-                    )
+                                    for pc in value.evidence_pcs
+                                )
+                            ),
+                            object_kind=AddressKind.HEAP,
+                            candidate_bases=tuple(
+                                sorted(
+                                    {
+                                        candidate
+                                        for value in values
+                                        if value is not None
+                                        for candidate in (
+                                            value.candidate_bases
+                                            or ((value.base,) if value.base else ())
+                                        )
+                                        if candidate is not None
+                                        and value.object_kind == AddressKind.HEAP
+                                        and not candidate.startswith("heap-union:")
+                                    }
+                                )
+                            ),
+                            owner_base=(
+                                values[0].owner_base
+                                if all(
+                                    value.owner_base == values[0].owner_base
+                                    for value in values
+                                )
+                                else None
+                            ),
+                            owner_term=(
+                                values[0].owner_term
+                                if all(
+                                    value.owner_term == values[0].owner_term
+                                    for value in values
+                                )
+                                else None
+                            ),
+                            owner_coefficient=(
+                                values[0].owner_coefficient
+                                if all(
+                                    value.owner_coefficient
+                                    == values[0].owner_coefficient
+                                    for value in values
+                                )
+                                else None
+                            ),
+                            fresh_call_pc=(
+                                values[0].fresh_call_pc
+                                if all(
+                                    value.fresh_call_pc == values[0].fresh_call_pc
+                                    for value in values
+                                )
+                                else None
+                            ),
+                        )
                 if register not in target_values:
                     target_values[register] = first
                     propagated = True
@@ -1727,6 +1886,16 @@ def recover_address_provenance(
                 # 继续沿用旧摘要会把一个 caller 的行指针套到另一个对象。
                 entry_heap_fields.pop(target_pc, None)
                 propagated = True
+
+    # 参数传播收敛后再计算内部函数的字段摘要。这样像 Rng 构造器这类
+    # 不返回对象、却把 fresh allocation 写进 caller 栈对象的函数，
+    # 也能在下一轮 caller CFG 中恢复出该字段；未知写入不会出现在摘要里。
+    for target_pc in set(internal_call_targets.values()):
+        if target_pc not in blocks:
+            continue
+        _, _, _, field_summary, _ = flow(target_pc)
+        if field_summary:
+            function_field_summaries[target_pc] = field_summary
 
     result: dict[tuple[int, int], AbstractAddress] = {}
     call_arguments: dict[int, tuple[AbstractAddress | None, ...]] = {}
@@ -1784,6 +1953,11 @@ def recover_address_provenance(
                     address = _abstract_value(value)
                     if address is not None:
                         result[(fact.pc, operand.operand_index)] = address
+                argument_state = {
+                    register: state[register]
+                    for register in _INTEGER_ARGUMENTS
+                    if register in state
+                } if pc in internal_call_targets else None
                 _transfer(
                     module,
                     fact,
@@ -1795,6 +1969,7 @@ def recover_address_provenance(
                     pc in preserve_heap_only_call_pcs,
                 )
                 apply_allocation_field_summary(state, pc)
+                apply_function_field_summary(state, pc, argument_state)
                 restore_private_allocation_summaries(state, fact)
     return AddressProvenanceReport(
         addresses=result,

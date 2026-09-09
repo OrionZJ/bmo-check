@@ -985,6 +985,17 @@ def analyze_shared_state(
             for event in events
             if event.id not in nonconcurrent_event_ids
         )
+        concurrent_readers = tuple(
+            event.id for event in concurrent_events if event.kind in _READ_KINDS
+        )
+        concurrent_writers = tuple(
+            event.id for event in concurrent_events if event.kind in _WRITE_KINDS
+        )
+        phase_safe_writers = (
+            concurrent_writers
+            if lifecycle_proof is not None and lifecycle_proof.proven
+            else writers
+        )
         sharing = SharingClass.SHARED_KNOWN
         escape = EscapeKind.UNKNOWN
         proof: ProofObject | None = None
@@ -1006,7 +1017,13 @@ def analyze_shared_state(
                 )
             )
         }
-        if (
+        if not concurrent_events:
+            # 生命周期已经把这个 alias class 的全部事件放到 create 前、
+            # join 后或不会返回的路径。它不可能形成并发通信边，不能让
+            # 一个未求值的寄存器表达式把确定的顺序事实重新升级成 Unknown。
+            sharing = SharingClass.THREAD_LOCAL
+            escape = EscapeKind.NO_ESCAPE
+        elif (
             roles == ("main",)
             and address.kind in {AddressKind.GLOBAL, AddressKind.AFFINE, AddressKind.HEAP}
             and not any(
@@ -1031,7 +1048,7 @@ def analyze_shared_state(
                     "every remaining wildcard has a checked NoAlias address base",
                 ),
             )
-        elif not writers and not external_wildcards:
+        elif not phase_safe_writers and not external_wildcards:
             sharing = SharingClass.READ_ONLY_AFTER_CREATE
             escape = EscapeKind.THREAD_ESCAPE
             proof = ProofObject(
@@ -1067,13 +1084,21 @@ def analyze_shared_state(
             and lifecycle_proof.proven
             and lifecycle_proof.worker_argument_base is not None
             and address.base == lifecycle_proof.worker_argument_base
-            and writers
-            and readers
-            and all(event.thread_role == "main" for event in events if event.id in writers)
-            and all(event.thread_role != "main" for event in events if event.id in readers)
+            and concurrent_writers
+            and concurrent_readers
+            and all(
+                event.thread_role == "main"
+                for event in concurrent_events
+                if event.id in concurrent_writers
+            )
+            and all(
+                event.thread_role != "main"
+                for event in concurrent_events
+                if event.id in concurrent_readers
+            )
             and all(
                 _path_exists(order_edges, writer, create.id)
-                for writer in writers
+                for writer in concurrent_writers
                 for create in creates
             )
             and any(
@@ -1154,6 +1179,54 @@ def analyze_shared_state(
                     "fresh_allocation contract gives every dynamic call a new object",
                     "all retained addresses use the direct allocation base",
                     "no unknown wildcard may alias this allocation site",
+                ),
+            )
+        elif (
+            address.kind == AddressKind.STACK
+            and lifecycle_proof is not None
+            and lifecycle_proof.proven
+            and lifecycle_proof.worker_argument_alias_base is not None
+            and address.provenance.get("pointer_slot")
+            == lifecycle_proof.worker_argument_alias_base
+            and concurrent_events
+            and any(event.thread_role != "main" for event in concurrent_events)
+            and all(event.kind in _READ_KINDS for event in concurrent_events)
+            and not external_wildcards
+        ):
+            # 共享的 worker 参数仍可能保存锁、计数器等状态，不能按线程
+            # 私有对象剪枝；这里只证明主线程初始化发生在 create 前，
+            # 后续 worker 对这个具体字段只读，因而不会产生发布后的写冲突。
+            sharing = SharingClass.READ_ONLY_AFTER_CREATE
+            escape = EscapeKind.THREAD_ESCAPE
+            proof = ProofObject(
+                id=f"proof:shared-worker-argument-readonly:{index}",
+                reason=ProofReason.READ_ONLY_AFTER_CREATE,
+                event_ids=tuple(event.id for event in events),
+                supporting_facts=(
+                    "lifecycle hint binds the shared pthread_create argument",
+                    "all non-concurrent main accesses are covered by create/join order",
+                    "worker instances only read this field during the concurrent phase",
+                ),
+            )
+        elif (
+            address.kind == AddressKind.STACK
+            and concurrent_events
+            and all(event.thread_role == "main" for event in concurrent_events)
+            and not external_wildcards
+        ):
+            # main 自己可以把栈地址交给同一线程的 helper；这不等于地址
+            # 已发布给 worker。只有另一个线程的事件或未知别名仍可能命中
+            # 该槽时，才需要把 helper 的返回事实升级成共享逃逸。
+            sharing = SharingClass.THREAD_LOCAL
+            escape = EscapeKind.NO_ESCAPE
+            proof = ProofObject(
+                id=f"proof:main-stack:{index}",
+                reason=ProofReason.UNESCAPED_STACK,
+                event_ids=tuple(event.id for event in events),
+                supporting_facts=(
+                    "all concurrent accesses to this stack slot stay in main",
+                    "no unknown address or opaque effect may alias the slot",
+                    "same-thread helper return does not publish the slot to a worker",
                 ),
             )
         elif address.kind == AddressKind.STACK:
@@ -1285,7 +1358,7 @@ def analyze_shared_state(
                         "no unknown wildcard may alias this allocation site",
                     ),
                 )
-            elif disjoint and writers and not uncovered_wildcards:
+            elif disjoint and phase_safe_writers and not uncovered_wildcards:
                 sharing = SharingClass.DISJOINT_PARTITION
                 proof = ProofObject(
                     id=f"proof:affine:{index}",

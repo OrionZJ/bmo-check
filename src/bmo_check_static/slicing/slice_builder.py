@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from itertools import combinations
 
 from bmo_check_static.model import (
     AddressKind,
@@ -68,27 +69,69 @@ def _can_run_concurrently(first: MemoryEvent, second: MemoryEvent) -> tuple[bool
 def _conflicts(events: tuple[MemoryEvent, ...]) -> tuple[ConflictCandidate, ...]:
     candidates: list[ConflictCandidate] = []
     memory = [event for event in events if event.kind in _MEMORY_KINDS]
-    for first_index, first in enumerate(memory):
-        for second in memory[first_index:]:
-            concurrent, same_role_instances = _can_run_concurrently(first, second)
-            if not concurrent:
-                continue
-            if first.kind not in _WRITE_KINDS and second.kind not in _WRITE_KINDS:
-                continue
-            alias = _alias(first, second)
-            if alias == AliasRelation.NO_ALIAS:
-                continue
-            candidates.append(
-                ConflictCandidate(
-                    first_event=first.id,
-                    second_event=second.id,
-                    first_role=first.thread_role or "unknown",
-                    second_role=second.thread_role or "unknown",
-                    alias=alias,
-                    same_role_instances=same_role_instances,
-                )
+    uncertain: list[MemoryEvent] = []
+    concrete: dict[tuple[AddressKind, str], list[MemoryEvent]] = defaultdict(list)
+    for event in memory:
+        address = event.address
+        if (
+            address is None
+            or address.kind in {AddressKind.UNKNOWN, AddressKind.AFFINE}
+            or address.base is None
+            or address.offset is None
+            or event.size is None
+        ):
+            uncertain.append(event)
+        else:
+            # 已知对象之间只有同一 kind/base 才可能重叠；把不同对象
+            # 分桶后，worker 数量增加不会把所有全局和 heap 访问做笛卡尔积。
+            concrete[(address.kind, address.base)].append(event)
+
+    def add_pair(first: MemoryEvent, second: MemoryEvent) -> None:
+        concurrent, same_role_instances = _can_run_concurrently(first, second)
+        if not concurrent:
+            return
+        if first.kind not in _WRITE_KINDS and second.kind not in _WRITE_KINDS:
+            return
+        alias = _alias(first, second)
+        if alias == AliasRelation.NO_ALIAS:
+            return
+        candidates.append(
+            ConflictCandidate(
+                first_event=first.id,
+                second_event=second.id,
+                first_role=first.thread_role or "unknown",
+                second_role=second.thread_role or "unknown",
+                alias=alias,
+                same_role_instances=same_role_instances,
             )
-    return tuple(candidates)
+        )
+
+    # 同一 worker 访存可能由多个动态实例重复执行；保留原实现的
+    # self-conflict，不能因为分桶只枚举不同事件就漏掉这类候选。
+    for event in memory:
+        add_pair(event, event)
+
+    # Unknown/Affine 地址仍须和所有事件比较；这是精度代价，不能靠
+    # 地址值猜测 NoAlias。这里只把确定对象的组合从这条慢路径移走。
+    uncertain_ids = {event.id for event in uncertain}
+    for first in uncertain:
+        for second in memory:
+            if first.id == second.id:
+                continue
+            if second.id in uncertain_ids and first.id >= second.id:
+                continue
+            add_pair(first, second)
+    for bucket in concrete.values():
+        for first, second in combinations(bucket, 2):
+            add_pair(first, second)
+
+    # `uncertain` 循环按字符串 id 去重依赖 id 的可比较性；同一报告内
+    # id 唯一且稳定，下面按生成顺序重新消除任何意外重复。
+    unique: dict[tuple[str, str], ConflictCandidate] = {}
+    for candidate in candidates:
+        key = (candidate.first_event, candidate.second_event)
+        unique.setdefault(key, candidate)
+    return tuple(unique.values())
 
 
 def _lifecycle_edges(
@@ -169,6 +212,59 @@ def _lifecycle_edges(
                             ),
                         )
                     )
+
+    # GOMP_parallel 本身不会写应用对象，但返回前会等待 callback 完成。
+    # 把并行区入口和出口接到同一个 worker role，才能把主线程发布的
+    # 初始化和 barrier 后的读取放进同一条 happens-before 链；若 callback
+    # 或父角色不闭合，则不生成一条看似完整的边。
+    for parallel in threads.parallel_regions:
+        if not parallel.complete:
+            continue
+        barrier_events = by_pc_kind.get(
+            (parallel.call_site.pc, EventKind.BARRIER), ()
+        )
+        worker_events = by_role.get(parallel.worker_role, ())
+        if not barrier_events or not worker_events:
+            continue
+        entries = [event for event in worker_events if event.id not in incoming]
+        exits = [event for event in worker_events if event.id not in outgoing]
+        for barrier in barrier_events:
+            for entry in entries:
+                edges.append(
+                    SynchronizationEdge(
+                        source_event=barrier.id,
+                        target_event=entry.id,
+                        kind="openmp_parallel_start",
+                        evidence=(
+                            "GOMP_parallel callback target is closed",
+                            "GOMP_parallel return is an implicit worker barrier",
+                        ),
+                        complete=barrier.target_ordering != Ordering.UNKNOWN,
+                        reason=(
+                            None
+                            if barrier.target_ordering != Ordering.UNKNOWN
+                            else "OpenMP barrier ordering is unknown"
+                        ),
+                    )
+                )
+            for exit_event in exits:
+                edges.append(
+                    SynchronizationEdge(
+                        source_event=exit_event.id,
+                        target_event=barrier.id,
+                        kind="openmp_parallel_end",
+                        evidence=(
+                            "GOMP_parallel callback target is closed",
+                            "worker exit precedes the implicit barrier return",
+                        ),
+                        complete=barrier.target_ordering != Ordering.UNKNOWN,
+                        reason=(
+                            None
+                            if barrier.target_ordering != Ordering.UNKNOWN
+                            else "OpenMP barrier ordering is unknown"
+                        ),
+                    )
+                )
     return tuple(edges)
 
 

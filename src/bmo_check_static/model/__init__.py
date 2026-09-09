@@ -82,6 +82,7 @@ from .thread import (
     ThreadCreateFact,
     ThreadDiscoveryReport,
     ThreadJoinFact,
+    ThreadParallelFact,
     ThreadRole,
 )
 from .unknown import UnknownFact, UnknownKind
@@ -176,6 +177,7 @@ __all__ = [
     "ThreadCreateFact",
     "ThreadDiscoveryReport",
     "ThreadJoinFact",
+    "ThreadParallelFact",
     "ThreadRole",
     "UnknownFact",
     "UnknownKind",

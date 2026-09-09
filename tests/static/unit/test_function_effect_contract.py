@@ -23,6 +23,8 @@ def test_effect_contract_is_content_addressed() -> None:
         "sqrtf",
         "pow",
         "powf",
+        "sinf",
+        "cosf",
     }
     assert contract.effects["malloc"] == "fresh_allocation"
     assert contract.integer_arguments["malloc"] == (0,)

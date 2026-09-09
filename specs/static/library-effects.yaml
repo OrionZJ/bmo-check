@@ -162,6 +162,14 @@ functions:
     effect: runtime_internal
     integer_arguments: [0]
     internal_object: "runtime:stdio"
+  feof:
+    effect: runtime_internal
+    integer_arguments: [0]
+    internal_object: "runtime:stdio"
+  rewind:
+    effect: runtime_internal
+    integer_arguments: [0]
+    internal_object: "runtime:stdio"
   fputc:
     effect: runtime_internal
     integer_arguments: [0, 1]
@@ -169,6 +177,14 @@ functions:
   atoi:
     effect: argument_access
     integer_arguments: [0]
+    memory_arguments:
+      - index: 0
+        mode: read
+  strtol:
+    # strtol 只读取调用者提供的文本；把它声明成参数访问后，
+    # 地址恢复失败仍会留下 Unknown，而不会把输入字符串误当运行库私有状态。
+    effect: argument_access
+    integer_arguments: [0, 1]
     memory_arguments:
       - index: 0
         mode: read
@@ -231,6 +247,107 @@ functions:
     effect: runtime_internal
     integer_arguments: []
     internal_object: "runtime:openmp"
+  # OpenMP runtime 的调度器和隐式 barrier 不属于应用对象；应用 scope
+  # 会移除它们的私有状态，但 worker callback 仍由线程角色单独分析。
+  GOMP_parallel:
+    effect: runtime_internal
+    integer_arguments: []
+    internal_object: "runtime:openmp"
+  GOMP_parallel_start:
+    effect: runtime_internal
+    integer_arguments: []
+    internal_object: "runtime:openmp"
+  GOMP_parallel_end:
+    effect: runtime_internal
+    integer_arguments: []
+    internal_object: "runtime:openmp"
+  GOMP_parallel_loop_static_start:
+    effect: runtime_internal
+    integer_arguments: []
+    internal_object: "runtime:openmp"
+  GOMP_parallel_loop_dynamic_start:
+    effect: runtime_internal
+    integer_arguments: []
+    internal_object: "runtime:openmp"
+  GOMP_parallel_loop_guided_start:
+    effect: runtime_internal
+    integer_arguments: []
+    internal_object: "runtime:openmp"
+  GOMP_parallel_loop_runtime_start:
+    effect: runtime_internal
+    integer_arguments: []
+    internal_object: "runtime:openmp"
+  GOMP_barrier:
+    effect: runtime_internal
+    integer_arguments: []
+    internal_object: "runtime:openmp"
+  GOMP_critical_start:
+    effect: runtime_internal
+    integer_arguments: []
+    internal_object: "runtime:openmp"
+  GOMP_critical_end:
+    effect: runtime_internal
+    integer_arguments: []
+    internal_object: "runtime:openmp"
+  GOMP_loop_dynamic_start:
+    effect: runtime_internal
+    integer_arguments: []
+    internal_object: "runtime:openmp"
+  GOMP_loop_dynamic_next:
+    effect: runtime_internal
+    integer_arguments: []
+    internal_object: "runtime:openmp"
+  GOMP_loop_end_nowait:
+    effect: runtime_internal
+    integer_arguments: []
+    internal_object: "runtime:openmp"
+  GOMP_loop_end:
+    effect: runtime_internal
+    integer_arguments: []
+    internal_object: "runtime:openmp"
+  # pthread 对象的 init/destroy 只操作锁、条件变量和 barrier 自身。
+  # application scope 不把这些运行库元数据混进应用通信图；lock、wait
+  # 和 signal 仍由 pthread-api.yaml 的具体机器码摘要单独验证。
+  pthread_mutex_init:
+    effect: runtime_internal
+    integer_arguments: [0, 1]
+    internal_object: "runtime:pthread-sync"
+  pthread_mutex_destroy:
+    effect: runtime_internal
+    integer_arguments: [0]
+    internal_object: "runtime:pthread-sync"
+  pthread_cond_init:
+    effect: runtime_internal
+    integer_arguments: [0, 1]
+    internal_object: "runtime:pthread-sync"
+  pthread_cond_destroy:
+    effect: runtime_internal
+    integer_arguments: [0]
+    internal_object: "runtime:pthread-sync"
+  pthread_barrier_init:
+    effect: runtime_internal
+    integer_arguments: [0, 1, 2]
+    internal_object: "runtime:pthread-sync"
+  pthread_barrier_destroy:
+    effect: runtime_internal
+    integer_arguments: [0]
+    internal_object: "runtime:pthread-sync"
+  pthread_spin_init:
+    effect: runtime_internal
+    integer_arguments: [0, 1]
+    internal_object: "runtime:pthread-sync"
+  pthread_spin_destroy:
+    effect: runtime_internal
+    integer_arguments: [0]
+    internal_object: "runtime:pthread-sync"
+  pthread_attr_init:
+    effect: runtime_internal
+    integer_arguments: [0]
+    internal_object: "runtime:pthread-sync"
+  pthread_attr_destroy:
+    effect: runtime_internal
+    integer_arguments: [0]
+    internal_object: "runtime:pthread-sync"
   printf:
     effect: runtime_internal
     integer_arguments: []
@@ -255,6 +372,175 @@ functions:
     effect: runtime_internal
     integer_arguments: []
     internal_object: "runtime:stdio"
+  # 这些 operator 只更新 ostream 自身；没有用户指针形参，不能把它们
+  # 当成会读写任意应用数组的 opaque call。
+  _ZNSolsEPFRSoS_E:
+    effect: runtime_internal
+    integer_arguments: []
+    internal_object: "runtime:iostream"
+  _ZNSolsEi:
+    effect: runtime_internal
+    integer_arguments: []
+    internal_object: "runtime:iostream"
+  _ZNSolsEf:
+    effect: runtime_internal
+    integer_arguments: []
+    internal_object: "runtime:iostream"
+  __cxa_allocate_exception:
+    effect: runtime_internal
+    integer_arguments: []
+    internal_object: "runtime:exception"
+  __cxa_throw:
+    effect: runtime_internal
+    integer_arguments: []
+    internal_object: "runtime:exception"
+  __cxa_bad_cast:
+    effect: runtime_internal
+    integer_arguments: []
+    internal_object: "runtime:exception"
+  # 这些 iostream 成员只维护 stream 自身的运行库状态。带用户缓冲区的
+  # read/write 和提取运算单独列为 argument_access，不能把调用者对象藏掉。
+  _ZNKSt9basic_iosIcSt11char_traitsIcEEntEv:
+    effect: runtime_internal
+    integer_arguments: []
+    internal_object: "runtime:iostream"
+  _ZNKSt9basic_iosIcSt11char_traitsIcEEcvbEv:
+    effect: runtime_internal
+    integer_arguments: []
+    internal_object: "runtime:iostream"
+  _ZNSt14basic_ifstreamIcSt11char_traitsIcEE7is_openEv:
+    effect: runtime_internal
+    integer_arguments: []
+    internal_object: "runtime:iostream"
+  _ZNSt14basic_ifstreamIcSt11char_traitsIcEED1Ev:
+    effect: runtime_internal
+    integer_arguments: []
+    internal_object: "runtime:iostream"
+  _ZNSt14basic_ofstreamIcSt11char_traitsIcEED1Ev:
+    effect: runtime_internal
+    integer_arguments: []
+    internal_object: "runtime:iostream"
+  _ZNSt7__cxx1119basic_istringstreamIcSt11char_traitsIcESaIcEED1Ev:
+    effect: runtime_internal
+    integer_arguments: []
+    internal_object: "runtime:iostream"
+  _ZNSt7__cxx1118basic_stringstreamIcSt11char_traitsIcESaIcEED1Ev:
+    effect: runtime_internal
+    integer_arguments: []
+    internal_object: "runtime:iostream"
+  _ZNSaIcEC1Ev:
+    effect: runtime_internal
+    integer_arguments: []
+    internal_object: "runtime:iostream"
+  _ZNSaIcEC2Ev:
+    effect: runtime_internal
+    integer_arguments: []
+    internal_object: "runtime:iostream"
+  _ZNSaIcEC1ERKS_:
+    effect: runtime_internal
+    integer_arguments: []
+    internal_object: "runtime:iostream"
+  _ZNSaIcEC2ERKS_:
+    effect: runtime_internal
+    integer_arguments: []
+    internal_object: "runtime:iostream"
+  _ZNSaIcED1Ev:
+    effect: runtime_internal
+    integer_arguments: []
+    internal_object: "runtime:iostream"
+  _ZNSaIcED2Ev:
+    effect: runtime_internal
+    integer_arguments: []
+    internal_object: "runtime:iostream"
+  _ZSt24__throw_out_of_range_fmtPKcz:
+    effect: runtime_internal
+    integer_arguments: []
+    internal_object: "runtime:exception"
+  _ZNSt9exceptionD2Ev:
+    effect: runtime_internal
+    integer_arguments: []
+    internal_object: "runtime:exception"
+  _ZStlsISt11char_traitsIcEERSt13basic_ostreamIcT_ES5_PKc:
+    effect: argument_access
+    integer_arguments: [0, 1]
+    memory_arguments:
+      - index: 1
+        mode: read
+  _ZStlsIcSt11char_traitsIcESaIcEERSt13basic_ostreamIT_T0_ES7_RKNSt7__cxx1112basic_stringIS4_S5_T1_EE:
+    effect: argument_access
+    integer_arguments: [0, 1]
+    memory_arguments:
+      - index: 1
+        mode: read
+  _ZStlsIcSt11char_traitsIcESaIcEERSt13basic_ostreamIT_T0_ES6_St5_Setw:
+    effect: runtime_internal
+    integer_arguments: []
+    internal_object: "runtime:iostream"
+  _ZNSirsERf:
+    effect: argument_access
+    integer_arguments: [0, 1]
+    memory_arguments:
+      - index: 1
+        mode: write
+  _ZNSirsERi:
+    effect: argument_access
+    integer_arguments: [0, 1]
+    memory_arguments:
+      - index: 1
+        mode: write
+  _ZNSi4readEPcl:
+    effect: argument_access
+    integer_arguments: [0, 1, 2]
+    memory_arguments:
+      - index: 1
+        mode: write
+  _ZNSo5writeEPKcl:
+    effect: argument_access
+    integer_arguments: [0, 1, 2]
+    memory_arguments:
+      - index: 1
+        mode: read
+  _ZNSt14basic_ifstreamIcSt11char_traitsIcEEC1EPKcSt13_Ios_Openmode:
+    effect: argument_access
+    integer_arguments: [0, 1, 2]
+    memory_arguments:
+      - index: 1
+        mode: read
+    internal_object: "runtime:iostream"
+  _ZNSt14basic_ofstreamIcSt11char_traitsIcEEC1EPKcSt13_Ios_Openmode:
+    effect: argument_access
+    integer_arguments: [0, 1, 2]
+    memory_arguments:
+      - index: 1
+        mode: read
+    internal_object: "runtime:iostream"
+  _ZNSt7__cxx1119basic_istringstreamIcSt11char_traitsIcESaIcEEC1ERKNS_12basic_stringIcS2_S3_ESt13_Ios_Openmode:
+    effect: argument_access
+    integer_arguments: [0, 1, 2]
+    memory_arguments:
+      - index: 1
+        mode: read
+    internal_object: "runtime:iostream"
+  _ZNSt7__cxx1118basic_stringstreamIcSt11char_traitsIcESaIcEEC1ESt13_Ios_Openmode:
+    effect: runtime_internal
+    integer_arguments: []
+    internal_object: "runtime:iostream"
+  _ZNKSt9basic_iosIcSt11char_traitsIcEE4failEv:
+    effect: runtime_internal
+    integer_arguments: []
+    internal_object: "runtime:iostream"
+  _ZNKSt7__cxx1118basic_stringstreamIcSt11char_traitsIcESaIcEE3strEv:
+    effect: runtime_internal
+    integer_arguments: []
+    internal_object: "runtime:iostream"
+  _ZStlsIcSt11char_traitsIcESaIcEERSt13basic_ostreamIT_T0_ES6_St8_SetfillIS3_E:
+    effect: runtime_internal
+    integer_arguments: []
+    internal_object: "runtime:iostream"
+  __dynamic_cast:
+    effect: runtime_internal
+    integer_arguments: []
+    internal_object: "runtime:exception"
   exp:
     effect: thread_local
     integer_arguments: []
@@ -277,6 +563,12 @@ functions:
     effect: thread_local
     integer_arguments: []
   powf:
+    effect: thread_local
+    integer_arguments: []
+  sinf:
+    effect: thread_local
+    integer_arguments: []
+  cosf:
     effect: thread_local
     integer_arguments: []
   # swaptions 的随机数 helper 只写调用者栈上的 seed；它不会拿到

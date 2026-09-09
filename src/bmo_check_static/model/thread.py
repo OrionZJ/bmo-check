@@ -54,6 +54,19 @@ class ThreadJoinFact(StrictModel):
         return self
 
 
+class ThreadParallelFact(StrictModel):
+    # call_site 指向 GOMP_parallel；返回前 runtime 会等待这个 worker 阶段。
+    call_site: CodeLocation
+    # parent_role 记录哪个静态线程角色进入并行区。
+    parent_role: str
+    # worker_role 绑定第一个参数指向的 OpenMP callback。
+    worker_role: str
+    # start_targets 保存 callback 的封闭目标集合。
+    start_targets: IndirectTargetSet
+    # complete=False 时不能用隐式 barrier 剪掉跨阶段通信。
+    complete: bool
+
+
 class ThreadDiscoveryReport(StrictModel):
     # schema_version 防止后续误读角色和 join 字段。
     schema_version: int = 1
@@ -62,5 +75,8 @@ class ThreadDiscoveryReport(StrictModel):
     # creates 和 joins 保存原始 pthread 调用关系。
     creates: tuple[ThreadCreateFact, ...] = ()
     joins: tuple[ThreadJoinFact, ...] = ()
+    # parallel_regions 保存 OpenMP callback 与隐式 barrier 的关系；它们
+    # 不进入 pthread handle 映射，但 slice builder 需要用它们连接阶段。
+    parallel_regions: tuple[ThreadParallelFact, ...] = ()
     # unknowns 显式记录未封闭的 callback、parent 和 handle 映射。
     unknowns: tuple[UnknownFact, ...] = ()
