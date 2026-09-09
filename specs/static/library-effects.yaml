@@ -174,7 +174,29 @@ functions:
     effect: runtime_internal
     integer_arguments: [0, 1]
     internal_object: "runtime:stdio"
+  putc:
+    effect: runtime_internal
+    integer_arguments: [0, 1]
+    internal_object: "runtime:stdio"
+  putchar:
+    effect: runtime_internal
+    integer_arguments: [0]
+    internal_object: "runtime:stdio"
+  fseek:
+    effect: runtime_internal
+    integer_arguments: [0, 1, 2]
+    internal_object: "runtime:stdio"
+  tmpfile:
+    effect: runtime_internal
+    integer_arguments: []
+    internal_object: "runtime:stdio"
   atoi:
+    effect: argument_access
+    integer_arguments: [0]
+    memory_arguments:
+      - index: 0
+        mode: read
+  atof:
     effect: argument_access
     integer_arguments: [0]
     memory_arguments:
@@ -204,6 +226,14 @@ functions:
         mode: read
     internal_object: "runtime:libc-random"
   lrand48:
+    effect: runtime_internal
+    integer_arguments: []
+    internal_object: "runtime:libc-random"
+  random:
+    effect: runtime_internal
+    integer_arguments: []
+    internal_object: "runtime:libc-random"
+  srandom:
     effect: runtime_internal
     integer_arguments: []
     internal_object: "runtime:libc-random"
@@ -386,6 +416,18 @@ functions:
     effect: runtime_internal
     integer_arguments: []
     internal_object: "runtime:iostream"
+  _ZNSolsEd:
+    effect: runtime_internal
+    integer_arguments: []
+    internal_object: "runtime:iostream"
+  _ZNSt9basic_iosIcSt11char_traitsIcEE5rdbufEPSt15basic_streambufIcS1_E:
+    effect: runtime_internal
+    integer_arguments: []
+    internal_object: "runtime:iostream"
+  _ZNKSt9basic_iosIcSt11char_traitsIcEE5rdbufEv:
+    effect: runtime_internal
+    integer_arguments: []
+    internal_object: "runtime:iostream"
   __cxa_allocate_exception:
     effect: runtime_internal
     integer_arguments: []
@@ -398,6 +440,46 @@ functions:
     effect: runtime_internal
     integer_arguments: []
     internal_object: "runtime:exception"
+  __cxa_throw_bad_array_new_length:
+    effect: runtime_internal
+    integer_arguments: []
+    internal_object: "runtime:exception"
+  __cxa_guard_acquire:
+    effect: runtime_internal
+    integer_arguments: [0]
+    internal_object: "runtime:exception"
+  __cxa_guard_release:
+    effect: runtime_internal
+    integer_arguments: [0]
+    internal_object: "runtime:exception"
+  __cxa_atexit:
+    effect: runtime_internal
+    integer_arguments: [0, 1, 2]
+    internal_object: "runtime:exception"
+  __cxa_finalize:
+    effect: runtime_internal
+    integer_arguments: [0]
+    internal_object: "runtime:exception"
+  __stack_chk_fail:
+    effect: runtime_internal
+    integer_arguments: []
+    internal_object: "runtime:termination"
+  __assert_fail:
+    effect: runtime_internal
+    integer_arguments: [0, 1, 2, 3]
+    internal_object: "runtime:termination"
+  exit:
+    effect: runtime_internal
+    integer_arguments: [0]
+    internal_object: "runtime:termination"
+  _exit:
+    effect: runtime_internal
+    integer_arguments: [0]
+    internal_object: "runtime:termination"
+  abort:
+    effect: runtime_internal
+    integer_arguments: []
+    internal_object: "runtime:termination"
   # 这些 iostream 成员只维护 stream 自身的运行库状态。带用户缓冲区的
   # read/write 和提取运算单独列为 argument_access，不能把调用者对象藏掉。
   _ZNKSt9basic_iosIcSt11char_traitsIcEEntEv:

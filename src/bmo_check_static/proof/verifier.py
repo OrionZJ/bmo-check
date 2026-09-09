@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections import defaultdict
 
 from bmo_check_static.model import (
     CertificateCoverage,
@@ -10,6 +11,7 @@ from bmo_check_static.model import (
     CheckerConclusion,
     CheckerLimits,
     CheckerReport,
+    EventKind,
     PortabilityCertificate,
     ProgramManifest,
     ProgramSliceReport,
@@ -47,9 +49,52 @@ def _collect_unknowns(
 ) -> tuple[UnknownFact, ...]:
     application_scope = (analysis_options or {}).get("scope") == "application"
     recovery = report.recovery
+    # 缺少外部 ELF 函数体不等于缺少该调用的内存事实。若 MemoryEvent 层
+    # 已按 effect contract 闭合了这个 PLT 调用，就不再因为 CFG 无法进入
+    # 同一个函数体而重复阻塞证明；参数地址恢复失败仍会留下自己的 Unknown。
+    contracted_call_events: dict[tuple[int, str], list[object]] = defaultdict(list)
+    if report.memory_events is not None:
+        for event in report.memory_events.events:
+            target_symbol = event.provenance.get("target_symbol")
+            if (
+                event.provenance.get("contracted_effect") is not None
+                and isinstance(target_symbol, str)
+            ):
+                contracted_call_events[(event.pc, target_symbol)].append(event)
+
+    closed_contract_calls = {
+        call
+        for call, events in contracted_call_events.items()
+        if events
+        and all(
+            event.kind
+            not in {
+                # runtime_internal 在 full scope 仍需要保留其运行库状态；
+                # application scope 会由作用域过滤器单独决定是否移除。
+                # argument_access 的地址缺失也通过这个 Unknown kind 体现。
+                EventKind.OPAQUE_CALL,
+                EventKind.SYSCALL,
+                EventKind.UNKNOWN_MEMORY_EFFECT,
+            }
+            for event in events
+        )
+    }
+
+    def keep_unknown(fact: UnknownFact) -> bool:
+        if (
+            fact.kind == UnknownKind.INCOMPLETE_INDIRECT_TARGET
+            and fact.pc is not None
+            and (
+                fact.pc,
+                str(fact.details.get("target_symbol")),
+            ) in closed_contract_calls
+        ):
+            return False
+        return True
+
     unknowns = list(recovery.manifest.unknowns)
-    unknowns.extend(recovery.unknowns)
-    unknowns.extend(report.unknowns)
+    unknowns.extend(fact for fact in recovery.unknowns if keep_unknown(fact))
+    unknowns.extend(fact for fact in report.unknowns if keep_unknown(fact))
     if recovery.thread_roles is not None:
         for role in recovery.thread_roles.roles:
             if not role.complete:
@@ -71,6 +116,10 @@ def _collect_unknowns(
         }
         explained_event_ids: set[str] = set()
         for fact in report.shared_slice.unknowns:
+            if not keep_unknown(fact):
+                # effect contract 已经闭合外部调用的 memory facts；
+                # 同一个间接目标缺口从 shared slice 进入时也不能重复阻塞证明。
+                continue
             event_id = fact.details.get("event_id")
             event_ids = fact.details.get("event_ids")
             if isinstance(event_id, str) and event_id in removed_ids:

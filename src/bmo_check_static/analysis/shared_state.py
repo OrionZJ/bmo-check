@@ -31,6 +31,8 @@ from bmo_check_static.model import (
 )
 from bmo_check_static.pruning import prove_affine_partition
 
+from .lockset import lock_protection_candidates, prove_definite_locksets
+
 
 _WRITE_KINDS = {
     EventKind.STORE,
@@ -960,6 +962,9 @@ def analyze_shared_state(
         for call in control_flow.call_sites
         if call.containing_function_pc in worker_functions
     )
+    locksets = prove_definite_locksets(
+        memory_events.events, memory_events.program_order
+    )
     wildcard_events = {
         event.id: event
         for event in memory_events.events
@@ -1058,6 +1063,34 @@ def analyze_shared_state(
                 supporting_facts=(
                     "all concurrent accesses in this alias class are reads",
                     "every remaining writer has a checked NoAlias address base",
+                ),
+            )
+        elif (
+            not external_wildcards
+            and all(
+                event.id not in nonconcurrent_event_ids
+                for event in concurrent_events
+            )
+            and (protected_by := lock_protection_candidates(concurrent_events, locksets))
+        ):
+            # 每个并发访存都在所有已恢复路径上持有同一把具体锁。未知
+            # helper、未知锁地址或缺失的跨函数边会让 must-lock 集合变空，
+            # 因此这里宁可留下通信，也不能把临界区范围猜大。
+            sharing = SharingClass.SHARED_KNOWN
+            escape = EscapeKind.THREAD_ESCAPE
+            proof = ProofObject(
+                id=f"proof:lock-protected:{index}",
+                reason=ProofReason.ATOMIC_COVERED,
+                event_ids=tuple(event.id for event in events),
+                supporting_facts=(
+                    "all concurrent ordinary accesses have a common definite lock",
+                    "unknown helpers and unknown lock addresses clear the must-lock set",
+                    "no recovered wildcard may alias this object outside the protected region",
+                    "locks: "
+                    + ", ".join(
+                        f"{kind}:{base}+{offset or 0}"
+                        for kind, base, offset in protected_by
+                    ),
                 ),
             )
         elif (

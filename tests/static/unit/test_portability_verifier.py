@@ -322,6 +322,60 @@ def test_opaque_event_does_not_duplicate_its_extraction_unknown() -> None:
     assert certificate.relevant_unknowns == (unknown,)
 
 
+def test_closed_effect_contract_removes_only_missing_external_cfg_fact() -> None:
+    event = _event("t0:call-load", "t0", 0x3010, EventKind.LOAD, "tls")
+    event = event.model_copy(
+        update={
+            "provenance": {
+                "target_symbol": "sinf",
+                "contracted_effect": "thread_local",
+            }
+        }
+    )
+    unknown = UnknownFact(
+        kind=UnknownKind.INCOMPLETE_INDIRECT_TARGET,
+        reason="the external function body is outside the analyzed closure",
+        impact="CFG cannot enter the contracted library function",
+        module="/bin/litmus",
+        pc=event.pc,
+        details={"target_symbol": "sinf"},
+    )
+
+    certificate = verify_portability(
+        _report((event,), (), conflicts=False, unknowns=(unknown,))
+    )
+
+    assert certificate.verdict == Verdict.SAFE
+    assert unknown not in certificate.relevant_unknowns
+
+
+def test_closed_effect_contract_does_not_hide_opaque_memory_effect() -> None:
+    event = _event("t0:opaque", "t0", 0x3020, EventKind.OPAQUE_CALL)
+    event = event.model_copy(
+        update={
+            "provenance": {
+                "target_symbol": "unknown_helper",
+                "contracted_effect": "runtime_internal",
+            }
+        }
+    )
+    unknown = UnknownFact(
+        kind=UnknownKind.INCOMPLETE_INDIRECT_TARGET,
+        reason="the external function body is outside the analyzed closure",
+        impact="the call may access shared state",
+        module="/bin/litmus",
+        pc=event.pc,
+        details={"target_symbol": "unknown_helper"},
+    )
+
+    certificate = verify_portability(
+        _report((event,), (), conflicts=False, unknowns=(unknown,))
+    )
+
+    assert certificate.verdict == Verdict.UNKNOWN
+    assert unknown in certificate.relevant_unknowns
+
+
 def test_event_bound_is_unknown_not_safe() -> None:
     events, edges = _message_passing_events()
     certificate = verify_portability(

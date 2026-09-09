@@ -301,7 +301,7 @@ def build_shared_memory_slice(
         ),
         readonly_removed=proof_counts[ProofReason.READ_ONLY_AFTER_CREATE],
         disjoint_removed=proof_counts[ProofReason.DISJOINT_AFFINE],
-        atomic_covered_removed=0,
+        atomic_covered_removed=proof_counts[ProofReason.ATOMIC_COVERED],
         remaining_shared_events=len(events),
         unknown_events=unknown_events,
     )
