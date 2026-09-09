@@ -92,6 +92,9 @@ class LifecycleHint(StrictModel):
     frame_pointer_offsets: tuple[int, ...] = ()
     # worker_argument_base 可显式绑定 allocation site；缺失时生命周期证明生成本地对象名。
     worker_argument_base: str | None = None
+    # worker_argument_alias_base 只给共享 worker 参数命名，供地址传播跨过
+    # pthread_create 入口；它不声明不同线程拿到的是不同对象，也不能触发分片剪枝。
+    worker_argument_alias_base: str | None = None
     # assume_success 明确限定只认证 pthread create/join 均成功的执行。
     assume_success: bool = False
 

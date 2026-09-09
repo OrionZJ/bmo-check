@@ -19,6 +19,7 @@ from bmo_check_static.pruning import prove_affine_partition
 from bmo_check_static.slicing import build_shared_memory_slice
 from bmo_check_static.analysis.shared_state import (
     _addresses_may_alias,
+    _fresh_worker_event,
     _readonly_after_create,
 )
 
@@ -106,6 +107,27 @@ def test_heap_union_candidates_only_alias_matching_allocation_site() -> None:
 
     assert _addresses_may_alias(heap_union, included)
     assert not _addresses_may_alias(heap_union, excluded)
+
+
+def test_fresh_worker_event_requires_non_main_role() -> None:
+    worker = MemoryEvent(
+        id="worker:fresh",
+        module="app",
+        module_sha256="a" * 64,
+        pc=0x1000,
+        kind=EventKind.STORE,
+        address=AbstractAddress(
+            kind=AddressKind.AFFINE,
+            base="heap:function@0x2000@0x3000",
+            expression="heap:function@0x2000@0x3000+i*8",
+            provenance={"base_indirect": False},
+        ),
+        thread_role="worker",
+    )
+    main = worker.model_copy(update={"id": "main:fresh", "thread_role": "main"})
+
+    assert _fresh_worker_event(worker)
+    assert not _fresh_worker_event(main)
 
 
 def test_unknown_memory_effect_remains_in_slice_and_conflicts() -> None:

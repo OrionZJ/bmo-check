@@ -281,20 +281,57 @@ def _addresses_may_alias(
     return True
 
 
+def _fresh_worker_address(address: AbstractAddress) -> bool:
+    """判断地址是否只来自 worker 内部的 fresh allocation。"""
+
+    bases = {
+        str(item)
+        for item in address.provenance.get("candidate_bases", ())
+        if isinstance(item, str) and not item.startswith("heap-union:")
+    }
+    if not bases and isinstance(address.base, str):
+        bases.add(address.base)
+    return bool(bases) and all(base.startswith("heap:function@") for base in bases)
+
+
+def _fresh_worker_event(event: MemoryEvent) -> bool:
+    """只有直接指向 fresh allocation、且不在 main 的事件才可互相排除。"""
+
+    address = event.address
+    return (
+        event.thread_role not in {None, "main"}
+        and address is not None
+        and address.provenance.get("base_indirect") is False
+        and _fresh_worker_address(address)
+    )
+
+
 def _symbolic_partition_covers_event(
     proof: SymbolicPartitionProof,
     event: MemoryEvent,
     control_flow: ControlFlowReport,
 ) -> bool:
     address = event.address
-    if (
-        not proof.proven
-        or address is None
-        or event.function_pc != proof.worker_pc
-        or address.base != proof.object_base
-        or address.index_coefficient != proof.element_size
-        or address.provenance.get("index_term") != proof.index_term
-    ):
+    if not proof.proven or address is None or event.thread_role in {None, "main"}:
+        return False
+
+    direct_match = (
+        event.function_pc == proof.worker_pc
+        and address.base == proof.object_base
+        and address.index_coefficient == proof.element_size
+        and address.provenance.get("index_term") == proof.index_term
+    )
+    # 一个 worker 先按 i 取得结构体字段，再把字段中的 fresh allocation
+    # 交给 helper。helper 的地址基址已经换成子对象，但 owner 仍保留
+    # 外层数组的 i；只在 owner 三元组完全匹配时复用同一条 Z3 分片证明。
+    owner_match = (
+        address.provenance.get("owner_base") == proof.object_base
+        and address.provenance.get("owner_index_coefficient")
+        == proof.element_size
+        and address.provenance.get("owner_index_term") == proof.index_term
+        and address.provenance.get("owner_scope") == "fresh-indexed-field"
+    )
+    if not (direct_match or owner_match):
         return False
 
     function = next(
@@ -896,6 +933,11 @@ def analyze_shared_state(
             if event_id not in {event.id for event in events}
             and wildcard.address is not None
             and _addresses_may_alias(address, wildcard.address)
+            # 两边都明确来自 worker 内部 fresh allocation 时，
+            # 不同动态线程拿到的是不同活跃对象；未知指针不能走这条捷径。
+            and not (_fresh_worker_event(wildcard) and all(
+                _fresh_worker_event(item) for item in events
+            ))
         }
         if (
             roles == ("main",)

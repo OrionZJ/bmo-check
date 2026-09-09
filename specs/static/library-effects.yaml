@@ -172,6 +172,89 @@ functions:
     memory_arguments:
       - index: 0
         mode: read
+  strdup:
+    # 结果是新的字符串对象；源字符串只读，不能和调用者的堆对象合并。
+    effect: fresh_allocation
+    integer_arguments: [0]
+  rand:
+    effect: runtime_internal
+    integer_arguments: []
+    internal_object: "runtime:libc-random"
+  rand_r:
+    effect: argument_access
+    integer_arguments: [0]
+    memory_arguments:
+      - index: 0
+        mode: read
+    internal_object: "runtime:libc-random"
+  lrand48:
+    effect: runtime_internal
+    integer_arguments: []
+    internal_object: "runtime:libc-random"
+  srand48:
+    effect: runtime_internal
+    integer_arguments: []
+    internal_object: "runtime:libc-random"
+  drand48:
+    effect: runtime_internal
+    integer_arguments: []
+    internal_object: "runtime:libc-random"
+  gettimeofday:
+    effect: runtime_internal
+    integer_arguments: []
+    internal_object: "runtime:time"
+  omp_get_max_threads:
+    effect: runtime_internal
+    integer_arguments: []
+    internal_object: "runtime:openmp"
+  omp_get_thread_num:
+    effect: runtime_internal
+    integer_arguments: []
+    internal_object: "runtime:openmp"
+  omp_get_num_threads:
+    effect: runtime_internal
+    integer_arguments: []
+    internal_object: "runtime:openmp"
+  omp_get_num_procs:
+    effect: runtime_internal
+    integer_arguments: []
+    internal_object: "runtime:openmp"
+  omp_in_parallel:
+    effect: runtime_internal
+    integer_arguments: []
+    internal_object: "runtime:openmp"
+  omp_get_wtime:
+    effect: runtime_internal
+    integer_arguments: []
+    internal_object: "runtime:openmp"
+  omp_set_num_threads:
+    effect: runtime_internal
+    integer_arguments: []
+    internal_object: "runtime:openmp"
+  printf:
+    effect: runtime_internal
+    integer_arguments: []
+    internal_object: "runtime:stdio"
+  fprintf:
+    effect: runtime_internal
+    integer_arguments: []
+    internal_object: "runtime:stdio"
+  sprintf:
+    effect: runtime_internal
+    integer_arguments: []
+    internal_object: "runtime:stdio"
+  snprintf:
+    effect: runtime_internal
+    integer_arguments: []
+    internal_object: "runtime:stdio"
+  __printf_chk:
+    effect: runtime_internal
+    integer_arguments: []
+    internal_object: "runtime:stdio"
+  __fprintf_chk:
+    effect: runtime_internal
+    integer_arguments: []
+    internal_object: "runtime:stdio"
   exp:
     effect: thread_local
     integer_arguments: []

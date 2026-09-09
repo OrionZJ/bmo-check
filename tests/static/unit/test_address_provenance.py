@@ -214,6 +214,68 @@ def test_fresh_allocation_return_flows_across_cfg_edge() -> None:
     assert address.provenance["scope"] == "function-cfg"
 
 
+def test_constant_add_keeps_heap_pointer_in_frame_slot() -> None:
+    facts = disassemble_bytes(
+        bytes.fromhex(
+            "e800000000"  # call malloc
+            "488945f8"  # mov [rbp - 8], rax
+            "488345f808"  # add qword ptr [rbp - 8], 8
+            "488b45f8"  # mov rax, [rbp - 8]
+            "488918"  # mov [rax], rbx
+        ),
+        address=0x1000,
+    )
+    module = ModuleFingerprint(
+        path="/bin/app",
+        role=ModuleRole.EXECUTABLE,
+        size=4096,
+        sha256=HASH,
+        elf=ElfMetadata(
+            elf_class=64,
+            little_endian=True,
+            machine="EM_X86_64",
+            elf_type="ET_EXEC",
+        ),
+    )
+    control_flow = ControlFlowReport(
+        module_path=module.path,
+        module_sha256=module.sha256,
+        entry_pc=0x1000,
+        functions=(
+            FunctionFact(
+                location=_location(0x1000),
+                size=sum(len(item.raw_bytes) for item in facts),
+                block_pcs=(0x1000,),
+            ),
+        ),
+        basic_blocks=(
+            BasicBlockFact(
+                location=_location(0x1000),
+                size=sum(len(item.raw_bytes) for item in facts),
+                instruction_pcs=tuple(item.pc for item in facts),
+            ),
+        ),
+        coverage=CFGCoverage(
+            angr_version="test",
+            functions=1,
+            basic_blocks=1,
+            call_sites=1,
+            indirect_sites=0,
+            complete_indirect_sites=0,
+            incomplete_indirect_sites=0,
+        ),
+    )
+
+    report = recover_address_provenance(
+        module, control_flow, facts, {0x1000: "malloc"}
+    )
+
+    address = report.addresses[(facts[-1].pc, facts[-1].memory_operands[0].operand_index)]
+    assert address.kind == AddressKind.HEAP
+    assert address.base == "heap:malloc@0x1000"
+    assert address.offset == 8
+
+
 def test_pointer_written_to_fresh_heap_slot_is_recovered_on_load() -> None:
     facts = disassemble_bytes(
         bytes.fromhex(

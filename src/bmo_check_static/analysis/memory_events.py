@@ -41,6 +41,89 @@ _BARRIER_APIS = {"pthread_barrier_wait", "pthread_cond_wait"}
 _INTEGER_ARGUMENTS = ("rdi", "rsi", "rdx", "rcx", "r8", "r9")
 
 
+def _merge_heap_argument_values(
+    values: list[AbstractAddress | None], target_pc: int, register: str
+) -> AbstractAddress | None:
+    """保留多处调用传入的已知对象，不把分歧直接抹成 Unknown。"""
+
+    if not values or any(value is None for value in values):
+        return None
+    concrete = [value for value in values if value is not None]
+    # worker 把自己的栈上的随机种子交给多层 helper 时，各 call site
+    # 仍应指向同一个 frame。先保留这个精确 stack 身份；若把它强行
+    # 改成 heap-union，后续栈逃逸分析会失去“同一 worker 栈槽”的证据。
+    if all(
+        value.kind == AddressKind.STACK
+        and value.base is not None
+        and value.provenance.get("base_indirect") is False
+        for value in concrete
+    ) and len({value.base for value in concrete}) == 1:
+        return concrete[0]
+    if any(
+        value.kind not in {AddressKind.HEAP, AddressKind.AFFINE}
+        or value.base is None
+        or value.provenance.get("base_indirect") is True
+        for value in concrete
+    ):
+        return None
+    candidate_bases: set[str] = set()
+    for value in concrete:
+        candidates = value.provenance.get("candidate_bases", ())
+        if isinstance(candidates, (list, tuple, set)) and candidates:
+            candidate_bases.update(
+                item for item in candidates if isinstance(item, str)
+            )
+        elif value.base.startswith("heap:"):
+            candidate_bases.add(value.base)
+        else:
+            return None
+    if not candidate_bases:
+        return None
+    common_shape = (
+        len(
+            {
+                (
+                    value.offset,
+                    value.provenance.get("index_term"),
+                    value.index_coefficient,
+                    value.index_lower,
+                    value.index_upper,
+                )
+                for value in concrete
+            }
+        )
+        == 1
+    )
+    offset = concrete[0].offset if common_shape else 0
+    index_term = concrete[0].provenance.get("index_term") if common_shape else None
+    index_coefficient = concrete[0].index_coefficient if common_shape else None
+    index_lower = concrete[0].index_lower if common_shape else None
+    index_upper = concrete[0].index_upper if common_shape else None
+    base = f"heap-union:argument@0x{target_pc:x}:{register}"
+    expression = base
+    if index_term is not None and index_coefficient is not None:
+        expression += f"+({index_term})*{index_coefficient}"
+    if offset:
+        expression += f"{offset:+d}"
+    # 不同调用点传入不同对象时，union 只列出真实 allocation site。
+    # 后续别名层可以排除其它 allocation，但不会把 union 当成一个确定对象。
+    return AbstractAddress(
+        kind=AddressKind.AFFINE if index_term is not None else AddressKind.HEAP,
+        base=base,
+        offset=offset,
+        expression=expression,
+        index_coefficient=index_coefficient,
+        index_lower=index_lower,
+        index_upper=index_upper,
+        provenance={
+            "base_indirect": False,
+            "index_term": index_term,
+            "candidate_bases": sorted(candidate_bases),
+            "scope": "role-call-union",
+        },
+    )
+
+
 def _ordering_covers(actual: Ordering, required: Ordering) -> bool:
     directions = {
         Ordering.RELAXED: frozenset(),
@@ -85,6 +168,39 @@ def _role_functions(
             pending.extend(graph.get(function_pc, ()))
         result[role.id] = seen
     return result
+
+
+def _stable_published_heap_fields(
+    published_fields: dict[str, AbstractAddress],
+    report,
+    facts: tuple[InstructionFact, ...],
+    worker_pc: int,
+) -> frozenset[str]:
+    """找出 worker 不会直接写回的已发布结构体字段摘要。"""
+
+    summary_keys = {
+        key for key in published_fields if key.startswith("heap-field-summary@")
+    }
+    if not summary_keys:
+        return frozenset()
+    written: set[str] = set()
+    for fact in facts:
+        for operand in fact.memory_operands:
+            if operand.access not in {
+                MemoryAccessKind.WRITE,
+                MemoryAccessKind.READ_WRITE,
+            }:
+                continue
+            address = report.addresses.get((fact.pc, operand.operand_index))
+            if address is None:
+                continue
+            key = f"heap-field-summary@{address.base}{address.offset:+d}"
+            if key in summary_keys:
+                written.add(key)
+    # 只把 worker 入口直接读到、且没有在该入口写回的字段标成 stable。
+    # helper 的未知写入不会被这条规则忽略；它们没有同一 outer-object
+    # provenance 时，摘要仍会在调用边界被清掉。
+    return frozenset(summary_keys - written)
 
 
 def _block_maps(
@@ -386,6 +502,7 @@ def extract_memory_events(
     function_memory_arguments: dict[str, tuple[tuple[int, str], ...]] | None = None,
     function_internal_objects: dict[str, str] | None = None,
     worker_argument_base: str | None = None,
+    worker_argument_alias_base: str | None = None,
 ) -> MemoryEventReport:
     try:
         if not control_flow.functions or not control_flow.basic_blocks:
@@ -414,8 +531,22 @@ def extract_memory_events(
             if call.target_symbol is not None
             and effect_contract.get(call.target_symbol) == "fresh_allocation"
         }
+        # allocator、线程局部 helper 和只改运行库私有状态的调用不会替换
+        # 应用对象的字段。只有契约明确给出这条边界时才能保留字段事实；
+        # 未知 helper、argument_access、memcpy/memset 和 free 仍会清掉字段。
+        preserve_heap_field_call_pcs = {
+            call.location.pc
+            for call in control_flow.call_sites
+            if call.target_symbol is not None
+            and effect_contract.get(call.target_symbol)
+            in {"fresh_allocation", "thread_local", "runtime_internal"}
+        }
         base_address_provenance = recover_address_provenance(
-            module, control_flow, instruction_report.facts, allocation_calls
+            module,
+            control_flow,
+            instruction_report.facts,
+            allocation_calls,
+            preserve_heap_field_call_pcs=preserve_heap_field_call_pcs,
         )
         role_functions = _role_functions(control_flow, threads)
         role_address_provenance = {}
@@ -448,6 +579,24 @@ def extract_memory_events(
                             },
                         )
                     }
+                elif worker_argument_alias_base is not None:
+                    # 共享参数只用于恢复 worker 的 this/字段来源。
+                    # 这里不能复用 worker_argument_base，否则 shared_state
+                    # 会把同一个对象误当成每个线程独有的分片。
+                    function_entry_arguments[worker_pc] = {
+                        "rdi": AbstractAddress(
+                            kind=(
+                                AddressKind.STACK
+                                if worker_argument_alias_base.startswith("stack:")
+                                else AddressKind.HEAP
+                            ),
+                            base=worker_argument_alias_base,
+                            provenance={
+                                "base_indirect": False,
+                                "scope": "symbolic-lifecycle-shared",
+                            },
+                        )
+                    }
                 elif len(call_arguments) > 3 and call_arguments[3] is not None:
                     function_entry_arguments[worker_pc] = {
                         "rdi": call_arguments[3]
@@ -457,6 +606,7 @@ def extract_memory_events(
             # 再把“所有同目标 call site 都传入同一对象”的事实带入下一轮。
             # 只有全体调用点的值相同才扩展入口，分歧或缺失仍保持 Unknown。
             reachable = role_reachable_functions
+            immutable_heap_field_keys: frozenset[str] = frozenset()
             for _ in range(max(1, len(reachable) + 1)):
                 report = recover_address_provenance(
                     module,
@@ -466,7 +616,18 @@ def extract_memory_events(
                     function_entry_arguments,
                     seeded_function_pcs,
                     reachable,
+                    seeded_heap_fields=base_address_provenance.published_heap_fields,
+                    seeded_globals=base_address_provenance.published_globals,
+                    preserve_heap_field_call_pcs=preserve_heap_field_call_pcs,
+                    immutable_heap_field_keys=immutable_heap_field_keys,
                 )
+                if role.create_site is not None and len(role.start_targets.known_targets) == 1:
+                    immutable_heap_field_keys = _stable_published_heap_fields(
+                        base_address_provenance.published_heap_fields,
+                        report,
+                        instruction_report.facts,
+                        role.start_targets.known_targets[0].pc,
+                    )
                 candidate_calls: dict[int, list[tuple[str, AbstractAddress | None]]] = defaultdict(list)
                 for call in control_flow.call_sites:
                     if (
@@ -500,6 +661,14 @@ def extract_memory_events(
                             and all(value == values[0] for value in values[1:])
                         ):
                             expanded.setdefault(target_pc, {})[register] = values[0]
+                        elif (merged := _merge_heap_argument_values(
+                            values, target_pc, register
+                        )) is not None:
+                            # helper 可能被同一个 worker 以不同的临时矩阵
+                            # 多次调用。保留这些 allocation site，才能在
+                            # callee 内排除与应用共享对象的错误别名；不相同
+                            # 的标量、global 或未知指针仍不进入入口摘要。
+                            expanded.setdefault(target_pc, {})[register] = merged
                 if expanded == function_entry_arguments:
                     role_address_provenance[role.id] = report
                     break

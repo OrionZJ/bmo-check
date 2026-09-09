@@ -439,6 +439,13 @@ def _evaluate(args: argparse.Namespace) -> int:
                     if lifecycle_proof is not None and lifecycle_proof.proven
                     else None
                 ),
+                worker_argument_alias_base=(
+                    definition.lifecycle_hint.worker_argument_alias_base
+                    if lifecycle_proof is not None
+                    and lifecycle_proof.proven
+                    and definition.lifecycle_hint is not None
+                    else None
+                ),
             )
             event_seconds = monotonic() - event_started
             shared_started = monotonic()

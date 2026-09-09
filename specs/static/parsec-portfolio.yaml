@@ -10,6 +10,32 @@ benchmarks:
     argv: ["{threads}", "in_64K.txt", "prices.txt"]
     threads: 4
     normal_completion_only: true
+    input_files: ["in_64K.txt"]
+    output_files: ["prices.txt"]
+    # worker_pc/loop_pc 和这些偏移来自当前 ELF 的反汇编与数据流复核。
+    # 没有这组事实时不能把不同 worker 的数组片段当成互不重叠。
+    partition_hints:
+      - worker_pc: 0x0fbb
+        loop_pc: 0x101a
+        item_count_pc: 0x203658
+        thread_count_pc: 0x203694
+        start_offset: -12
+        end_offset: -8
+        induction_offset: -24
+        item_count: 65536
+        object_base: "heap:malloc@0x1294"
+        element_size: 4
+    # 主线程在 join 返回后才使用结果；worker 参数来自同一 malloc 对象。
+    # 生命周期事实缺失时，静态分析仍须保留 UNKNOWN。
+    lifecycle_hint:
+      start_pc: 0x17bd
+      post_join_pc: 0x18d7
+      create_pc: 0x0990
+      join_pc: 0x0a70
+      thread_count_pc: 0x203694
+      frame_pointer_offsets: [-32]
+      worker_argument_base: "heap:malloc@0x17b4"
+      assume_success: true
 
   - id: swaptions
     executable: pkgs/apps/swaptions/inst/amd64-linux.gcc/bin/swaptions
@@ -100,6 +126,9 @@ benchmarks:
       create_pc: 0x2730
       join_pc: 0x2700
       thread_count_stack_offset: -0x114
+      # 所有 worker 接收 main 栈上的同一个 annealer_thread；这里只命名
+      # 共享对象，帮助跨 entry_pt/Run 恢复 this 指针，不把它当成私有分片。
+      worker_argument_alias_base: "stack:frame-value@0x3201-80"
       assume_success: true
 
   - id: dedup

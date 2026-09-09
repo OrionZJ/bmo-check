@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from bmo_check_static.model import (
@@ -50,6 +50,10 @@ class AddressProvenanceReport:
     # published_globals 记录 pthread_create 前已稳定写入全局槽的指针。
     # worker 只能使用这些在所有 create 状态中都相同的值。
     published_globals: dict[str, AbstractAddress]
+    # published_heap_fields 记录 create 前已经收敛的指针字段和带索引字段摘要。
+    # 参数对象可能在 heap，也可能是 main 的栈对象；worker 入口必须拿到同一对象名，
+    # 才能继续追踪字段里的真实对象。摘要只保留“所有写入值相同”的字段。
+    published_heap_fields: dict[str, AbstractAddress]
 
 
 def _frame_key(function_pc: int, displacement: int) -> str:
@@ -79,10 +83,19 @@ class _SymbolicValue:
     # candidate_bases 保存 heap-union 合流前仍能追溯的 allocation site。
     # 空集合表示没有这类精确候选，不能据此排除别名。
     candidate_bases: tuple[str, ...] = ()
+    # owner_* 记录“这个 fresh 指针来自哪个带索引的外层对象字段”。
+    # 只有外层字段地址和 fresh allocation 同时闭合时，后续线程分片证明
+    # 才能把同一字段的不同元素视为不同对象；它不改变对象本身的基址。
+    owner_base: str | None = None
+    owner_term: str | None = None
+    owner_coefficient: int | None = None
+    # fresh_call_pc 只保留 allocation contract 给出的调用点，便于审计
+    # owner 事实来自新分配，而不是从未知 heap load 猜出来的指针。
+    fresh_call_pc: int | None = None
 
 
 def _heap_slot_key(value: _SymbolicValue | None) -> str | None:
-    """Return a key only for a concrete field in a known heap object."""
+    """只为已知对象的固定指针字段生成键。"""
 
     if (
         value is None
@@ -90,10 +103,30 @@ def _heap_slot_key(value: _SymbolicValue | None) -> str | None:
         or value.term is not None
         or value.coefficient
         or value.indirect
-        or value.object_kind != AddressKind.HEAP
+        or value.object_kind not in {AddressKind.HEAP, AddressKind.STACK}
     ):
         return None
     return f"heap-field@{value.base}{value.offset:+d}"
+
+
+def _heap_field_summary_key(value: _SymbolicValue | None) -> str | None:
+    """按对象基址和字段偏移汇总带索引结构体中的指针字段。"""
+
+    if (
+        value is None
+        or value.base is None
+        or value.indirect
+        or value.object_kind not in {AddressKind.HEAP, AddressKind.STACK}
+        or not (
+            value.base.startswith("heap:")
+            or value.base.startswith("stack:")
+        )
+    ):
+        return None
+    # 忽略数组元素的索引，只保留字段偏移。只有所有可达写入都
+    # 汇成同一个值时，后续 load 才能复用这个摘要；分歧会在 CFG meet
+    # 时消失，未知 helper 也会主动清掉它。
+    return f"heap-field-summary@{value.base}{value.offset:+d}"
 
 
 def _root(register: str | None) -> str | None:
@@ -107,15 +140,58 @@ def _global_name(module: ModuleFingerprint, pc: int) -> str:
 
 
 def _with_evidence(value: _SymbolicValue, pc: int) -> _SymbolicValue:
-    return _SymbolicValue(
-        base=value.base,
-        indirect=value.indirect,
-        term=value.term,
-        coefficient=value.coefficient,
-        offset=value.offset,
+    return replace(
+        value,
         evidence_pcs=tuple(dict.fromkeys((*value.evidence_pcs, pc))),
-        object_kind=value.object_kind,
-        candidate_bases=value.candidate_bases,
+    )
+
+
+def _with_owner(
+    value: _SymbolicValue | None,
+    location: _SymbolicValue | None,
+    pc: int,
+) -> _SymbolicValue | None:
+    """把 fresh 指针绑定到它写入的外层数组元素。"""
+
+    if (
+        value is None
+        or value.object_kind != AddressKind.HEAP
+        or value.fresh_call_pc is None
+        or location is None
+        or location.base is None
+        or location.term is None
+        or location.coefficient == 0
+    ):
+        return value
+    return replace(
+        value,
+        owner_base=location.base,
+        owner_term=location.term,
+        owner_coefficient=location.coefficient,
+        evidence_pcs=tuple(dict.fromkeys((*value.evidence_pcs, pc))),
+    )
+
+
+def _summary_values_compatible(
+    first: _SymbolicValue, second: _SymbolicValue
+) -> bool:
+    """允许同一 indexed field 的不同元素共享一个值摘要。"""
+
+    if first == second:
+        return True
+    # owner 是“当前数组元素”的附加证据，不属于字段摘要本身。
+    # 初始化循环经过不同 CFG 路径时可能暂时缺少 owner；只要所有元素
+    # 仍指向同一个 allocation site，就可以保留摘要，worker load 会用
+    # 当前索引重新绑定 owner。把 owner 缺失当成冲突会错误丢掉整个字段。
+    return (
+        first.base == second.base
+        and first.indirect == second.indirect
+        and first.object_kind == second.object_kind
+        and first.term == second.term
+        and first.coefficient == second.coefficient
+        and first.offset == second.offset
+        and first.candidate_bases == second.candidate_bases
+        and first.fresh_call_pc == second.fresh_call_pc
     )
 
 
@@ -140,17 +216,34 @@ def _added(
         return None
     if left.term is not None and right.term is not None and left.term != right.term:
         return None
+    coefficient = left.coefficient + right.coefficient
+    term = left.term or right.term
+    if coefficient == 0:
+        # 两个相反的归纳量抵消后，结果已经是固定对象地址。
+        # 保留 term=...、coefficient=0 会把它误分类为 affine，随后
+        # 共享状态分析会无谓地要求线程边界证明。
+        term = None
     return _SymbolicValue(
         base=left.base or right.base,
         indirect=left.indirect if left.base is not None else right.indirect,
-        term=left.term or right.term,
-        coefficient=left.coefficient + right.coefficient,
+        term=term,
+        coefficient=coefficient,
         offset=left.offset + right.offset,
         evidence_pcs=tuple(
             dict.fromkeys((*left.evidence_pcs, *right.evidence_pcs, pc))
         ),
         object_kind=left.object_kind or right.object_kind,
         candidate_bases=left.candidate_bases or right.candidate_bases,
+        owner_base=left.owner_base if left.base is not None else right.owner_base,
+        owner_term=left.owner_term if left.base is not None else right.owner_term,
+        owner_coefficient=(
+            left.owner_coefficient
+            if left.base is not None
+            else right.owner_coefficient
+        ),
+        fresh_call_pc=(
+            left.fresh_call_pc if left.base is not None else right.fresh_call_pc
+        ),
     )
 
 
@@ -257,11 +350,25 @@ def _source_value(
         if value is not None and memory.size == 8 and value.base is not None:
             base = _root(memory.base)
             heap_slot = _heap_slot_key(value)
-            saved_heap_pointer = state.get(heap_slot) if heap_slot is not None else None
+            summary_slot = _heap_field_summary_key(value)
+            saved_heap_pointer = (
+                state.get(heap_slot)
+                if heap_slot is not None
+                else state.get(summary_slot)
+                if summary_slot is not None
+                else None
+            )
             if saved_heap_pointer is not None:
                 # 这个字段在当前 CFG 路径上刚被明确写入指针；只复用
                 # 这条写入事实，不把任意 heap load 当成可追踪指针。
-                return _with_evidence(saved_heap_pointer, fact.pc)
+                # 当前 load 的索引才是 worker 正在处理的外层元素；用它
+                # 覆盖初始化线程留下的 owner term，避免把主线程 frame
+                # 当成 worker 的分片变量。
+                return _with_evidence(
+                    _with_owner(saved_heap_pointer, value, fact.pc)
+                    or saved_heap_pointer,
+                    fact.pc,
+                )
             saved_pointer = (
                 base == "rip"
                 and state.get(
@@ -331,6 +438,17 @@ def _abstract_value(value: _SymbolicValue | None) -> AbstractAddress | None:
             "evidence_pcs": list(value.evidence_pcs),
             "scope": "function-cfg",
             "candidate_bases": list(value.candidate_bases),
+            "owner_base": value.owner_base,
+            "owner_index_term": value.owner_term,
+            "owner_index_coefficient": value.owner_coefficient,
+            "owner_scope": (
+                "fresh-indexed-field"
+                if value.owner_base is not None
+                and value.owner_term is not None
+                and value.fresh_call_pc is not None
+                else None
+            ),
+            "fresh_call_pc": value.fresh_call_pc,
         },
     )
 
@@ -363,6 +481,26 @@ def _symbolic_value(address: AbstractAddress) -> _SymbolicValue | None:
             for item in address.provenance.get("candidate_bases", ())
             if isinstance(item, str)
         ),
+        owner_base=(
+            str(address.provenance["owner_base"])
+            if address.provenance.get("owner_base") is not None
+            else None
+        ),
+        owner_term=(
+            str(address.provenance["owner_index_term"])
+            if address.provenance.get("owner_index_term") is not None
+            else None
+        ),
+        owner_coefficient=(
+            int(address.provenance["owner_index_coefficient"])
+            if address.provenance.get("owner_index_coefficient") is not None
+            else None
+        ),
+        fresh_call_pc=(
+            int(address.provenance["fresh_call_pc"])
+            if address.provenance.get("fresh_call_pc") is not None
+            else None
+        ),
     )
 
 
@@ -372,21 +510,28 @@ def _transfer(
     function_pc: int,
     state: dict[str, _SymbolicValue],
     allocation_symbol: str | None = None,
+    preserve_heap_fields: bool = False,
+    immutable_heap_field_keys: set[str] | frozenset[str] = frozenset(),
 ) -> None:
     if fact.control_flow is not None and fact.control_flow.value.endswith("call"):
         for register in _CALLER_SAVED:
             state.pop(register, None)
         # 任意调用都可能改写 heap；不把调用前的字段内容带过边界，
         # 否则未知 helper 可能悄悄替换指针而仍被当成 fresh 对象。
-        for key in tuple(state):
-            if key.startswith("heap-field@"):
-                state.pop(key, None)
+        if not (preserve_heap_fields or allocation_symbol is not None):
+            for key in tuple(state):
+                if (
+                    key.startswith(("heap-field@", "heap-field-summary@"))
+                    and key not in immutable_heap_field_keys
+                ):
+                    state.pop(key, None)
         if allocation_symbol is not None:
             state["rax"] = _SymbolicValue(
                 base=f"heap:{allocation_symbol}@0x{fact.pc:x}",
                 indirect=False,
                 evidence_pcs=(fact.pc,),
                 object_kind=AddressKind.HEAP,
+                fresh_call_pc=fact.pc,
             )
         return
     writes = {
@@ -405,6 +550,25 @@ def _transfer(
     for item in frame_writes:
         # 未建模的算术写会改变 spill/归纳变量。继续沿用旧值会把循环中的
         # 当前 i 误认成初始化 start，因此任何非简单 mov 都先杀死该槽。
+        if fact.mnemonic in {"add", "sub"} and item.operand_index == 0:
+            current = state.get(_frame_key(function_pc, item.displacement))
+            right = _source_value(module, fact, function_pc, state, 1)
+            if (
+                current is not None
+                and current.base is not None
+                and current.object_kind in {AddressKind.HEAP, AddressKind.STACK}
+                and right is not None
+            ):
+                # dmatrix 一类 helper 会先保存 malloc 返回值，再用 add
+                # 把它移到第一行。只把标量偏移加到已知对象；若右值
+                # 也是另一个指针，仍回退 Unknown，避免错误合成对象。
+                if fact.mnemonic == "sub":
+                    right = _scaled(right, -1, fact.pc)
+                if right is not None and right.base is None:
+                    updated = _added(current, right, fact.pc)
+                    if updated is not None:
+                        state[_frame_key(function_pc, item.displacement)] = updated
+                        continue
         if fact.mnemonic not in {"mov", "movabs"} or item.operand_index != 0:
             state.pop(_frame_key(function_pc, item.displacement), None)
     destination = next(
@@ -435,6 +599,10 @@ def _transfer(
                 indirect=False,
                 offset=value.offset,
                 evidence_pcs=value.evidence_pcs,
+                owner_base=value.owner_base,
+                owner_term=value.owner_term,
+                owner_coefficient=value.owner_coefficient,
+                fresh_call_pc=value.fresh_call_pc,
                 candidate_bases=value.candidate_bases,
             )
     elif destination is not None and fact.mnemonic in {"add", "sub"}:
@@ -449,6 +617,12 @@ def _transfer(
         immediate = next(iter(fact.immediate_operands), None)
         if left is not None and immediate is not None:
             value = _scaled(left, 1 << immediate.value, fact.pc)
+    elif destination is not None and fact.mnemonic == "neg":
+        # 编译器常用 neg 把数组下界变成指针回退量。只对没有对象基址
+        # 的标量传播负号；对象指针不会被错误地反向解释。
+        left = state.get(destination)
+        if left is not None:
+            value = _scaled(left, -1, fact.pc)
     elif destination is not None and fact.mnemonic == "and":
         left = state.get(destination)
         immediate = next(iter(fact.immediate_operands), None)
@@ -470,6 +644,10 @@ def _transfer(
                 ),
                 object_kind=left.object_kind,
                 candidate_bases=left.candidate_bases,
+                owner_base=left.owner_base,
+                owner_term=left.owner_term,
+                owner_coefficient=left.owner_coefficient,
+                fresh_call_pc=left.fresh_call_pc,
             )
     elif destination is not None and fact.mnemonic == "imul":
         source = _source_value(module, fact, function_pc, state, 1)
@@ -500,12 +678,21 @@ def _transfer(
                 module, fact, heap_destination, function_pc, state
             )
             key = _heap_slot_key(location)
+            summary_key = _heap_field_summary_key(location)
             if key is not None:
                 stored = _source_value(module, fact, function_pc, state, 1)
+                stored = _with_owner(stored, location, fact.pc)
                 if stored is None:
                     state.pop(key, None)
                 else:
                     state[key] = stored
+            if summary_key is not None:
+                stored = _source_value(module, fact, function_pc, state, 1)
+                stored = _with_owner(stored, location, fact.pc)
+                if stored is None:
+                    state.pop(summary_key, None)
+                else:
+                    state[summary_key] = stored
         memory_destination = next(
             (
                 item
@@ -548,6 +735,10 @@ def _transfer(
                         evidence_pcs=stored.evidence_pcs,
                         object_kind=stored.object_kind,
                         candidate_bases=stored.candidate_bases,
+                        owner_base=stored.owner_base,
+                        owner_term=stored.owner_term,
+                        owner_coefficient=stored.owner_coefficient,
+                        fresh_call_pc=stored.fresh_call_pc,
                     )
                 state[key] = stored
 
@@ -560,12 +751,19 @@ def recover_address_provenance(
     function_entry_arguments: dict[int, dict[str, AbstractAddress]] | None = None,
     seeded_function_pcs: set[int] | None = None,
     reachable_function_pcs: set[int] | None = None,
+    seeded_globals: dict[str, AbstractAddress] | None = None,
+    seeded_heap_fields: dict[str, AbstractAddress] | None = None,
+    preserve_heap_field_call_pcs: set[int] | None = None,
+    immutable_heap_field_keys: set[str] | frozenset[str] = frozenset(),
 ) -> AddressProvenanceReport:
     """在函数 CFG 上传播唯一地址值；路径合流不一致时退回 Unknown。"""
 
     allocation_calls = allocation_calls or {}
     function_entry_arguments = function_entry_arguments or {}
     seeded_function_pcs = seeded_function_pcs or set()
+    seeded_globals = seeded_globals or {}
+    seeded_heap_fields = seeded_heap_fields or {}
+    preserve_heap_field_call_pcs = preserve_heap_field_call_pcs or set()
     facts_by_pc = {fact.pc: fact for fact in facts}
     blocks = {block.location.pc: block for block in control_flow.basic_blocks}
     functions = {function.location.pc: function for function in control_flow.functions}
@@ -598,6 +796,16 @@ def recover_address_provenance(
         }
         for function_pc, registers in function_entry_arguments.items()
     }
+    seeded_heap_field_values = {
+        key: value
+        for key, address in seeded_heap_fields.items()
+        if (value := _symbolic_value(address)) is not None
+    }
+    seeded_global_values = {
+        key: value
+        for key, address in seeded_globals.items()
+        if (value := _symbolic_value(address)) is not None
+    }
     function_instruction_pcs = {
         function_pc: {
             pc
@@ -617,9 +825,11 @@ def recover_address_provenance(
     def flow(
         function_pc: int,
         seeded_globals: dict[str, _SymbolicValue] | None = None,
+        seeded_heap_fields: dict[str, _SymbolicValue] | None = None,
     ) -> tuple[
         dict[int, dict[str, _SymbolicValue]],
         bool,
+        dict[str, _SymbolicValue],
         dict[str, _SymbolicValue],
     ]:
         function = functions[function_pc]
@@ -631,10 +841,13 @@ def recover_address_provenance(
         incoming: dict[int, dict[str, _SymbolicValue]] = {
             function_pc: {
                 **(seeded_globals or {}),
+                **(seeded_heap_fields or {}),
                 **entry_values.get(function_pc, {}),
             }
         }
         edge_states: dict[tuple[int, int], dict[str, _SymbolicValue]] = {}
+        observed_heap_field_summaries: dict[str, _SymbolicValue] = {}
+        conflicting_heap_field_summaries: set[str] = set()
         pending = [function_pc]
         while pending:
             block_pc = pending.pop()
@@ -647,7 +860,35 @@ def recover_address_provenance(
                 if fact is None:
                     state.clear()
                     continue
-                _transfer(module, fact, function_pc, state, allocation_calls.get(pc))
+                # 记录每个可达 store 产生的摘要。不同路径写入不同对象时，
+                # 该键会被标成冲突，不能再拿去解释 worker 的间接 load。
+                for key, value in state.items():
+                    if key.startswith("heap-field-summary@"):
+                        previous = observed_heap_field_summaries.get(key)
+                        if previous is not None and not _summary_values_compatible(
+                            previous, value
+                        ):
+                            conflicting_heap_field_summaries.add(key)
+                        elif key not in conflicting_heap_field_summaries:
+                            observed_heap_field_summaries[key] = value
+                _transfer(
+                    module,
+                    fact,
+                    function_pc,
+                    state,
+                    allocation_calls.get(pc),
+                    pc in preserve_heap_field_call_pcs,
+                    immutable_heap_field_keys,
+                )
+                for key, value in state.items():
+                    if key.startswith("heap-field-summary@"):
+                        previous = observed_heap_field_summaries.get(key)
+                        if previous is not None and not _summary_values_compatible(
+                            previous, value
+                        ):
+                            conflicting_heap_field_summaries.add(key)
+                        elif key not in conflicting_heap_field_summaries:
+                            observed_heap_field_summaries[key] = value
             # 已由 CFG 标成不返回的 call 没有成功路径；继续把它的
             # 后继状态带入 join 会让 error 分支覆盖正常返回分支，
             # 误杀刚建立的 heap-slot 指针事实。
@@ -677,6 +918,7 @@ def recover_address_provenance(
         returns: list[_SymbolicValue | None] = []
         published = False
         create_globals: list[dict[str, _SymbolicValue]] = []
+        create_heap_fields: list[dict[str, _SymbolicValue]] = []
         for block_pc, entry_state in incoming.items():
             state = dict(entry_state)
             for pc in blocks[block_pc].instruction_pcs:
@@ -693,7 +935,16 @@ def recover_address_provenance(
                                 if key.startswith("global-pointer@")
                             }
                         )
-                    if any(
+                        create_heap_fields.append(
+                            {
+                                key: value
+                                for key, value in state.items()
+                                if key.startswith(
+                                    ("heap-field@", "heap-field-summary@")
+                                )
+                            }
+                        )
+                    if allocation_calls.get(fact.pc) is None and any(
                         state.get(register) is not None
                         and state[register].object_kind == AddressKind.HEAP
                         for register in ("rdi", "rsi", "rdx", "rcx", "r8", "r9")
@@ -728,7 +979,15 @@ def recover_address_provenance(
                             published = True
                 if fact.mnemonic == "ret":
                     returns.append(state.get("rax"))
-                _transfer(module, fact, function_pc, state, allocation_calls.get(pc))
+                _transfer(
+                    module,
+                    fact,
+                    function_pc,
+                    state,
+                    allocation_calls.get(pc),
+                    pc in preserve_heap_field_call_pcs,
+                    immutable_heap_field_keys,
+                )
         fresh_return = bool(returns) and not published and all(
             value is not None
             and value.object_kind == AddressKind.HEAP
@@ -744,7 +1003,25 @@ def recover_address_provenance(
             if create_globals
             else {}
         )
-        return incoming, fresh_return, common_globals
+        common_heap_fields = (
+            {
+                key: value
+                for key, value in create_heap_fields[0].items()
+                if all(
+                    item.get(key) is not None
+                    and _summary_values_compatible(value, item[key])
+                    for item in create_heap_fields[1:]
+                )
+            }
+            if create_heap_fields
+            else {}
+        )
+        for key in conflicting_heap_field_summaries:
+            observed_heap_field_summaries.pop(key, None)
+        # create 边界上的快照优先；其余摘要来自同一函数中已收敛的
+        # 初始化循环。它们仍受上面的冲突检查和未知调用清除约束。
+        common_heap_fields.update(observed_heap_field_summaries)
+        return incoming, fresh_return, common_globals, common_heap_fields
 
     internal_calls = {
         call.location.pc: call.targets.known_targets[0].pc
@@ -768,14 +1045,20 @@ def recover_address_provenance(
                 changed = True
 
     published_globals: dict[str, _SymbolicValue] = {}
+    published_heap_fields: dict[str, _SymbolicValue] = {}
     for function_pc in {
         call.containing_function_pc
         for call in control_flow.call_sites
         if call.location.pc in create_call_pcs
     }:
         if function_pc in blocks:
-            _, _, globals_at_create = flow(function_pc)
+            _, _, globals_at_create, heap_fields_at_create = flow(function_pc)
             published_globals.update(globals_at_create)
+            published_heap_fields.update(heap_fields_at_create)
+    seeded_heap_field_values = {
+        **seeded_heap_field_values,
+        **published_heap_fields,
+    }
 
     internal_call_sites = {
         call.location.pc: call
@@ -796,9 +1079,19 @@ def recover_address_provenance(
         for function_pc in reachable_functions:
             if function_pc not in blocks:
                 continue
-            incoming, _, _ = flow(
+            incoming, _, _, _ = flow(
                 function_pc,
-                published_globals if function_pc in seeded_function_pcs else None,
+                (
+                    {
+                        **seeded_global_values,
+                        **published_globals,
+                    }
+                    if function_pc in seeded_function_pcs
+                    else None
+                ),
+                seeded_heap_field_values
+                if function_pc in seeded_function_pcs
+                else None,
             )
             for block_pc, entry_state in incoming.items():
                 state = dict(entry_state)
@@ -819,6 +1112,8 @@ def recover_address_provenance(
                         function_pc,
                         state,
                         allocation_calls.get(pc),
+                        pc in preserve_heap_field_call_pcs,
+                        immutable_heap_field_keys,
                     )
         for target_pc, call_pcs in calls_by_target.items():
             if not call_pcs <= observed.keys():
@@ -868,6 +1163,39 @@ def recover_address_provenance(
                                 }
                             )
                         ),
+                        owner_base=(
+                            values[0].owner_base
+                            if all(
+                                value.owner_base == values[0].owner_base
+                                for value in values
+                            )
+                            else None
+                        ),
+                        owner_term=(
+                            values[0].owner_term
+                            if all(
+                                value.owner_term == values[0].owner_term
+                                for value in values
+                            )
+                            else None
+                        ),
+                        owner_coefficient=(
+                            values[0].owner_coefficient
+                            if all(
+                                value.owner_coefficient
+                                == values[0].owner_coefficient
+                                for value in values
+                            )
+                            else None
+                        ),
+                        fresh_call_pc=(
+                            values[0].fresh_call_pc
+                            if all(
+                                value.fresh_call_pc == values[0].fresh_call_pc
+                                for value in values
+                            )
+                            else None
+                        ),
                     )
                 if register not in target_values:
                     target_values[register] = first
@@ -880,9 +1208,19 @@ def recover_address_provenance(
             continue
         if function.location.pc not in blocks:
             continue
-        incoming, _, _ = flow(
+        incoming, _, _, _ = flow(
             function.location.pc,
-            published_globals
+            {
+                **seeded_global_values,
+                **(
+                    published_globals
+                    if function.location.pc in seeded_function_pcs
+                    else {}
+                ),
+            }
+            if function.location.pc in seeded_function_pcs
+            else None,
+            seeded_heap_field_values
             if function.location.pc in seeded_function_pcs
             else None,
         )
@@ -920,6 +1258,8 @@ def recover_address_provenance(
                     function.location.pc,
                     state,
                     allocation_calls.get(pc),
+                    pc in preserve_heap_field_call_pcs,
+                    immutable_heap_field_keys,
                 )
     return AddressProvenanceReport(
         addresses=result,
@@ -927,6 +1267,11 @@ def recover_address_provenance(
         published_globals={
             key: address
             for key, value in published_globals.items()
+            if (address := _abstract_value(value)) is not None
+        },
+        published_heap_fields={
+            key: address
+            for key, value in published_heap_fields.items()
             if (address := _abstract_value(value)) is not None
         },
     )
