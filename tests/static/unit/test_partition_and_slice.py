@@ -130,6 +130,48 @@ def test_fresh_worker_event_requires_non_main_role() -> None:
     assert not _fresh_worker_event(main)
 
 
+def test_fresh_worker_union_requires_only_worker_allocation_sites() -> None:
+    worker = MemoryEvent(
+        id="worker:union-fresh",
+        module="app",
+        module_sha256="a" * 64,
+        pc=0x1000,
+        kind=EventKind.LOAD,
+        address=AbstractAddress(
+            kind=AddressKind.AFFINE,
+            base="heap-union:argument@0x3000:rdi",
+            expression="heap-union:argument@0x3000:rdi+i*8",
+            provenance={
+                "base_indirect": False,
+                "candidate_bases": [
+                    "heap:function@0x1c49@0x24ea",
+                    "heap:function@0x1c49@0x2518",
+                ],
+            },
+        ),
+        thread_role="worker",
+    )
+    mixed = worker.model_copy(
+        update={
+            "id": "worker:union-mixed",
+            "address": worker.address.model_copy(
+                update={
+                    "provenance": {
+                        **worker.address.provenance,
+                        "candidate_bases": [
+                            "heap:function@0x1c49@0x24ea",
+                            "heap:malloc@0x2518",
+                        ],
+                    }
+                }
+            ),
+        }
+    )
+
+    assert _fresh_worker_event(worker)
+    assert not _fresh_worker_event(mixed)
+
+
 def test_unknown_memory_effect_remains_in_slice_and_conflicts() -> None:
     unknown = MemoryEvent(
         id="worker:unknown",

@@ -1063,8 +1063,7 @@ def analyze_shared_state(
                 )
         elif (
             address.kind == AddressKind.HEAP
-            and isinstance(address.base, str)
-            and address.base.startswith("heap:function@")
+            and _fresh_worker_address(address)
             and all(role != "main" for role in roles)
             and not external_wildcards
             and all(
@@ -1162,8 +1161,7 @@ def analyze_shared_state(
                 if event.id not in nonconcurrent_event_ids
             )
             fresh_worker_allocation = (
-                isinstance(address.base, str)
-                and address.base.startswith("heap:function@")
+                _fresh_worker_address(address)
                 and bool(concurrent_events)
                 and all(
                     event.thread_role not in {None, "main"}
