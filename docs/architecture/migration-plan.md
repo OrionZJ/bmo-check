@@ -102,6 +102,10 @@ different payloads and invalid category edges.
 
 Commit intent: `Introduce typed evidence domain`.
 
+Implementation record: `docs/exec-plans/active/c3-evidence.md`. The canonical ledger
+is now available, but legacy route models remain authoritative until C4 adapters and
+differential tests are in place.
+
 ### C4 — Legacy static adapter
 
 Add a one-way adapter from current static models to canonical identities/evidence. It

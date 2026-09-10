@@ -18,10 +18,11 @@ src/bmo_check_static/        binary-only static SAFE research
 
 They do not import each other. This remains required during the migration.
 
-The current split is not yet a complete evidence boundary. Static provenance and
-Unknown discharge still rely on open dictionaries and strings, while dynamic Unknowns
-are plain strings. Dynamic-assisted static diagnosis must not be added directly to
-those representations.
+The current split is not yet a complete evidence boundary. The shared package now
+contains stable identities and a typed evidence ledger, but static provenance and
+dynamic certificates still use their legacy representations. Dynamic-assisted static
+diagnosis must not be added directly to those legacy paths; C4 adapters must land
+first.
 
 ## Accepted direction
 

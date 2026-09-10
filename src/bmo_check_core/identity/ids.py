@@ -343,6 +343,7 @@ class EvidenceId(StableId):
         producer: str,
         subject: StableId | str,
         premises: Iterable["EvidenceId"],
+        content_discriminator: str = "",
     ) -> "EvidenceId":
         if isinstance(subject, StableId):
             subject_value = subject.value
@@ -355,6 +356,11 @@ class EvidenceId(StableId):
             normalized_premises.append(premise.value)
         material = {
             "category": _text("evidence category", category),
+            "content_discriminator": _text(
+                "content discriminator", content_discriminator
+            )
+            if content_discriminator
+            else None,
             "premises": tuple(sorted(normalized_premises)),
             "producer": _text("evidence producer", producer),
             "schema_version": _text("evidence schema version", schema_version),

@@ -21,6 +21,21 @@ from .identity import (
     ThreadRoleId,
     TraceId,
 )
+from .evidence import (
+    DiagnosticHint,
+    EvidenceAttribute,
+    EvidenceCategory,
+    EvidenceMaterialError,
+    EvidenceLedger,
+    EvidenceNode,
+    LedgerError,
+    ObservedFact,
+    ProofFact,
+    ProducerId,
+    UnknownDischarge,
+    UnknownFact,
+    UnknownKind,
+)
 
 __all__ = [
     "AbstractObjectId",
@@ -38,4 +53,17 @@ __all__ = [
     "ThreadInstanceId",
     "ThreadRoleId",
     "TraceId",
+    "DiagnosticHint",
+    "EvidenceAttribute",
+    "EvidenceCategory",
+    "EvidenceMaterialError",
+    "EvidenceLedger",
+    "EvidenceNode",
+    "LedgerError",
+    "ObservedFact",
+    "ProofFact",
+    "ProducerId",
+    "UnknownDischarge",
+    "UnknownFact",
+    "UnknownKind",
 ]
