@@ -6,10 +6,12 @@ import re
 from capstone import CS_AC_WRITE
 from capstone.x86 import X86_OP_MEM, X86_OP_REG
 
+from bmo_check_core import EvidenceLedger
 from bmo_check_static.analysis.escape_summary import prove_register_parameter_nocapture
 from bmo_check_static.analysis.lifecycle_symbolic import SymbolicLifecycleProof
 from bmo_check_static.analysis.partition_symbolic import SymbolicPartitionProof
 from bmo_check_static.binary.angr_backend import AngrBackendError, load_cfg
+from bmo_check_static.binary.evidence import emit_static_unknown
 from bmo_check_static.model import (
     AbstractAddress,
     AddressKind,
@@ -49,6 +51,33 @@ _READ_KINDS = {
     EventKind.SYSCALL,
     EventKind.UNKNOWN_MEMORY_EFFECT,
 }
+
+
+def _unknown(
+    kind: UnknownKind,
+    reason: str,
+    impact: str,
+    *,
+    module: str | None = None,
+    pc: int | None = None,
+    function: str | None = None,
+    details: dict[str, object] | None = None,
+    canonical_ledger: EvidenceLedger | None = None,
+    canonical_scope: str = "static.shared_state",
+) -> UnknownFact:
+    """共享对象分类的 Unknown 同时进入旧报告和 canonical ledger。"""
+
+    return emit_static_unknown(
+        kind,
+        reason,
+        impact,
+        module=module,
+        pc=pc,
+        function=function,
+        details=details,
+        canonical_ledger=canonical_ledger,
+        canonical_scope=canonical_scope,
+    )
 
 
 def _register_names(instruction: object) -> list[str]:
@@ -981,6 +1010,9 @@ def analyze_shared_state(
     partition_proofs: tuple[SymbolicPartitionProof, ...] = (),
     lifecycle_proof: SymbolicLifecycleProof | None = None,
     normal_completion_only: bool = False,
+    *,
+    canonical_ledger: EvidenceLedger | None = None,
+    canonical_scope: str = "static.shared_state",
 ) -> SharedStateReport:
     relevant_functions = {
         event.function_pc
@@ -1273,19 +1305,21 @@ def analyze_shared_state(
             sharing = SharingClass.SHARED_UNKNOWN
             escape = EscapeKind.UNKNOWN
             unknowns.append(
-                UnknownFact(
-                    kind=UnknownKind.UNKNOWN_ESCAPE,
-                    reason=(
+                _unknown(
+                    UnknownKind.UNKNOWN_ESCAPE,
+                    (
                         tls_escape_evidence[0]
                         if tls_escape_evidence
                         else "an unknown address or opaque effect may reference escaped TLS storage"
                     ),
-                    impact="direct TLS events remain in the shared-memory slice",
+                    "direct TLS events remain in the shared-memory slice",
                     module=module.path,
                     pc=min(event.pc for event in events),
                     details={"event_ids": [event.id for event in events]},
+                    canonical_ledger=canonical_ledger,
+                    canonical_scope=canonical_scope,
                 )
-                )
+            )
         elif (
             address.kind == AddressKind.HEAP
             and _fresh_worker_address(address, worker_allocation_bases)
@@ -1391,10 +1425,10 @@ def analyze_shared_state(
                 sharing = SharingClass.SHARED_UNKNOWN
                 escape = EscapeKind.OPAQUE_ESCAPE
                 unknowns.append(
-                    UnknownFact(
-                        kind=UnknownKind.UNKNOWN_ESCAPE,
-                        reason="stack address may be materialized or escape the owning frame",
-                        impact="stack events remain shared MayAlias candidates",
+                    _unknown(
+                        UnknownKind.UNKNOWN_ESCAPE,
+                        "stack address may be materialized or escape the owning frame",
+                        "stack events remain shared MayAlias candidates",
                         module=module.path,
                         pc=min(event.pc for event in events),
                         details={
@@ -1408,6 +1442,8 @@ def analyze_shared_state(
                                 for fact in stack_evidence.get(key, ())
                             ],
                         },
+                        canonical_ledger=canonical_ledger,
+                        canonical_scope=canonical_scope,
                     )
                 )
         elif address.kind == AddressKind.GLOBAL:
@@ -1502,10 +1538,10 @@ def analyze_shared_state(
             else:
                 sharing = SharingClass.SHARED_UNKNOWN
                 unknowns.append(
-                    UnknownFact(
-                        kind=UnknownKind.UNKNOWN_AFFINE_BOUNDS,
-                        reason=evidence[0] if evidence else "affine partition is not closed",
-                        impact="different thread instances may access overlapping bytes",
+                    _unknown(
+                        UnknownKind.UNKNOWN_AFFINE_BOUNDS,
+                        evidence[0] if evidence else "affine partition is not closed",
+                        "different thread instances may access overlapping bytes",
                         module=module.path,
                         pc=min(event.pc for event in events),
                         details={
@@ -1528,6 +1564,8 @@ def analyze_shared_state(
                             ],
                             "address": address.model_dump(mode="json"),
                         },
+                        canonical_ledger=canonical_ledger,
+                        canonical_scope=canonical_scope,
                     )
                 )
         else:

@@ -185,6 +185,10 @@ Implementation record: `docs/exec-plans/active/c6-memory-events-unknown.md`. The
 slice adds the opt-in path to memory-event recovery, stable legacy-event links and
 canonical Unknown emission for address, syscall, opaque-call and extraction gaps.
 
+Implementation record: `docs/exec-plans/active/c6-shared-state-unknown.md`. The fifth
+slice adds the opt-in path to shared-state/escape classification for TLS, stack and
+affine Unknowns; legacy proof objects and removal lists remain compatibility data.
+
 `SharedStateReport` keeps its current validator until every removal has a canonical
 `RemovalDecision`.
 

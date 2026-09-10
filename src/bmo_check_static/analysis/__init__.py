@@ -7,6 +7,10 @@ from .evidence import (
     StaticMemoryEventEvidence,
     extract_memory_events_with_evidence,
 )
+from .shared_state_evidence import (
+    StaticSharedStateEvidence,
+    analyze_shared_state_with_evidence,
+)
 from .lifecycle_symbolic import SymbolicLifecycleProof, prove_symbolic_lifecycle
 from .partition_symbolic import SymbolicPartitionProof, prove_symbolic_partition
 from .shared_state import analyze_shared_state
@@ -18,8 +22,10 @@ __all__ = [
     "MemoryEvidenceError",
     "MemoryEventIdentityLink",
     "StaticMemoryEventEvidence",
+    "StaticSharedStateEvidence",
     "extract_memory_events",
     "extract_memory_events_with_evidence",
+    "analyze_shared_state_with_evidence",
     "prove_symbolic_partition",
     "prove_symbolic_lifecycle",
 ]
