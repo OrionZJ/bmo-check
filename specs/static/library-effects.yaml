@@ -1,5 +1,5 @@
 schema: 1
-contract_version: linux-runtime-effects-v4
+contract_version: linux-runtime-effects-v6
 
 # 这些函数可以修改 errno 或浮点环境，但在 Linux pthread ABI 中二者都属于当前线程。
 # 契约只消除共享内存 effect；二进制模块仍由 manifest 的 SHA-256 单独绑定。
@@ -209,6 +209,146 @@ functions:
     integer_arguments: [0, 1]
     memory_arguments:
       - index: 0
+        mode: read
+  # errno 返回当前线程自己的槽位；把它单独命名后，application scope
+  # 不会把 libc 的错误状态误当成主程序共享对象。
+  __errno_location:
+    effect: thread_local
+    integer_arguments: []
+  puts:
+    effect: argument_access
+    integer_arguments: [0]
+    memory_arguments:
+      - index: 0
+        mode: read
+  strchr:
+    effect: argument_access
+    integer_arguments: [0, 1]
+    memory_arguments:
+      - index: 0
+        mode: read
+  strrchr:
+    effect: argument_access
+    integer_arguments: [0, 1]
+    memory_arguments:
+      - index: 0
+        mode: read
+  strstr:
+    effect: argument_access
+    integer_arguments: [0, 1]
+    memory_arguments:
+      - index: 0
+        mode: read
+      - index: 1
+        mode: read
+  strspn:
+    effect: argument_access
+    integer_arguments: [0, 1]
+    memory_arguments:
+      - index: 0
+        mode: read
+      - index: 1
+        mode: read
+  strcspn:
+    effect: argument_access
+    integer_arguments: [0, 1]
+    memory_arguments:
+      - index: 0
+        mode: read
+      - index: 1
+        mode: read
+  strcasecmp:
+    effect: argument_access
+    integer_arguments: [0, 1]
+    memory_arguments:
+      - index: 0
+        mode: read
+      - index: 1
+        mode: read
+  sched_setaffinity:
+    effect: runtime_internal
+    integer_arguments: [0, 1, 2]
+    internal_object: "runtime:scheduler"
+  sched_get_priority_max:
+    effect: runtime_internal
+    integer_arguments: [0]
+    internal_object: "runtime:scheduler"
+  pthread_self:
+    effect: thread_local
+    integer_arguments: []
+  sysconf:
+    effect: runtime_internal
+    integer_arguments: [0]
+    internal_object: "runtime:system"
+  setlocale:
+    effect: runtime_internal
+    integer_arguments: [0, 1]
+    internal_object: "runtime:locale"
+  localeconv:
+    effect: runtime_internal
+    integer_arguments: []
+    internal_object: "runtime:locale"
+  toupper:
+    effect: thread_local
+    integer_arguments: [0]
+  tolower:
+    effect: thread_local
+    integer_arguments: [0]
+  getenv:
+    effect: runtime_internal
+    integer_arguments: [0]
+    internal_object: "runtime:environment"
+  textdomain:
+    effect: runtime_internal
+    integer_arguments: [0]
+    internal_object: "runtime:gettext"
+  bindtextdomain:
+    effect: runtime_internal
+    integer_arguments: [0, 1]
+    internal_object: "runtime:gettext"
+  bind_textdomain_codeset:
+    effect: runtime_internal
+    integer_arguments: [0, 1]
+    internal_object: "runtime:gettext"
+  dgettext:
+    effect: runtime_internal
+    integer_arguments: [0, 1]
+    internal_object: "runtime:gettext"
+  iconv_open:
+    effect: runtime_internal
+    integer_arguments: [0, 1]
+    internal_object: "runtime:iconv"
+  iconv_close:
+    effect: runtime_internal
+    integer_arguments: [0]
+    internal_object: "runtime:iconv"
+  time:
+    effect: argument_access
+    integer_arguments: [0]
+    memory_arguments:
+      - index: 0
+        mode: write
+  ctime:
+    effect: argument_access
+    integer_arguments: [0]
+    memory_arguments:
+      - index: 0
+        mode: read
+  stpcpy:
+    effect: argument_access
+    integer_arguments: [0, 1]
+    memory_arguments:
+      - index: 0
+        mode: write
+      - index: 1
+        mode: read
+  strcat:
+    effect: argument_access
+    integer_arguments: [0, 1]
+    memory_arguments:
+      - index: 0
+        mode: write
+      - index: 1
         mode: read
   strdup:
     # 结果是新的字符串对象；源字符串只读，不能和调用者的堆对象合并。
@@ -661,3 +801,19 @@ functions:
     memory_arguments:
       - index: 0
         mode: write
+
+  # canneal 的随机数 helper 只读取 Rng 中保存的 MTRand 指针，或写入
+  # 显式输出参数；反汇编没有发现写回调用者的指针字段。保留这类字段
+  # 摘要，才能让同一个 worker 的 Rng 在多层 helper 后继续指向独立状态。
+  _ZN7netlist18get_random_elementEPllP3Rng:
+    effect: field_preserving
+    integer_arguments: [0, 1, 2, 3]
+    preserve_heap_fields: true
+  _ZN3Rng4randEi:
+    effect: field_preserving
+    integer_arguments: [0, 1]
+    preserve_heap_fields: true
+  _ZN15annealer_thread11accept_moveEddP3Rng:
+    effect: field_preserving
+    integer_arguments: [0, 1]
+    preserve_heap_fields: true

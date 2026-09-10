@@ -597,15 +597,62 @@ def extract_memory_events(
             and effect_contract.get(resolved_effect_symbol(call))
             == "fresh_allocation"
         }
-        # allocator、线程局部 helper 和只改运行库私有状态的调用不会替换
-        # 应用对象的字段。只有契约明确给出这条边界时才能保留字段事实；
-        # 未知 helper、argument_access、memcpy/memset 和 free 仍会清掉字段。
+        # allocator、线程局部 helper、运行库私有状态以及经过机器码审计的
+        # field_preserving helper 不会替换应用对象的指针字段。只有契约
+        # 明确给出这条边界时才能保留字段事实；未知 helper、argument_access、
+        # memcpy/memset 和 free 仍会清掉字段。
         preserve_heap_field_call_pcs = {
             call.location.pc
             for call in control_flow.call_sites
             if resolved_effect_symbol(call) is not None
             and effect_contract.get(resolved_effect_symbol(call))
-            in {"fresh_allocation", "thread_local", "runtime_internal"}
+            in {
+                "fresh_allocation",
+                "thread_local",
+                "runtime_internal",
+                "field_preserving",
+            }
+        }
+        # 已闭合的同步 API 只访问自己的 mutex/cond/barrier 状态，不会改写
+        # caller 保存的对象指针字段。若在这里把字段摘要清掉，worker 经过
+        # 一次锁或 barrier 后就会重新变成 loaded-pointer，丢掉 fresh 对象
+        # 的 ownership 事实；同步边界本身仍由 synchronization report 单独
+        # 校验，未知或不完整的同步调用不会进入这个集合。
+        complete_sync_symbols = {
+            summary.api
+            for report in synchronization
+            for summary in report.summaries
+            if summary.complete
+        }
+        preserve_heap_field_call_pcs.update(
+            call.location.pc
+            for call in control_flow.call_sites
+            if resolved_effect_symbol(call) in complete_sync_symbols
+            and resolved_effect_symbol(call)
+            not in {"pthread_create", "pthread_join"}
+        )
+        # PARSEC 的 barrier 实现在主 ELF 内，不能套用 pthread 动态库摘要；
+        # 但它仍是已知的全线程阶段边界。地址传播只把 pending global
+        # 提升到普通槽，不把这个名字当成任意函数的通用“安全”标记。
+        publication_barrier_call_pcs = {
+            call.location.pc
+            for call in control_flow.call_sites
+            if (
+                (symbol := resolved_effect_symbol(call))
+                in {"pthread_barrier_wait", "GOMP_barrier"}
+                or (symbol is not None and "parsec_barrier_wait" in symbol)
+            )
+        }
+        preserve_global_call_pcs = {
+            call.location.pc
+            for call in control_flow.call_sites
+            if effect_contract.get(resolved_effect_symbol(call))
+            in {
+                "fresh_allocation",
+                "thread_local",
+                "runtime_internal",
+                "argument_access",
+            }
         }
         base_address_provenance = recover_address_provenance(
             module,
@@ -613,6 +660,8 @@ def extract_memory_events(
             instruction_report.facts,
             allocation_calls,
             preserve_heap_field_call_pcs=preserve_heap_field_call_pcs,
+            publication_barrier_call_pcs=publication_barrier_call_pcs,
+            preserve_global_call_pcs=preserve_global_call_pcs,
         )
         # argument_access helper 可能只会修改一个已知栈对象。若它的
         # 所有声明实参都恢复为 Stack，就只保留 heap 字段摘要；stack
@@ -711,6 +760,8 @@ def extract_memory_events(
                     preserve_heap_field_call_pcs=preserve_heap_field_call_pcs,
                     immutable_heap_field_keys=immutable_heap_field_keys,
                     preserve_heap_only_call_pcs=preserve_heap_only_call_pcs,
+                    publication_barrier_call_pcs=publication_barrier_call_pcs,
+                    preserve_global_call_pcs=preserve_global_call_pcs,
                 )
                 if role.create_site is not None and len(role.start_targets.known_targets) == 1:
                     immutable_heap_field_keys = _stable_published_heap_fields(

@@ -42,6 +42,7 @@ _INTEGER_ARGUMENTS = ("rdi", "rsi", "rdx", "rcx", "r8", "r9")
 _STACK_ARGUMENT_SLOTS = 8
 _STACK_TRACK_LIMIT = 4096
 _CALL_STACK_PREFIX = "call-stack@"
+_PENDING_GLOBAL_PREFIX = "pending-global@"
 
 
 @dataclass(frozen=True)
@@ -106,6 +107,10 @@ def _clear_call_stack(state: dict[str, _SymbolicValue]) -> None:
 
 def _global_key(pc: int) -> str:
     return f"global-pointer@0x{pc:x}"
+
+
+def _pending_global_key(pc: int) -> str:
+    return f"{_PENDING_GLOBAL_PREFIX}0x{pc:x}"
 
 
 @dataclass(frozen=True)
@@ -1028,8 +1033,10 @@ def _transfer(
             target = fact.pc + len(fact.raw_bytes) // 2 + global_destination.displacement
             stored = _source_value(module, fact, function_pc, state, 1)
             key = _global_key(target)
+            pending_key = _pending_global_key(target)
             if stored is None:
                 state.pop(key, None)
+                state.pop(pending_key, None)
             else:
                 if stored.object_kind == AddressKind.HEAP:
                     # global 槽保存的是已经算好的指针。它依赖 numOptions 的旧
@@ -1047,6 +1054,10 @@ def _transfer(
                         fresh_call_pc=stored.fresh_call_pc,
                     )
                 state[key] = stored
+                # 同一函数内若只有部分 CFG 分支执行了这个 store，普通
+                # global key 会在 meet 时消失；pending key 留下“某条路径
+                # 已写入”的事实，供后续已知 barrier 提升。
+                state[pending_key] = stored
 
 
 def recover_address_provenance(
@@ -1063,6 +1074,8 @@ def recover_address_provenance(
     immutable_heap_field_keys: set[str] | frozenset[str] = frozenset(),
     function_entry_stack_arguments: dict[int, dict[int, AbstractAddress]] | None = None,
     preserve_heap_only_call_pcs: set[int] | None = None,
+    publication_barrier_call_pcs: set[int] | None = None,
+    preserve_global_call_pcs: set[int] | None = None,
 ) -> AddressProvenanceReport:
     """在函数 CFG 上传播唯一地址值；路径合流不一致时退回 Unknown。"""
 
@@ -1074,6 +1087,8 @@ def recover_address_provenance(
     seeded_heap_fields = seeded_heap_fields or {}
     preserve_heap_field_call_pcs = preserve_heap_field_call_pcs or set()
     preserve_heap_only_call_pcs = preserve_heap_only_call_pcs or set()
+    publication_barrier_call_pcs = publication_barrier_call_pcs or set()
+    preserve_global_call_pcs = preserve_global_call_pcs or set()
     facts_by_pc = {fact.pc: fact for fact in facts}
     blocks = {block.location.pc: block for block in control_flow.basic_blocks}
     functions = {function.location.pc: function for function in control_flow.functions}
@@ -1115,6 +1130,11 @@ def recover_address_provenance(
         for function_pc, arguments in function_entry_stack_arguments.items()
     }
     entry_heap_fields: dict[int, dict[str, _SymbolicValue]] = {}
+    # direct call 不会自动共享 caller 的寄存器状态。全局槽却可能在
+    # main/helper 中初始化、再由更深一层 worker helper 读取；只要所有
+    # 已恢复 call site 看到同一组槽值，就把这组事实作为 callee 入口。
+    # 这不是对未知间接调用的假设，冲突或缺失时仍然不传播。
+    entry_globals: dict[int, dict[str, _SymbolicValue]] = {}
     seeded_heap_field_values = {
         key: value
         for key, address in seeded_heap_fields.items()
@@ -1134,6 +1154,18 @@ def recover_address_provenance(
         }
         for function_pc, function in functions.items()
     }
+    global_store_pcs: dict[str, set[int]] = {}
+    for fact in facts:
+        if fact.mnemonic not in {"mov", "movabs"}:
+            continue
+        for operand in fact.memory_operands:
+            if (
+                operand.operand_index == 0
+                and operand.size == 8
+                and _root(operand.base) == "rip"
+            ):
+                target = fact.pc + len(fact.raw_bytes) // 2 + operand.displacement
+                global_store_pcs.setdefault(_global_key(target), set()).add(fact.pc)
 
     # 先记录同一 ELF 内部 call 的目标。后面会为“构造器给调用者对象
     # 写入 fresh 指针字段”的函数建立摘要；调用者只有在目标和实参都
@@ -1293,6 +1325,7 @@ def recover_address_provenance(
             **(seeded_heap_fields or {}),
             **entry_values.get(function_pc, {}),
             **entry_heap_fields.get(function_pc, {}),
+            **entry_globals.get(function_pc, {}),
         }
         for offset, value in entry_stack_values.get(function_pc, {}).items():
             # call 前的 [rsp+offset] 在 callee 入口多了返回地址，
@@ -1305,6 +1338,8 @@ def recover_address_provenance(
         edge_states: dict[tuple[int, int], dict[str, _SymbolicValue]] = {}
         observed_heap_field_summaries: dict[str, _SymbolicValue] = {}
         conflicting_heap_field_summaries: set[str] = set()
+        publication_candidates: dict[str, _SymbolicValue] = {}
+        conflicting_publication_candidates: set[str] = set()
         pending = [function_pc]
         while pending:
             block_pc = pending.pop()
@@ -1320,7 +1355,14 @@ def recover_address_provenance(
                 # 记录每个可达 store 产生的摘要。不同路径写入不同对象时，
                 # 该键会被标成冲突，不能再拿去解释 worker 的间接 load。
                 for key, value in state.items():
-                    if key.startswith("heap-field-summary@"):
+                    # 栈上的小对象（例如 canneal 的 Rng）也会把 fresh
+                    # 指针存到字段里。只保留固定栈对象的精确字段；任意
+                    # heap 对象的精确字段仍需按 indexed summary 规则处理，
+                    # 否则一次构造器调用可能覆盖另一条分配路径。
+                    if (
+                        key.startswith("heap-field-summary@")
+                        or key.startswith("heap-field@stack:")
+                    ):
                         previous = observed_heap_field_summaries.get(key)
                         if previous is not None and not _summary_values_compatible(
                             previous, value
@@ -1343,11 +1385,50 @@ def recover_address_provenance(
                     immutable_heap_field_keys,
                     pc in preserve_heap_only_call_pcs,
                 )
+                for key, value in state.items():
+                    if not key.startswith(_PENDING_GLOBAL_PREFIX):
+                        continue
+                    global_key = _global_key(
+                        int(key[len(_PENDING_GLOBAL_PREFIX) :], 16)
+                    )
+                    previous = publication_candidates.get(global_key)
+                    if previous is not None and not _state_values_compatible(
+                        previous, value
+                    ):
+                        conflicting_publication_candidates.add(global_key)
+                    elif (
+                        global_key not in conflicting_publication_candidates
+                        and previous is None
+                    ):
+                        publication_candidates[global_key] = value
+                if pc in publication_barrier_call_pcs:
+                    # 某些 PARSEC barrier 由一个线程初始化全局指针、再让
+                    # 其他线程继续读取。pending-global 只在 barrier 返回
+                    # 后提升为普通槽；没有这条边时，分支缺失的写入不能
+                    # 被误当成已初始化对象。
+                    for key, value in tuple(state.items()):
+                        if key.startswith(_PENDING_GLOBAL_PREFIX):
+                            global_key = _global_key(
+                                int(key[len(_PENDING_GLOBAL_PREFIX) :], 16)
+                            )
+                            state[global_key] = value
+                elif fact.control_flow is not None and fact.control_flow.value.endswith(
+                    "call"
+                ) and pc not in internal_call_targets and pc not in preserve_global_call_pcs:
+                    # 未知外部调用可能改写全局槽；pending 事实不能穿过
+                    # 这个边界。普通 global-pointer 仍沿用旧策略，只由
+                    # 后续 CFG/调用摘要决定是否可用。
+                    for key in tuple(state):
+                        if key.startswith(_PENDING_GLOBAL_PREFIX):
+                            state.pop(key, None)
                 apply_allocation_field_summary(state, pc)
                 apply_function_field_summary(state, pc, argument_state)
                 restore_private_allocation_summaries(state, fact)
                 for key, value in state.items():
-                    if key.startswith("heap-field-summary@"):
+                    if (
+                        key.startswith("heap-field-summary@")
+                        or key.startswith("heap-field@stack:")
+                    ):
                         previous = observed_heap_field_summaries.get(key)
                         if previous is not None and not _summary_values_compatible(
                             previous, value
@@ -1379,10 +1460,119 @@ def recover_address_provenance(
                         ):
                             merged[key] = _merge_state_values(value, other)
                     joined = merged
+                # 普通 key 采用严格 meet；pending-global 允许一条
+                # 分支先写、另一条分支跳过写入，等后续 barrier 再
+                # 提升。若多个分支写入不同对象，兼容性检查会丢弃它。
+                pending_keys = {
+                    key
+                    for predecessor_state in predecessor_states
+                    for key in predecessor_state
+                    if key.startswith(_PENDING_GLOBAL_PREFIX)
+                }
+                for key in pending_keys:
+                    values = [state.get(key) for state in predecessor_states]
+                    concrete = [value for value in values if value is not None]
+                    if concrete and all(
+                        _state_values_compatible(concrete[0], value)
+                        for value in concrete[1:]
+                    ):
+                        joined[key] = _merge_state_values(
+                            concrete[0], concrete[-1]
+                        )
+                    else:
+                        joined.pop(key, None)
                 previous = incoming.get(successor)
                 if previous != joined:
                     incoming[successor] = joined
                     pending.append(successor)
+
+        # CFG meet 只能看到“当前线程的某条路径没有执行初始化 store”，
+        # 看不到另一个线程已经在 barrier 前完成该 store。对同一函数内
+        # 明确识别的 barrier，才把无冲突的候选槽注入到 barrier 支配的
+        # 后继块；没有支配关系或写入值冲突时仍保持 Unknown。
+        publication_candidates = {
+            key: value
+            for key, value in publication_candidates.items()
+            if key not in conflicting_publication_candidates
+        }
+        if publication_candidates and publication_barrier_call_pcs:
+            function_blocks = {
+                block_pc
+                for block_pc in function.block_pcs
+                if block_pc in blocks
+            }
+            predecessors: dict[int, set[int]] = {
+                block_pc: set() for block_pc in function_blocks
+            }
+            for block_pc in function_blocks:
+                for successor in blocks[block_pc].successor_pcs:
+                    if successor in function_blocks:
+                        predecessors[successor].add(block_pc)
+            dominators: dict[int, set[int]] = {
+                block_pc: ({block_pc} if block_pc == function_pc else set(function_blocks))
+                for block_pc in function_blocks
+            }
+            changed = True
+            while changed:
+                changed = False
+                for block_pc in function_blocks - {function_pc}:
+                    incoming_predecessors = predecessors[block_pc]
+                    if not incoming_predecessors:
+                        new_dominators = {block_pc}
+                    else:
+                        common = set(function_blocks)
+                        for predecessor in incoming_predecessors:
+                            common &= dominators[predecessor]
+                        new_dominators = {block_pc} | common
+                    if new_dominators != dominators[block_pc]:
+                        dominators[block_pc] = new_dominators
+                        changed = True
+            barrier_blocks: dict[int, set[int]] = {}
+            for block_pc in function_blocks:
+                barrier_pcs = {
+                    pc
+                    for pc in blocks[block_pc].instruction_pcs
+                    if pc in publication_barrier_call_pcs
+                }
+                if barrier_pcs:
+                    barrier_blocks[block_pc] = barrier_pcs
+            for block_pc, entry_state in incoming.items():
+                dominating_barriers = [
+                    barrier_pc
+                    for barrier_block, barrier_pcs in barrier_blocks.items()
+                    if barrier_block in dominators.get(block_pc, set())
+                    for barrier_pc in barrier_pcs
+                ]
+                if not dominating_barriers:
+                    continue
+                state = dict(entry_state)
+                for global_key, value in publication_candidates.items():
+                    store_pcs = global_store_pcs.get(global_key, set())
+                    if store_pcs and not any(
+                        store_pc < barrier_pc
+                        for store_pc in store_pcs
+                        for barrier_pc in dominating_barriers
+                    ):
+                        continue
+                    existing = state.get(global_key)
+                    if existing is not None and not _state_values_compatible(
+                        existing, value
+                    ):
+                        state.pop(global_key, None)
+                        state.pop(
+                            _pending_global_key(
+                                int(global_key[len("global-pointer@") :], 16)
+                            ),
+                            None,
+                        )
+                        continue
+                    state[global_key] = _merge_state_values(existing, value) if existing else value
+                    state[
+                        _pending_global_key(
+                            int(global_key[len("global-pointer@") :], 16)
+                        )
+                    ] = value
+                incoming[block_pc] = state
 
         returns: list[_SymbolicValue | None] = []
         published = False
@@ -1673,6 +1863,7 @@ def recover_address_provenance(
         observed_stack: dict[
             int, dict[int, _SymbolicValue | None]
         ] = {}
+        observed_globals: dict[int, dict[str, _SymbolicValue]] = {}
         for function_pc in reachable_functions:
             if function_pc not in blocks:
                 continue
@@ -1723,6 +1914,11 @@ def recover_address_provenance(
                                 for base in argument_bases
                                 if key.startswith(prefix)
                             )
+                        }
+                        observed_globals[pc] = {
+                            key: value
+                            for key, value in state.items()
+                            if key.startswith("global-pointer@")
                         }
                         observed_stack[pc] = {
                             offset: state.get(_call_stack_key(offset))
@@ -1866,16 +2062,32 @@ def recover_address_provenance(
                                 else None
                             ),
                         )
-                if register not in target_values:
+                existing = target_values.get(register)
+                # 第一次迭代可能只看到未解析的 frame/register 值；后续
+                # caller 摘要收敛后会得到 concrete heap/stack 对象。不能
+                # 因为旧的 Unknown 已经写入入口就拒绝这次更精确的事实。
+                # evidence_pcs 不参与比较，否则每轮传播新增一条证据会
+                # 把定点循环重新触发。
+                if (
+                    existing is None
+                    or replace(existing, evidence_pcs=())
+                    != replace(first, evidence_pcs=())
+                ):
                     target_values[register] = first
                     propagated = True
             target_stack_values = entry_stack_values.setdefault(target_pc, {})
             for offset in range(0, _STACK_ARGUMENT_SLOTS * 8, 8):
                 values = [observed_stack[pc].get(offset) for pc in call_pcs]
                 merged = merge_stack_argument_values(values, target_pc, offset)
-                if merged is not None and offset not in target_stack_values:
-                    target_stack_values[offset] = merged
-                    propagated = True
+                if merged is not None:
+                    existing = target_stack_values.get(offset)
+                    if (
+                        existing is None
+                        or replace(existing, evidence_pcs=())
+                        != replace(merged, evidence_pcs=())
+                    ):
+                        target_stack_values[offset] = merged
+                        propagated = True
             field_maps = [observed_fields[pc] for pc in call_pcs]
             if field_maps and all(item == field_maps[0] for item in field_maps[1:]):
                 if entry_heap_fields.get(target_pc) != field_maps[0]:
@@ -1885,6 +2097,42 @@ def recover_address_provenance(
                 # 不同 call site 传入了不同对象或某个路径缺少字段摘要；
                 # 继续沿用旧摘要会把一个 caller 的行指针套到另一个对象。
                 entry_heap_fields.pop(target_pc, None)
+                propagated = True
+
+            # 全局槽的入口摘要采用和参数相同的“全体 call site 交集”。
+            # 某个调用点没有槽事实时不能假定它看到了另一个路径的值；
+            # 只有每个调用点都提供兼容值，callee 才能使用该摘要。
+            global_maps = [observed_globals.get(pc) for pc in call_pcs]
+            if global_maps and all(global_map is not None for global_map in global_maps):
+                concrete_maps = [item for item in global_maps if item is not None]
+                common_global_keys = set(concrete_maps[0])
+                for global_map in concrete_maps[1:]:
+                    common_global_keys &= set(global_map)
+                common_global_values: dict[str, _SymbolicValue] = {}
+                for key in common_global_keys:
+                    values = [global_map[key] for global_map in concrete_maps]
+                    if all(_state_values_compatible(values[0], value) for value in values[1:]):
+                        # 证据 PC 只用于最终解释，不参与入口摘要的定点
+                        # 比较；每轮 flow 都可能再访问同一个全局 load，
+                        # 若把 evidence 当状态就会永不收敛。
+                        common_global_values[key] = replace(
+                            values[0], evidence_pcs=()
+                        )
+                existing_global_values = entry_globals.get(target_pc, {})
+                existing_shape = {
+                    key: replace(value, evidence_pcs=())
+                    for key, value in existing_global_values.items()
+                }
+                if existing_shape != common_global_values:
+                    if common_global_values:
+                        entry_globals[target_pc] = common_global_values
+                    else:
+                        entry_globals.pop(target_pc, None)
+                    propagated = True
+            elif target_pc in entry_globals:
+                # 某条 call path 没有可证明的全局槽；继续使用旧摘要会把
+                # 另一条路径的对象地址套到这里，必须撤回入口事实。
+                entry_globals.pop(target_pc, None)
                 propagated = True
 
     # 参数传播收敛后再计算内部函数的字段摘要。这样像 Rng 构造器这类

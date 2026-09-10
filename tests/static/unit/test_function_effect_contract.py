@@ -11,10 +11,10 @@ def test_effect_contract_is_content_addressed() -> None:
     contract = load_function_effect_contract(path)
 
     assert contract.unknown is None
-    assert contract.version == "linux-runtime-effects-v4"
+    assert contract.version == "linux-runtime-effects-v6"
     assert {
         name for name, effect in contract.effects.items() if effect == "thread_local"
-    } == {
+    } >= {
         "exp",
         "expf",
         "log",
@@ -26,12 +26,20 @@ def test_effect_contract_is_content_addressed() -> None:
         "sinf",
         "cosf",
     }
+    assert {"__errno_location", "pthread_self", "toupper", "tolower"} <= {
+        name for name, effect in contract.effects.items() if effect == "thread_local"
+    }
     assert contract.effects["malloc"] == "fresh_allocation"
     assert contract.integer_arguments["malloc"] == (0,)
     assert contract.effects["free"] == "runtime_internal"
     assert contract.internal_objects["malloc"] == "runtime:allocator"
     assert contract.internal_objects["free"] == "runtime:allocator"
     assert contract.memory_arguments["memcpy"] == ((0, "write"), (1, "read"))
+    assert {
+        "_ZN7netlist18get_random_elementEPllP3Rng",
+        "_ZN3Rng4randEi",
+        "_ZN15annealer_thread11accept_moveEddP3Rng",
+    } <= contract.preserve_heap_fields
     assert len(contract.sha256) == 64
 
 

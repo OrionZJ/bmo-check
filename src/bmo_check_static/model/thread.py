@@ -80,3 +80,8 @@ class ThreadDiscoveryReport(StrictModel):
     parallel_regions: tuple[ThreadParallelFact, ...] = ()
     # unknowns 显式记录未封闭的 callback、parent 和 handle 映射。
     unknowns: tuple[UnknownFact, ...] = ()
+    # single_thread_proven 只有在 main 可达调用图封闭且没有可达线程 API
+    # 时为真；死代码中的 pthread_create 不会推翻这条局部证明。
+    single_thread_proven: bool = False
+    # single_thread_evidence 保存调用图根和排除线程入口的二进制事实。
+    single_thread_evidence: tuple[str, ...] = ()

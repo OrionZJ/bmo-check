@@ -32,6 +32,10 @@ class FunctionEffectContract:
     # internal_objects 只给 runtime 自己的封装状态命名。
     # 调用仍保留 Unknown，但它不再假定能改写任意应用数组。
     internal_objects: dict[str, str]
+    # preserve_heap_fields 列出经过机器码审计、不会改写调用者指针字段的
+    # helper。它只允许地址传播跨过调用，不会把 helper 的其他内存访问
+    # 从 MemoryEvent 中删除。
+    preserve_heap_fields: frozenset[str]
     # unknown 非空时调用方必须停止使用 effects，并传播配置错误。
     unknown: UnknownFact | None = None
 
@@ -73,6 +77,7 @@ def load_function_effect_contract(path: Path) -> FunctionEffectContract:
         integer_arguments: dict[str, tuple[int, ...]] = {}
         memory_arguments: dict[str, tuple[tuple[int, str], ...]] = {}
         internal_objects: dict[str, str] = {}
+        preserve_heap_fields: set[str] = set()
         for symbol, entry in entries.items():
             if not isinstance(symbol, str) or not isinstance(entry, dict):
                 raise ValueError("each function entry must be a symbol mapping")
@@ -82,9 +87,20 @@ def load_function_effect_contract(path: Path) -> FunctionEffectContract:
                 "fresh_allocation",
                 "runtime_internal",
                 "argument_access",
+                "field_preserving",
             }:
                 raise ValueError(f"unsupported effect for {symbol!r}: {effect!r}")
             effects[symbol] = str(effect)
+            if entry.get("preserve_heap_fields", False) is not False:
+                if entry.get("preserve_heap_fields") is not True:
+                    raise ValueError(
+                        f"preserve_heap_fields must be boolean for {symbol!r}"
+                    )
+                if effect != "field_preserving":
+                    raise ValueError(
+                        f"preserve_heap_fields requires field_preserving for {symbol!r}"
+                    )
+                preserve_heap_fields.add(symbol)
             raw_arguments = entry.get("integer_arguments")
             if not isinstance(raw_arguments, list) or any(
                 not isinstance(item, int) or not 0 <= item < 6 for item in raw_arguments
@@ -137,6 +153,7 @@ def load_function_effect_contract(path: Path) -> FunctionEffectContract:
             integer_arguments=integer_arguments,
             memory_arguments=memory_arguments,
             internal_objects=internal_objects,
+            preserve_heap_fields=frozenset(preserve_heap_fields),
         )
     except (OSError, UnicodeError, ValueError, yaml.YAMLError) as error:
         return FunctionEffectContract(
@@ -146,6 +163,7 @@ def load_function_effect_contract(path: Path) -> FunctionEffectContract:
             integer_arguments={},
             memory_arguments={},
             internal_objects={},
+            preserve_heap_fields=frozenset(),
             unknown=UnknownFact(
                 kind=UnknownKind.INVALID_FUNCTION_EFFECT_CONTRACT,
                 reason=f"cannot load function effect contract {path}: {error}",

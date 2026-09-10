@@ -47,9 +47,19 @@ def prove_symbolic_partition(
             argument_address,
         )
         state.options.add(angr.options.SYMBOL_FILL_UNCONSTRAINED_REGISTERS)
-        state.memory.store(
-            argument_address, tid, endness=project.arch.memory_endness
-        )
+        if hint.thread_id_register is not None:
+            # helper 入口已经接收整数 tid；把 32 位符号扩展到完整 ABI
+            # 寄存器，避免把一个指针参数误当成线程编号。
+            setattr(state.regs, hint.thread_id_register, claripy.ZeroExt(32, tid))
+        else:
+            argument_offset = hint.thread_id_arg_offset or 0
+            # pthread callback 通常收到参数结构体地址。只有显式给出字段
+            # 偏移时才把 tid 放入该字段，缺失偏移仍兼容旧的裸 tid 约定。
+            state.memory.store(
+                argument_address + argument_offset,
+                tid,
+                endness=project.arch.memory_endness,
+            )
         state.memory.store(
             base + hint.item_count_pc,
             item_count,

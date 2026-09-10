@@ -167,4 +167,7 @@ benchmarks:
       join_pc: 0x1320
       thread_count_pc: 0x207060
       frame_pointer_offsets: [-0x80, -0x78, -0x70]
+      # localSearch 为每个 worker 分配一个 pkmedian_arg_t；二进制中的
+      # new[] call site 是 0x3a85，生命周期证明再确认 create 实参互异。
+      worker_argument_base: "heap:_Znam@0x3a85"
       assume_success: true

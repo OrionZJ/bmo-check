@@ -49,6 +49,28 @@ def _collect_unknowns(
 ) -> tuple[UnknownFact, ...]:
     application_scope = (analysis_options or {}).get("scope") == "application"
     recovery = report.recovery
+    sequential_pcs: set[int] = set()
+    if report.memory_events is not None and report.shared_state is not None:
+        sequential_reasons = {
+            "SequentialBeforeCreate",
+            "SequentialAfterJoin",
+            "SequentialMainCallee",
+            "NonReturningPath",
+        }
+        sequential_ids = {
+            event_id
+            for proof in report.shared_state.proofs
+            if proof.reason.value in sequential_reasons
+            for event_id in proof.event_ids
+        }
+        # 生命周期已经把这些调用放在唯一 main 阶段或正常返回之外。
+        # 同一 PC 的 CFG/参数缺口不会再影响并发通信；只过滤能回指到
+        # 这些事件的局部 Unknown，不触碰全局闭包、线程入口和库缺失。
+        sequential_pcs = {
+            event.pc
+            for event in report.memory_events.events
+            if event.id in sequential_ids
+        }
     # 缺少外部 ELF 函数体不等于缺少该调用的内存事实。若 MemoryEvent 层
     # 已按 effect contract 闭合了这个 PLT 调用，就不再因为 CFG 无法进入
     # 同一个函数体而重复阻塞证明；参数地址恢复失败仍会留下自己的 Unknown。
@@ -80,7 +102,34 @@ def _collect_unknowns(
         )
     }
 
+    # application scope 会在 slice 层移除 runtime_internal 事件。对应的
+    # PLT/间接目标缺口也不能单独把证书卡住；否则同一运行库边界既被
+    # 作用域证明移除一次，又以 CFG Unknown 的形式重复计数。full scope
+    # 仍保留这些缺口，因为它需要证明运行库自己的共享状态。
+    removed_runtime_contract_calls = {
+        call
+        for call, events in contracted_call_events.items()
+        if application_scope
+        and any(
+            event.provenance.get("contracted_effect") == "runtime_internal"
+            and event.provenance.get("runtime_internal") is True
+            for event in events
+        )
+    }
+
     def keep_unknown(fact: UnknownFact) -> bool:
+        if (
+            fact.pc in sequential_pcs
+            and fact.kind
+            in {
+                UnknownKind.INCOMPLETE_INDIRECT_TARGET,
+                UnknownKind.UNKNOWN_MEMORY_EFFECT,
+                UnknownKind.UNKNOWN_SHARED_ADDRESS,
+                UnknownKind.UNKNOWN_AFFINE_BOUNDS,
+                UnknownKind.UNKNOWN_ESCAPE,
+            }
+        ):
+            return False
         if (
             fact.kind == UnknownKind.INCOMPLETE_INDIRECT_TARGET
             and fact.pc is not None
@@ -88,6 +137,18 @@ def _collect_unknowns(
                 fact.pc,
                 str(fact.details.get("target_symbol")),
             ) in closed_contract_calls
+        ):
+            return False
+        if (
+            application_scope
+            and fact.kind == UnknownKind.INCOMPLETE_INDIRECT_TARGET
+            and fact.pc is not None
+            and any(
+                call_pc == fact.pc
+                and (fact.details.get("target_symbol") is None
+                     or str(fact.details.get("target_symbol")) == symbol)
+                for call_pc, symbol in removed_runtime_contract_calls
+            )
         ):
             return False
         return True

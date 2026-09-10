@@ -125,6 +125,52 @@ def _role_reachability(
     return reachable
 
 
+def _main_reachability(
+    report: ControlFlowReport, main_pc: int
+) -> tuple[set[int], bool]:
+    """沿已封闭的本 ELF 调用边恢复 main 可达函数。
+
+    ``pthread_create`` 常出现在库适配层或死代码里。只有主线程能沿
+    已知边到达它时，才把该调用纳入线程角色；若 main 可达函数里还有
+    未封闭间接控制流，任何隐藏目标都可能创建线程，此时返回 False，
+    调用方继续使用原来的全量保守结果。
+    """
+
+    function_pcs = {item.location.pc for item in report.functions}
+    graph: dict[int, set[int]] = {}
+    for call in report.call_sites:
+        if not call.targets.complete:
+            continue
+        local_targets = {
+            target.pc
+            for target in call.targets.known_targets
+            if target.module_sha256 == report.module_sha256
+            and target.pc in function_pcs
+        }
+        if local_targets:
+            graph.setdefault(call.containing_function_pc, set()).update(
+                local_targets
+            )
+    reachable: set[int] = set()
+    pending = [main_pc]
+    while pending:
+        function_pc = pending.pop()
+        if function_pc in reachable:
+            continue
+        reachable.add(function_pc)
+        pending.extend(graph.get(function_pc, ()))
+    closed = not any(
+        not site.targets.complete
+        and site.containing_function_pc in reachable
+        for site in report.indirect_sites
+    ) and not any(
+        not call.targets.complete
+        and call.containing_function_pc in reachable
+        for call in report.call_sites
+    )
+    return reachable, closed
+
+
 def _containing_role(
     reachability: dict[str, set[int]], function_pc: int
 ) -> tuple[str, bool]:
@@ -177,9 +223,23 @@ def discover_pthread_threads(
     unknowns: list[UnknownFact] = []
     recovered_creates: list[tuple[object, str, IndirectTargetSet, str | None]] = []
 
-    create_calls = [
-        call for call in control_flow.call_sites if call.target_symbol == "pthread_create"
+    main_reachable, main_call_graph_closed = _main_reachability(
+        control_flow, main_function.pc
+    )
+    all_create_calls = [
+        call
+        for call in control_flow.call_sites
+        if call.target_symbol == "pthread_create"
     ]
+    create_calls = (
+        [
+            call
+            for call in all_create_calls
+            if call.containing_function_pc in main_reachable
+        ]
+        if main_call_graph_closed
+        else all_create_calls
+    )
     for call in create_calls:
         callback_pc, _, constant = _definition_before_call(
             context, call.block_pc, call.location.pc, "rdx"
@@ -220,9 +280,21 @@ def discover_pthread_threads(
     # runtime 的 callback；角色按并行区入口分开，后面的隐式 barrier 才能
     # 只连接本阶段的 worker 事件。
     openmp_entries: list[tuple[object, str, IndirectTargetSet, str | None]] = []
-    for call in control_flow.call_sites:
-        if call.target_symbol not in _OPENMP_PARALLEL_APIS:
-            continue
+    all_openmp_calls = [
+        call
+        for call in control_flow.call_sites
+        if call.target_symbol in _OPENMP_PARALLEL_APIS
+    ]
+    openmp_calls = (
+        [
+            call
+            for call in all_openmp_calls
+            if call.containing_function_pc in main_reachable
+        ]
+        if main_call_graph_closed
+        else all_openmp_calls
+    )
+    for call in openmp_calls:
         callback_pc, origin, constant = _definition_before_call(
             context, call.block_pc, call.location.pc, "rdi"
         )
@@ -382,9 +454,21 @@ def discover_pthread_threads(
         if item.id != "main" and item.id.startswith("pthread@")
     )
     joins: list[ThreadJoinFact] = []
-    for call in control_flow.call_sites:
-        if call.target_symbol != "pthread_join":
-            continue
+    all_join_calls = [
+        call
+        for call in control_flow.call_sites
+        if call.target_symbol == "pthread_join"
+    ]
+    join_calls = (
+        [
+            call
+            for call in all_join_calls
+            if call.containing_function_pc in main_reachable
+        ]
+        if main_call_graph_closed
+        else all_join_calls
+    )
+    for call in join_calls:
         parent, parent_complete = _containing_role(
             reachability, call.containing_function_pc
         )
@@ -420,4 +504,15 @@ def discover_pthread_threads(
         joins=tuple(joins),
         parallel_regions=tuple(parallel_regions),
         unknowns=tuple(unknowns),
+        single_thread_proven=(
+            main_call_graph_closed and not create_calls and not openmp_calls
+        ),
+        single_thread_evidence=(
+            (
+                f"closed direct-call graph from main covers {len(main_reachable)} functions",
+                "no reachable pthread_create or OpenMP parallel entry was recovered",
+            )
+            if main_call_graph_closed and not create_calls and not openmp_calls
+            else ()
+        ),
     )

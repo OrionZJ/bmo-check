@@ -3,7 +3,13 @@ from __future__ import annotations
 from bmo_check_static.model import (
     AbstractAddress,
     AddressKind,
+    CallKind,
+    CallSite,
+    CFGCoverage,
+    CodeLocation,
+    ControlFlowReport,
     EventKind,
+    IndirectTargetSet,
     MemoryEvent,
     MemoryEventReport,
     Ordering,
@@ -26,6 +32,7 @@ from bmo_check_static.slicing import (
 from bmo_check_static.analysis.shared_state import (
     _addresses_may_alias,
     _fresh_worker_event,
+    _worker_allocation_bases,
     _readonly_after_create,
 )
 
@@ -134,6 +141,52 @@ def test_fresh_worker_event_requires_non_main_role() -> None:
 
     assert _fresh_worker_event(worker)
     assert not _fresh_worker_event(main)
+
+
+def test_worker_allocation_bases_accept_every_fresh_allocator_name() -> None:
+    event = MemoryEvent(
+        id="worker:calloc",
+        module="app",
+        module_sha256="a" * 64,
+        pc=0x1200,
+        kind=EventKind.STORE,
+        address=AbstractAddress(
+            kind=AddressKind.AFFINE,
+            base="heap:calloc@0x1100",
+            expression="heap:calloc@0x1100+i*4",
+            provenance={"base_indirect": False},
+        ),
+        thread_role="worker",
+    )
+    call = CallSite(
+        location=CodeLocation(module_path="app", module_sha256="a" * 64, pc=0x1100),
+        containing_function_pc=0x2000,
+        block_pc=0x2000,
+        kind=CallKind.PLT,
+        target_symbol="calloc",
+        targets=IndirectTargetSet(complete=True),
+    )
+    cfg = ControlFlowReport(
+        module_path="app",
+        module_sha256="a" * 64,
+        entry_pc=0x2000,
+        functions=(),
+        basic_blocks=(),
+        call_sites=(call,),
+        coverage=CFGCoverage(
+            angr_version="test",
+            functions=0,
+            basic_blocks=0,
+            call_sites=1,
+            indirect_sites=0,
+            complete_indirect_sites=0,
+            incomplete_indirect_sites=0,
+        ),
+    )
+
+    assert _worker_allocation_bases((event,), cfg, {0x2000}) == {
+        "heap:calloc@0x1100"
+    }
 
 
 def test_fresh_worker_union_requires_only_worker_allocation_sites() -> None:

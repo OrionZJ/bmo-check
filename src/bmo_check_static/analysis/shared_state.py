@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict, deque
+import re
 
 from capstone import CS_AC_WRITE
 from capstone.x86 import X86_OP_MEM, X86_OP_REG
@@ -132,6 +133,14 @@ def _local_direct_call_does_not_capture(
             tainted.discard(destination)
             if source in tainted:
                 tainted.add(destination)
+            continue
+        if candidate.mnemonic in {"mov", "movabs"} and len(names) == 1:
+            # mov $constant, %reg 只覆盖寄存器，不会把栈地址带进下一次
+            # 调用。先清除旧 taint，避免把编译器为 ABI 准备的常量参数
+            # 错当成仍携带栈对象的指针。
+            tainted.discard(names[0])
+            if not tainted:
+                return True, "materialized stack address is overwritten before it can escape"
             continue
         if candidate.mnemonic == "push":
             if tainted_stack_argument is not None:
@@ -315,6 +324,48 @@ def _fresh_worker_event(
         and address.provenance.get("base_indirect") is False
         and _fresh_worker_address(address, worker_allocation_bases)
     )
+
+
+_HEAP_ALLOCATION_SITE_RE = re.compile(r"@0x([0-9a-fA-F]+)$")
+
+
+def _worker_allocation_bases(
+    events: tuple[MemoryEvent, ...],
+    control_flow: ControlFlowReport,
+    worker_functions: set[int],
+) -> frozenset[str]:
+    """从已恢复地址中收集 worker 调用树内的所有 fresh allocation site。
+
+    旧实现只列出 ``malloc``。这会漏掉 calloc、C++ new 以及已经由
+    function-return 摘要命名的分配点，使同一条 worker 私有对象在不同
+    分配 API 下退回 Unknown。这里只接受地址末尾能回指到 worker 内部
+    call site 的 ``heap:...@0xPC``，不会把主线程分配的对象误标成私有。
+    """
+
+    worker_call_pcs = {
+        call.location.pc
+        for call in control_flow.call_sites
+        if call.containing_function_pc in worker_functions
+    }
+    bases: set[str] = set()
+    for event in events:
+        address = event.address
+        if address is None:
+            continue
+        candidates = set(
+            item
+            for item in address.provenance.get("candidate_bases", ())
+            if isinstance(item, str)
+        )
+        if isinstance(address.base, str):
+            candidates.add(address.base)
+        for base in candidates:
+            if not base.startswith("heap:") or base.startswith("heap-union:"):
+                continue
+            match = _HEAP_ALLOCATION_SITE_RE.search(base)
+            if match is not None and int(match.group(1), 16) in worker_call_pcs:
+                bases.add(base)
+    return frozenset(bases)
 
 
 def _reachable_worker_callees(
@@ -757,27 +808,72 @@ def _main_functions_outside_concurrent_phase(
         main_reachable.add(function_pc)
         pending.extend(graph.get(function_pc, ()))
 
+    # pthread_create 可能藏在 localSearch 这类 main 的 helper 里。只看
+    # main 直接调用会让 helper 之外的初始化/清理路径留在并发 alias 图，
+    # 也会把真正创建 worker 的 helper 错标成“并发前函数”。
     create_sites = [
         call
         for call in control_flow.call_sites
         if call.target_symbol == "pthread_create"
-        and call.containing_function_pc == main
+        and call.containing_function_pc in main_reachable
     ]
     if not create_sites:
         return set()
+
+    # 先找所有能沿直接调用边到达 create 的函数。它们的任意路径都可能
+    # 正在运行 worker，不能把其中的普通访存移出并发阶段。
+    reverse_graph: dict[int, set[int]] = defaultdict(set)
+    for caller, targets in graph.items():
+        for target in targets:
+            reverse_graph[target].add(caller)
+    concurrent_functions = {
+        call.containing_function_pc for call in create_sites
+    }
+    pending = list(concurrent_functions)
+    while pending:
+        function_pc = pending.pop()
+        for caller in reverse_graph.get(function_pc, ()):
+            if caller not in concurrent_functions:
+                concurrent_functions.add(caller)
+                pending.append(caller)
+
+    # main 中调用并发子图的边界是 nested-create 情形下唯一可复核的
+    # 顺序事实。没有同一条 CFG 路径时不传播“并发前”标签，避免把
+    # 两个互斥分支中的 helper 当成确定先后。
+    concurrent_entry_sites = [
+        call
+        for call in control_flow.call_sites
+        if call.containing_function_pc == main
+        and (
+            call.target_symbol == "pthread_create"
+            or (
+                len(call.targets.known_targets) == 1
+                and call.targets.known_targets[0].module_sha256
+                == control_flow.module_sha256
+                and call.targets.known_targets[0].pc in concurrent_functions
+            )
+        )
+        and call.block_pc is not None
+    ]
 
     def main_site_is_nonconcurrent(call: CallSite) -> bool:
         if _post_join_covers_pc(
             lifecycle_proof, call.location.pc, control_flow
         ):
             return True
-        for create in create_sites:
+        if call.block_pc is None or not concurrent_entry_sites:
+            return False
+        for create in concurrent_entry_sites:
+            assert create.block_pc is not None
             if create.block_pc == call.block_pc:
                 if create.location.pc <= call.location.pc:
                     return False
-            elif _cfg_path_exists(
-                control_flow, create.block_pc, call.block_pc
-            ):
+                continue
+            # 循环或回边同时存在正向/反向路径时，调用可能出现在
+            # create 前后两次；这种路径不能拿来证明 helper 非并发。
+            if _cfg_path_exists(control_flow, create.block_pc, call.block_pc):
+                return False
+            if not _cfg_path_exists(control_flow, call.block_pc, create.block_pc):
                 return False
         return True
 
@@ -797,7 +893,11 @@ def _main_functions_outside_concurrent_phase(
     while changed:
         changed = False
         for target_pc, sites in calls_by_target.items():
-            if target_pc == main or target_pc in nonconcurrent:
+            if (
+                target_pc == main
+                or target_pc in nonconcurrent
+                or target_pc in concurrent_functions
+            ):
                 continue
             # 未闭合间接调用可能在并发阶段进入任意本地 callee。
             # 只要这种 caller 尚未被证明处于非并发阶段，就不能传播阶段标签。
@@ -957,10 +1057,10 @@ def analyze_shared_state(
         if target.module_sha256 == control_flow.module_sha256
         for function_pc in _reachable_worker_callees(target.pc, control_flow)
     }
-    worker_allocation_bases = frozenset(
-        f"heap:malloc@0x{call.location.pc:x}"
-        for call in control_flow.call_sites
-        if call.containing_function_pc in worker_functions
+    worker_allocation_bases = _worker_allocation_bases(
+        memory_events.events,
+        control_flow,
+        worker_functions,
     )
     locksets = prove_definite_locksets(
         memory_events.events, memory_events.program_order
@@ -1516,6 +1616,9 @@ def analyze_shared_state(
                 )
             )
             removed.update(sequential)
+    # 单线程调用图只说明没有第二个已恢复的角色，不能抹掉 opaque
+    # 或未知地址：未建模的外部调用仍可能在运行库内部创建线程并访问应用对象。
+    # 这类事件必须继续进入 verifier，直到 effect contract 或具体地址事实闭合。
     kept = tuple(sorted(event_ids - removed))
     return SharedStateReport(
         objects=tuple(objects),

@@ -64,6 +64,16 @@ def _instruction_pc(context: object, block_address: int) -> tuple[int, str]:
 def _internal_target_set(
     context: object, address: int, symbol: str | None = None
 ) -> IndirectTargetSet:
+    if symbol is None:
+        # direct call 的 CallSite 本身不带 ELF symbol，但目标函数通常
+        # 已在 angr 符号表中命名。把名称放进 target location，后续
+        # effect/synchronization contract 才能识别同一 ELF 内的 helper；
+        # 找不到名称时仍保留原来的无名目标，不凭地址猜语义。
+        try:
+            function = context.cfg.kb.functions.get(address)
+            symbol = getattr(function, "name", None) or None
+        except Exception:
+            symbol = None
     return IndirectTargetSet(
         known_targets=(
             _location(context.module, context.to_elf_pc(address), symbol),

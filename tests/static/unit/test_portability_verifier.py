@@ -33,6 +33,7 @@ from bmo_check_static.proof import (
     verify_certificate_scope,
     verify_portability,
 )
+from bmo_check_static.slicing import restrict_to_application_scope
 
 
 HASH = "a" * 64
@@ -374,6 +375,43 @@ def test_closed_effect_contract_does_not_hide_opaque_memory_effect() -> None:
 
     assert certificate.verdict == Verdict.UNKNOWN
     assert unknown in certificate.relevant_unknowns
+
+
+def test_application_scope_closes_runtime_internal_indirect_boundary() -> None:
+    event = _event("t0:runtime", "t0", 0x3030, EventKind.OPAQUE_CALL)
+    event = event.model_copy(
+        update={
+            "provenance": {
+                "target_symbol": "__stack_chk_fail",
+                "contracted_effect": "runtime_internal",
+                "runtime_internal": True,
+            }
+        }
+    )
+    unknown = UnknownFact(
+        kind=UnknownKind.INCOMPLETE_INDIRECT_TARGET,
+        reason="the external function body is outside the analyzed closure",
+        impact="CFG cannot enter the contracted library function",
+        module="/bin/litmus",
+        pc=event.pc,
+        details={"target_symbol": "__stack_chk_fail"},
+    )
+
+    report = _report((event,), (), conflicts=False, unknowns=(unknown,))
+    report = report.model_copy(
+        update={
+            "shared_slice": restrict_to_application_scope(
+                report.shared_slice, executable_sha256=HASH
+            )
+        }
+    )
+    certificate = verify_portability(
+        report,
+        analysis_options={"scope": "application"},
+    )
+
+    assert certificate.verdict == Verdict.SAFE
+    assert unknown not in certificate.relevant_unknowns
 
 
 def test_event_bound_is_unknown_not_safe() -> None:

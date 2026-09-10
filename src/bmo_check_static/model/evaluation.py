@@ -74,6 +74,29 @@ class PartitionHint(StrictModel):
     # object_base/element_size 将已证明的循环区间绑定到具体数组地址式。
     object_base: str
     element_size: int = Field(gt=0)
+    # thread_id_arg_offset 指向 worker 参数结构体中的 tid 字段；缺失时
+    # 保持旧约定：worker 的第一个参数直接指向 tid。
+    thread_id_arg_offset: int | None = None
+    # thread_id_register 指定 helper 入口已经把 tid 放在哪个 SysV 整数寄存器。
+    # 这让 AdvanceFrameMT(int) 一类函数也能复用同一套分片证明。
+    thread_id_register: str | None = None
+
+    @model_validator(mode="after")
+    def require_one_thread_id_source(self) -> "PartitionHint":
+        if self.thread_id_arg_offset is not None and self.thread_id_register is not None:
+            raise ValueError(
+                "partition hint cannot specify both thread_id_arg_offset and thread_id_register"
+            )
+        if self.thread_id_register is not None and self.thread_id_register not in {
+            "rdi",
+            "rsi",
+            "rdx",
+            "rcx",
+            "r8",
+            "r9",
+        }:
+            raise ValueError("thread_id_register must be a SysV integer argument register")
+        return self
 
 
 class LifecycleHint(StrictModel):

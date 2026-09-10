@@ -13,6 +13,7 @@ from bmo_check_static.model import (
     ExecutionScope,
     FingerprintReport,
     IndirectTargetSet,
+    PartitionHint,
     ProgramManifest,
     UnknownFact,
     UnknownKind,
@@ -82,6 +83,28 @@ def test_certificate_scope_and_verdict_serialization() -> None:
     )
     assert CertificateScope.model_validate_json(scope.model_dump_json()) == scope
     assert Verdict.SAFE.value == "SAFE"
+
+
+def test_partition_hint_supports_struct_field_or_register_tid_sources() -> None:
+    base = dict(
+        worker_pc=0x1000,
+        loop_pc=0x1010,
+        item_count_pc=0x2000,
+        thread_count_pc=0x2004,
+        start_offset=-8,
+        end_offset=-4,
+        induction_offset=-12,
+        item_count=16,
+        object_base="heap:calloc@0x1100",
+        element_size=4,
+    )
+
+    assert PartitionHint(**base, thread_id_arg_offset=0x20).thread_id_arg_offset == 0x20
+    assert PartitionHint(**base, thread_id_register="r8").thread_id_register == "r8"
+    with pytest.raises(ValidationError):
+        PartitionHint(**base, thread_id_register="rax")
+    with pytest.raises(ValidationError):
+        PartitionHint(**base, thread_id_arg_offset=0x20, thread_id_register="r8")
 
 
 def test_model_layer_has_no_analysis_backend_imports() -> None:
