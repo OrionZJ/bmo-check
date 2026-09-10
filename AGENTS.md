@@ -1,51 +1,117 @@
-# BMoCheck — Agent Rules
+# BMoCheck — Agent Entry Guide
 
-## 项目方向
+## Read before changing code
 
-BMoCheck 默认走动态轨迹验证：DynamoRIO 采集原生 x86-64 ELF，离线比较 x86-TSO 与 DBT6 `mo-off + RVWMO`。原静态验证器完整保留在 `bmo_check_static`，但不再是默认入口。
+Read these repository-local documents in order:
 
-开始修改前阅读：
+1. `docs/spec/soundness.md`
+2. `docs/architecture/target-architecture.md`
+3. `docs/architecture/migration-plan.md`
+4. `docs/architecture/repository-audit.md`
+5. the route-specific document under `docs/static/` or `docs/dynamic/`
 
-1. `docs/dynamic/00-project-and-soundness.md`
-2. `docs/dynamic/01-trace-ir.md`
-3. `docs/dynamic/02-dynamorio-capture.md`
-4. `docs/dynamic/03-objects-and-communication.md`
-5. `docs/dynamic/04-portability-check.md`
-6. `docs/dynamic/05-verdict-and-certificate.md`
-7. 当前 `docs/exec-plans/active/` milestone
+The repository-level soundness contract wins if an older route-specific document or
+comment conflicts with it.
 
-## 最高规则
+## What the project proves
 
-动态 verdict 只允许 `TRACE_SAFE`、`COUNTEREXAMPLE`、`UNKNOWN`。
+- Static `SAFE` is allowed only from a closed static proof for the certificate scope.
+- Dynamic `TRACE_SAFE` covers only one certificate-bound execution trace.
+- `COUNTEREXAMPLE` requires a validated target-only execution.
+- Incomplete recovery, unsupported input, resource limits and missing evidence produce
+  `UNKNOWN`.
 
-`TRACE_SAFE` 只覆盖证书绑定的轨迹事件骨架。禁止把程序跑通、多跑几次没有报错、本次没看到间接目标、本次地址没有重叠或 DynamoRIO 的实际调度顺序解释成无条件 SAFE。
+Passing a program, adding inputs or collecting many `TRACE_SAFE` runs never proves
+static `SAFE`.
 
-轨迹丢失、截断、未知记录、资源超限和不支持事件必须传播为 `UNKNOWN`。
+## Evidence boundary
 
-## 包边界
+The canonical categories are:
 
-- `bmo_check_dynamic` 和 `bmo_check_static` 不得互相 import。
-- `bmo-check` 属于动态包；`bmo-check-static` 属于静态包。
-- 只有各自的 `proof/` 能构造最终 verdict。
-- 不恢复旧 `bmo_check` namespace。
-- 本阶段不修改 DBT6，也不实现运行时守卫。
+- `ProofFact` — may enter static `SAFE` proof closure;
+- `ObservedFact` — bound to a trace and never becomes a static proof;
+- `DiagnosticHint` — helps locate a precision gap and never affects a verdict;
+- `UnknownFact` — remains visible until an explicit `ProofFact` discharges it.
 
-## 动态证据规则
+Dynamic-assisted diagnosis follows:
 
-- 程序序只能来自同一 thread 的 sequence。
-- ticket 只用于生命周期、同步配对和 object generation，不能给普通访存增加顺序。
-- 地址复用必须产生新的 object generation。
-- 通信边要求跨线程、字节范围相交且至少一端写。
-- 实际间接目标对当前轨迹是已知事实；它不能证明未执行目标不存在。
-- target 模型允许过近似。删除 target 行为必须有明确的 Fence、atomic、同步或架构依据。
-- 未验证的 target-only candidate 返回 `UNKNOWN`，不能输出反例结论。
+```text
+static Unknown + dynamic observation -> diagnostic hint
+diagnostic hint -> analyzer improvement -> fresh static proof
+```
 
-## 资源规则
+Never write a direct observation-to-proof conversion or mutate the static lattice from
+a trace.
 
-大型轨迹必须流式解码并落盘。禁止用无界 Python list、全量 NetworkX 图或一次性笛卡尔积承载整个程序。超过窗口、页跨度、执行枚举或时间限制时返回带原因的 `UNKNOWN`。
+## Package direction
 
-## 测试规则
+The accepted target graph is:
 
-每项 proof 能力至少需要正例、反例和 Unknown 传播测试。必须保留截断 trace、dropped events、间接目标、地址复用、混合宽度、LOCK/XCHG、显式 Fence 和通信窗口超限用例。
+```text
+static / dynamic / diagnostics -> bmo_check_core
+evaluation -> static / dynamic / diagnostics / core
+CLI -> application services
+```
 
-注释重点解释为什么某个事实足以删除行为，或为什么必须传播 Unknown，不逐行翻译代码。
+Forbidden:
+
+- static importing dynamic or diagnostics;
+- dynamic importing static or diagnostics;
+- core importing any implementation, evaluation or CLI package;
+- proof/certificate code importing PARSEC manifests;
+- core semantic branches on benchmark names.
+
+During migration, existing `bmo_check_static` and `bmo_check_dynamic` models remain in
+place behind explicit one-way adapters. Do not create an untracked second business
+model or a generic `common` dumping ground.
+
+## Change discipline
+
+Use the sequence in `docs/architecture/migration-plan.md`:
+
+1. characterize current behavior;
+2. add a canonical type or interface;
+3. add a documented one-way adapter;
+4. migrate one producer and its consumers;
+5. run differential checks;
+6. remove the old representation and adapter only after all callers migrate.
+
+Every commit has one purpose, passes the full default suite and keeps verdicts at least
+as conservative as the baseline. Do not combine an evidence-model migration with a
+benchmark precision change.
+
+## Test expectations
+
+Proof changes need positive, negative and Unknown-propagation tests. Architecture work
+also needs dependency, evidence-flow, proof-closure, stable-ID and schema tests.
+
+PARSEC results validate generic behavior but are not a substitute for synthetic
+invariant tests. canneal may expose a missing capability; its name, functions and
+observed values must never select analysis semantics.
+
+## Experiment artifacts
+
+Do not commit ordinary local experiment products:
+
+```text
+.experiments/
+.tmp*
+.bmo-check/
+large traces
+PARSEC temporary results
+DuckDB databases
+native build output
+```
+
+A small fixture may be versioned only when it has an explicit schema version, a
+reproduction path and a reviewed reason that a synthetic fixture is insufficient.
+
+## Current commands
+
+```text
+bmo-check capture|analyze|run|campaign|explain|locate
+bmo-check-static fingerprint|recover|slice|analyze|explain|evaluate
+```
+
+The target architecture later adds `bmo-check diagnose`. Until Phase C completes,
+diagnostic code must not be attached directly to the current verifier internals.

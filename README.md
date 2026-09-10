@@ -85,6 +85,11 @@ uv sync
 uv run pytest
 ```
 
+开始修改分析器前，先阅读仓库级 [soundness contract](docs/spec/soundness.md) 和
+[target architecture](docs/architecture/target-architecture.md)。当前实现的架构缺口记录在
+[repository audit](docs/architecture/repository-audit.md)，分阶段迁移顺序记录在
+[migration plan](docs/architecture/migration-plan.md)。
+
 动态路线文档位于 `docs/dynamic/`，原静态研究位于 `docs/static/`。
 D1/D2 首个严格闭环的逐项证据位于
 `docs/exec-plans/active/d1-d2-acceptance.md`。

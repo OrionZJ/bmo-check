@@ -11,6 +11,9 @@
     "bmo-check-static": "bmo_check_static.cli:main"
   },
   "documentation": {
+    "architecture": "docs/architecture/target-architecture.md",
+    "soundness": "docs/spec/soundness.md",
+    "migration": "docs/architecture/migration-plan.md",
     "dynamic": "docs/dynamic",
     "static": "docs/static",
     "active_plans": "docs/exec-plans/active",
