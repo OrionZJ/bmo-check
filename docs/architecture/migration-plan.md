@@ -203,17 +203,24 @@ the legacy certificate verdict and serialization unchanged.
 Commit intents are subsystem-specific, for example
 `Migrate recovery Unknowns to canonical provenance`.
 
-### C7 — Canonical memory and portability ownership
+### C7 — Canonical static certificate ownership
 
-Move shared memory identities, relation vocabulary and DBT contract interpretation to
-`bmo_check_core`. Keep static and dynamic event payloads as adapters until differential
-relation tests prove the canonical implementation matches both existing routes.
+The first C7 slice is now implemented by
+`bmo_check_static.proof.certificate_bridge`. It consumes the C6 typed slice proofs,
+removal decisions and portability Unknown sidecar, constructs a canonical
+`StaticCertificate`, and immediately replays it with the core verifier. The bridge
+rejects dynamic evidence and mixed scopes; it does not rewrite or infer missing
+proofs. `binding_from_manifest` gives the bridge one stable binary/DBT binding path.
 
-Do not delete either route-specific checker merely because the new checker passes a
-few litmus tests. Deletion requires the full relation matrix and historical regression
-suite.
+The legacy `PortabilityCertificate` and JSON serializer remain the compatibility
+surface until differential certificate tests cover all static verdicts. The remaining
+C7 work is to move shared memory identities, relation vocabulary and DBT contract
+interpretation to `bmo_check_core`, then compare both route-specific checkers over the
+full relation matrix before deleting either implementation.
 
-Commit intent: `Unify source and target memory-order contracts`.
+Implementation record: `docs/exec-plans/active/c7-canonical-static-certificate.md`.
+
+Commit intent for this slice: `Bridge static verdicts to canonical certificates`.
 
 ### C8 — Application services and thin CLIs
 

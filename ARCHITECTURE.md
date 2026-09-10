@@ -19,12 +19,12 @@ src/bmo_check_static/        binary-only static SAFE research
 They do not import each other. This remains required during the migration.
 
 The current split is not yet a complete evidence boundary. The shared package now
-contains stable identities, a typed evidence ledger, a one-way static adapter and a
-canonical certificate closure verifier. Dependency-closure and CFG recovery now
-have opt-in canonical Unknown sidecars, but static provenance and dynamic
-certificates still use their legacy representations. Dynamic-assisted static
-diagnosis must not be added directly to those legacy paths; later C6 producers and
-certificate consumers must be migrated with differential checks first.
+contains stable identities, a typed evidence ledger, migrated static recovery,
+memory, sharing, slicing and portability sidecars, and a canonical certificate
+closure verifier. A static certificate bridge now replays those sidecars, while the
+legacy JSON certificate remains the compatibility output. Dynamic-assisted static
+diagnosis must not be added directly to legacy verdict paths; dynamic observations
+still need a separate diagnostic service and can never enter static proof closure.
 
 ## Accepted direction
 

@@ -2,9 +2,19 @@
 
 from .verifier import explain_certificate, verify_certificate_scope, verify_portability
 from .evidence import StaticPortabilityEvidence, verify_portability_with_evidence
+from .certificate_bridge import (
+    CertificateBridgeError,
+    StaticCertificateEvidence,
+    binding_from_manifest,
+    build_static_certificate_with_evidence,
+)
 
 __all__ = [
     "StaticPortabilityEvidence",
+    "StaticCertificateEvidence",
+    "CertificateBridgeError",
+    "binding_from_manifest",
+    "build_static_certificate_with_evidence",
     "explain_certificate",
     "verify_certificate_scope",
     "verify_portability",

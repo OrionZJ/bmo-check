@@ -259,10 +259,12 @@ Static certificate verification MUST traverse all evidence reachable from `SAFE`
 
 The executable canonical replay API is `bmo_check_core.certificate.verify_static_certificate`.
 It rejects non-`ProofFact` roots, missing removal coverage, omitted or unresolved
-Unknowns, bounded `SAFE` results and mismatched certificate bindings. The trace API
-`verify_trace_certificate` separately checks trace-bound `ObservedFact` roots. The
-legacy route certificate remains outside this API until its C6 migration and
-differential check are complete.
+Unknowns, bounded `SAFE` results and mismatched certificate bindings. The static
+route bridge (`bmo_check_static.proof.certificate_bridge`) is required to invoke this
+replay after assembling legacy sidecars; it cannot rewrite a scope or silently drop
+an Unknown. The legacy JSON payload remains a compatibility serialization until the
+differential migration is complete. The trace API `verify_trace_certificate`
+separately checks trace-bound `ObservedFact` roots.
 
 ```text
 for every reachable evidence node:
