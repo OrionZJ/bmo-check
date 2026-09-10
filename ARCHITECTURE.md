@@ -22,7 +22,8 @@ The current split is not yet a complete evidence boundary. The shared package no
 contains stable identities, a typed evidence ledger, migrated static recovery,
 memory, sharing, slicing and portability sidecars, and a canonical certificate
 closure verifier. A static certificate bridge now replays those sidecars, while the
-legacy JSON certificate remains the compatibility output. Dynamic-assisted static
+legacy JSON certificate remains the compatibility output. The core also owns the
+typed DBT memory-order contract used by the dynamic input adapter. Dynamic-assisted static
 diagnosis must not be added directly to legacy verdict paths; dynamic observations
 still need a separate diagnostic service and can never enter static proof closure.
 

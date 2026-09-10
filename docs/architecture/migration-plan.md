@@ -220,6 +220,14 @@ full relation matrix before deleting either implementation.
 
 Implementation record: `docs/exec-plans/active/c7-canonical-static-certificate.md`.
 
+The contract portion is now also implemented in `bmo_check_core.contracts`.
+Dynamic YAML is converted through a one-way adapter and the canonical support check
+preserves the old unsupported-contract outcome. Static manifest parsing still has a
+compatibility representation; it must migrate through the same value object before
+relation encoding moves to core.
+
+Implementation record: `docs/exec-plans/active/c7-canonical-contract.md`.
+
 Commit intent for this slice: `Bridge static verdicts to canonical certificates`.
 
 ### C8 — Application services and thin CLIs

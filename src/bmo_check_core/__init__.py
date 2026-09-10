@@ -36,6 +36,14 @@ from .evidence import (
     UnknownFact,
     UnknownKind,
 )
+from .contracts import (
+    ContractError,
+    ContractIssue,
+    MemoryOrderContract,
+    TargetFence,
+    TargetOrdering,
+    TranslationContract,
+)
 from .certificate import (
     CertificateBinding,
     CertificateError,
@@ -79,6 +87,12 @@ __all__ = [
     "UnknownDischarge",
     "UnknownFact",
     "UnknownKind",
+    "ContractError",
+    "ContractIssue",
+    "MemoryOrderContract",
+    "TargetFence",
+    "TargetOrdering",
+    "TranslationContract",
     "CertificateBinding",
     "CertificateError",
     "CertificateVerdict",

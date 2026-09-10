@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import yaml
+from bmo_check_core import ContractError, MemoryOrderContract
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -41,30 +42,46 @@ class DbtContract(_Strict):
     translation: _Translation
 
 
+def to_core_contract(contract: DbtContract) -> MemoryOrderContract:
+    """把动态 YAML 模型转换成唯一的 canonical contract 解释。"""
+
+    translation = contract.translation
+    try:
+        return MemoryOrderContract.from_wire(
+            schema_version=contract.schema_version,
+            contract_version=contract.contract_version,
+            guest_arch=contract.guest.arch,
+            guest_memory_model=contract.guest.memory_model,
+            host_arch=contract.host.arch,
+            host_memory_model=contract.host.memory_model,
+            plain_load=translation.plain_load.target_ordering,
+            plain_store=translation.plain_store.target_ordering,
+            lock_rmw=translation.lock_rmw.target_ordering,
+            memory_xchg=translation.memory_xchg.target_ordering,
+            lfence=translation.lfence.target_fence,
+            sfence=translation.sfence.target_fence,
+            mfence=translation.mfence.target_fence,
+            syscall=getattr(
+                getattr(translation, "syscall", None),
+                "target_ordering",
+                "unknown",
+            ),
+        )
+    except (AttributeError, ContractError) as error:
+        raise ContractError(f"invalid DBT contract shape: {error}") from error
+
+
 def load_supported_contract(path: Path) -> tuple[DbtContract | None, str | None]:
     try:
         payload = yaml.safe_load(path.read_text(encoding="utf-8"))
         contract = DbtContract.model_validate(payload)
     except (OSError, ValueError, yaml.YAMLError) as error:
         return None, f"invalid DBT contract: {error}"
-    expected = {
-        "guest": (contract.guest.arch, contract.guest.memory_model, "x86_64", "x86_tso"),
-        "host": (contract.host.arch, contract.host.memory_model, "riscv64", "rvwmo"),
-        "plain_load": (contract.translation.plain_load.target_ordering, "relaxed"),
-        "plain_store": (contract.translation.plain_store.target_ordering, "relaxed"),
-        "lock_rmw": (contract.translation.lock_rmw.target_ordering, "acq_rel"),
-        "memory_xchg": (contract.translation.memory_xchg.target_ordering, "acq_rel"),
-        "lfence": (contract.translation.lfence.target_fence, "r,r"),
-        "sfence": (contract.translation.sfence.target_fence, "w,w"),
-        "mfence": (contract.translation.mfence.target_fence, "rw,rw"),
-    }
-    for name, values in expected.items():
-        if len(values) == 4:
-            actual = values[:2]
-            wanted = values[2:]
-        else:
-            actual = values[:1]
-            wanted = values[1:]
-        if actual != wanted:
-            return contract, f"unsupported DBT contract field {name}: {actual} != {wanted}"
+    try:
+        canonical = to_core_contract(contract)
+    except ContractError as error:
+        return contract, str(error)
+    issue = canonical.unsupported_field()
+    if issue is not None:
+        return contract, issue.render()
     return contract, None
