@@ -75,6 +75,11 @@ This is the target ownership map, not a command to move every file at once. Exis
 entry points remain operational through thin wrappers until their callers and tests
 have migrated.
 
+Current migration status: dependency closure, CFG recovery, thread lifecycle and
+synchronization each expose an explicit legacy-report-plus-ledger sidecar. The old
+reports remain authoritative until memory-event, slicing and certificate consumers
+are migrated; the sidecars are not a shortcut to a static `SAFE` verdict.
+
 ## 3. Dependency direction
 
 ### 3.1 Package-level graph

@@ -176,6 +176,11 @@ adds the same opt-in path to CFG/indirect-target recovery; backend and incomplet
 target Unknowns are emitted canonically while the legacy `ControlFlowReport` remains
 unchanged.
 
+Implementation record: `docs/exec-plans/active/c6-thread-sync-unknown.md`. The third
+slice adds the opt-in path to thread lifecycle and synchronization recovery. Callback,
+role, join, symbol, disassembly and return-path Unknowns are emitted canonically while
+legacy reports remain unchanged.
+
 `SharedStateReport` keeps its current validator until every removal has a canonical
 `RemovalDecision`.
 

@@ -52,6 +52,7 @@ def emit_static_unknown(
     *,
     module: str | None = None,
     pc: int | None = None,
+    function: str | None = None,
     details: dict[str, object] | None = None,
     canonical_ledger: EvidenceLedger | None = None,
     canonical_scope: str = "static.recovery",
@@ -68,6 +69,7 @@ def emit_static_unknown(
         impact=impact,
         module=module,
         pc=pc,
+        function=function,
         details=details or {},
     )
     if canonical_ledger is None:
@@ -84,6 +86,8 @@ def emit_static_unknown(
         context.append(f"legacy.module={module}")
     if pc is not None:
         context.append(f"legacy.pc={pc:#x}")
+    if function is not None:
+        context.append(f"legacy.function={function}")
     for key in sorted(legacy.details):
         if not isinstance(key, str):
             raise ValueError("legacy recovery details keys must be strings")

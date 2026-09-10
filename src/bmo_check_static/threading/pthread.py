@@ -4,7 +4,9 @@ from pathlib import Path
 
 from capstone.x86 import X86_OP_IMM, X86_OP_MEM, X86_OP_REG
 
+from bmo_check_core import EvidenceLedger
 from bmo_check_static.binary.angr_backend import AngrBackendError, load_cfg
+from bmo_check_static.binary.evidence import emit_static_unknown
 from bmo_check_static.binary.elf import executable_segments
 from bmo_check_static.binary.symbols import function_symbols
 from bmo_check_static.model import (
@@ -44,6 +46,33 @@ def _location(module: ModuleFingerprint, pc: int, symbol: str | None = None) -> 
         module_sha256=module.sha256,
         pc=pc,
         symbol=symbol,
+    )
+
+
+def _unknown(
+    kind: UnknownKind,
+    reason: str,
+    impact: str,
+    *,
+    module: str | None = None,
+    pc: int | None = None,
+    function: str | None = None,
+    details: dict[str, object] | None = None,
+    canonical_ledger: EvidenceLedger | None = None,
+    canonical_scope: str = "static.threading",
+) -> UnknownFact:
+    """保留旧线程报告，同时把同一个缺口写入可审计的 evidence ledger。"""
+
+    return emit_static_unknown(
+        kind,
+        reason,
+        impact,
+        module=module,
+        pc=pc,
+        function=function,
+        details=details,
+        canonical_ledger=canonical_ledger,
+        canonical_scope=canonical_scope,
     )
 
 
@@ -186,15 +215,20 @@ def discover_pthread_threads(
     module: ModuleFingerprint,
     manifest: ProgramManifest,
     control_flow: ControlFlowReport,
+    *,
+    canonical_ledger: EvidenceLedger | None = None,
+    canonical_scope: str = "static.threading",
 ) -> ThreadDiscoveryReport:
     try:
         context = load_cfg(module)
     except AngrBackendError as error:
-        unknown = UnknownFact(
-            kind=UnknownKind.CFG_BACKEND_FAILURE,
-            reason=str(error),
-            impact="pthread callback arguments cannot be recovered",
+        unknown = _unknown(
+            UnknownKind.CFG_BACKEND_FAILURE,
+            str(error),
+            "pthread callback arguments cannot be recovered",
             module=module.path,
+            canonical_ledger=canonical_ledger,
+            canonical_scope=canonical_scope,
         )
         return ThreadDiscoveryReport(unknowns=(unknown,))
 
@@ -265,12 +299,15 @@ def discover_pthread_threads(
                 reason="pthread_create start routine is not a proven executable constant",
             )
             unknowns.append(
-                UnknownFact(
-                    kind=UnknownKind.UNKNOWN_THREAD_ENTRY,
-                    reason=targets.reason or "pthread callback is unknown",
-                    impact="reachable worker code may be missing",
+                _unknown(
+                    UnknownKind.UNKNOWN_THREAD_ENTRY,
+                    targets.reason or "pthread callback is unknown",
+                    "reachable worker code may be missing",
                     module=module.path,
                     pc=call.location.pc,
+                    details={"api": "pthread_create"},
+                    canonical_ledger=canonical_ledger,
+                    canonical_scope=canonical_scope,
                 )
             )
         role_id = f"pthread@{call.location.pc:x}"
@@ -324,12 +361,15 @@ def discover_pthread_threads(
             )
             role_id = f"openmp@{call.location.pc:x}"
             unknowns.append(
-                UnknownFact(
-                    kind=UnknownKind.UNKNOWN_THREAD_ENTRY,
-                    reason=targets.reason or "OpenMP callback is unknown",
-                    impact="reachable OpenMP worker code may be missing",
+                _unknown(
+                    UnknownKind.UNKNOWN_THREAD_ENTRY,
+                    targets.reason or "OpenMP callback is unknown",
+                    "reachable OpenMP worker code may be missing",
                     module=module.path,
                     pc=call.location.pc,
+                    details={"api": call.target_symbol or "openmp"},
+                    canonical_ledger=canonical_ledger,
+                    canonical_scope=canonical_scope,
                 )
             )
         entry = (call, role_id, targets, origin)
@@ -352,12 +392,15 @@ def discover_pthread_threads(
         )
         if not parent_complete:
             unknowns.append(
-                UnknownFact(
-                    kind=UnknownKind.REACHING_DEFINITION_FAILURE,
-                    reason="pthread_create site is reachable from zero or multiple thread roles",
-                    impact="the child thread's parent role is unknown",
+                _unknown(
+                    UnknownKind.REACHING_DEFINITION_FAILURE,
+                    "pthread_create site is reachable from zero or multiple thread roles",
+                    "the child thread's parent role is unknown",
                     module=module.path,
                     pc=call.location.pc,
+                    details={"api": "pthread_create"},
+                    canonical_ledger=canonical_ledger,
+                    canonical_scope=canonical_scope,
                 )
             )
         roles.append(
@@ -404,14 +447,15 @@ def discover_pthread_threads(
             )
         if not parent_complete:
             unknowns.append(
-                UnknownFact(
-                    kind=UnknownKind.REACHING_DEFINITION_FAILURE,
-                    reason=(
-                        "OpenMP parallel site is reachable from zero or multiple roles"
-                    ),
-                    impact="the OpenMP worker parent role is unknown",
+                _unknown(
+                    UnknownKind.REACHING_DEFINITION_FAILURE,
+                    "OpenMP parallel site is reachable from zero or multiple roles",
+                    "the OpenMP worker parent role is unknown",
                     module=module.path,
                     pc=call.location.pc,
+                    details={"api": call.target_symbol or "openmp"},
+                    canonical_ledger=canonical_ledger,
+                    canonical_scope=canonical_scope,
                 )
             )
         # create_site 只用于把角色定位回第一个并行区入口；重复入口通过
@@ -489,12 +533,15 @@ def discover_pthread_threads(
         )
         if not complete:
             unknowns.append(
-                UnknownFact(
-                    kind=UnknownKind.UNKNOWN_JOIN_RELATION,
-                    reason=reason or "join relation is unknown",
-                    impact="thread lifetime ordering cannot be closed",
+                _unknown(
+                    UnknownKind.UNKNOWN_JOIN_RELATION,
+                    reason or "join relation is unknown",
+                    "thread lifetime ordering cannot be closed",
                     module=module.path,
                     pc=call.location.pc,
+                    details={"api": "pthread_join"},
+                    canonical_ledger=canonical_ledger,
+                    canonical_scope=canonical_scope,
                 )
             )
 

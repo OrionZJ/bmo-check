@@ -6,7 +6,9 @@ from pathlib import Path
 
 import yaml
 
+from bmo_check_core import EvidenceLedger
 from bmo_check_static.binary.capstone_backend import collect_instruction_facts
+from bmo_check_static.binary.evidence import emit_static_unknown
 from bmo_check_static.binary.symbols import function_symbols
 from bmo_check_static.model import (
     ControlFlowKind,
@@ -58,6 +60,56 @@ def _load_yaml(path: Path) -> dict[str, object]:
     if not isinstance(data, dict):
         raise ValueError(f"YAML root must be a mapping: {path}")
     return data
+
+
+def _unknown(
+    kind: UnknownKind,
+    reason: str,
+    impact: str,
+    *,
+    module: str | None = None,
+    pc: int | None = None,
+    function: str | None = None,
+    details: dict[str, object] | None = None,
+    canonical_ledger: EvidenceLedger | None = None,
+    canonical_scope: str = "static.synchronization",
+) -> UnknownFact:
+    """把同步摘要缺口同时保留在旧报告和 canonical ledger 中。"""
+
+    return emit_static_unknown(
+        kind,
+        reason,
+        impact,
+        module=module,
+        pc=pc,
+        function=function,
+        details=details,
+        canonical_ledger=canonical_ledger,
+        canonical_scope=canonical_scope,
+    )
+
+
+def _mirror_instruction_unknowns(
+    unknowns: tuple[UnknownFact, ...],
+    ledger: EvidenceLedger | None,
+    scope: str,
+) -> None:
+    """同步摘要复用反汇编结果时，不让其中的 Unknown 在旁路丢失。"""
+
+    if ledger is None:
+        return
+    for unknown in unknowns:
+        _unknown(
+            unknown.kind,
+            unknown.reason,
+            unknown.impact,
+            module=unknown.module,
+            pc=unknown.pc,
+            function=unknown.function,
+            details=unknown.details,
+            canonical_ledger=ledger,
+            canonical_scope=scope,
+        )
 
 
 def _effect_bits(fact: InstructionFact) -> int:
@@ -386,6 +438,9 @@ def analyze_pthread_synchronization(
     pthread_spec_path: Path,
     dbt_contract_path: Path,
     requested_apis: set[str] | None = None,
+    *,
+    canonical_ledger: EvidenceLedger | None = None,
+    canonical_scope: str = "static.synchronization",
 ) -> SynchronizationReport:
     pthread_spec = _load_yaml(pthread_spec_path)
     contract = _load_yaml(dbt_contract_path)
@@ -403,6 +458,11 @@ def analyze_pthread_synchronization(
     trusted_implementations = pthread_spec.get("trusted_implementations", {})
 
     instruction_report = collect_instruction_facts(library)
+    _mirror_instruction_unknowns(
+        instruction_report.unknowns,
+        canonical_ledger,
+        canonical_scope,
+    )
     ordered_facts = tuple(sorted(instruction_report.facts, key=lambda item: item.pc))
     fact_pcs = tuple(item.pc for item in ordered_facts)
 
@@ -445,12 +505,15 @@ def analyze_pthread_synchronization(
         symbols = {symbol.pc: symbol for symbol in symbols_by_name.get(api, [])}
         if not symbols:
             report_unknowns.append(
-                UnknownFact(
-                    kind=UnknownKind.MISSING_SYMBOL_IMPLEMENTATION,
-                    reason=f"{api} has no concrete function symbol in this library",
-                    impact="the synchronization API cannot be bound to machine instructions",
+                _unknown(
+                    UnknownKind.MISSING_SYMBOL_IMPLEMENTATION,
+                    f"{api} has no concrete function symbol in this library",
+                    "the synchronization API cannot be bound to machine instructions",
                     module=library.path,
                     function=api,
+                    details={"api": api},
+                    canonical_ledger=canonical_ledger,
+                    canonical_scope=canonical_scope,
                 )
             )
             continue
@@ -499,13 +562,16 @@ def analyze_pthread_synchronization(
             local_unknowns: list[UnknownFact] = []
             if not complete:
                 local_unknowns.append(
-                    UnknownFact(
-                        kind=UnknownKind.UNKNOWN_SYNCHRONIZATION,
-                        reason=reason or "not every return path was summarized",
-                        impact="future proof must not assume a stronger library ordering",
+                    _unknown(
+                        UnknownKind.UNKNOWN_SYNCHRONIZATION,
+                        reason or "not every return path was summarized",
+                        "future proof must not assume a stronger library ordering",
                         module=library.path,
                         pc=symbol.pc,
                         function=api,
+                        details={"api": api, "contract_version": contract_version},
+                        canonical_ledger=canonical_ledger,
+                        canonical_scope=canonical_scope,
                     )
                 )
             summaries.append(

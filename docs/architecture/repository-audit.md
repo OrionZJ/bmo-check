@@ -45,8 +45,9 @@ The default manifest producer and every later static producer still use legacy
 payloads, so the audit's multi-layer leakage findings remain active.
 
 CFG/indirect-target recovery now has a matching opt-in ledger path. Thread lifecycle,
-synchronization, memory-event and slicing producers still have no canonical emission
-API, and the static verifier still performs legacy Unknown relevance filtering.
+synchronization recovery now have matching opt-in ledger paths. Memory-event and
+slicing producers still have no canonical emission API, and the static verifier still
+performs legacy Unknown relevance filtering.
 
 ## 2. Current subsystems
 
