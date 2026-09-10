@@ -81,6 +81,10 @@ Property tests must show:
 
 Commit intent: `Add stable analysis identities`.
 
+Implementation record: `docs/exec-plans/active/c2-identities.md`. The first cut adds
+only `bmo_check_core.identity` and property-style tests; route producers and
+certificate consumers remain on legacy models until C3/C4 adapters exist.
+
 ### C3 — Typed evidence domain and ledger
 
 Introduce strict, frozen variants:

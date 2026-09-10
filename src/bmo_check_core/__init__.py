@@ -1,0 +1,41 @@
+"""BMoCheck 的共享领域类型。
+
+这里只暴露不依赖任一路由实现的值对象。分析器、评测和 CLI 的逻辑不能反向
+进入这个包，否则共享层会再次变成隐藏的业务入口。
+"""
+
+from .identity import (
+    AbstractObjectId,
+    BasicBlockId,
+    BinaryClosureId,
+    EvidenceId,
+    FunctionId,
+    IdentityMaterialError,
+    InstructionId,
+    MemoryEventId,
+    MemoryOperandId,
+    ModuleId,
+    ObjectOrigin,
+    StableId,
+    ThreadInstanceId,
+    ThreadRoleId,
+    TraceId,
+)
+
+__all__ = [
+    "AbstractObjectId",
+    "BasicBlockId",
+    "BinaryClosureId",
+    "EvidenceId",
+    "FunctionId",
+    "IdentityMaterialError",
+    "InstructionId",
+    "MemoryEventId",
+    "MemoryOperandId",
+    "ModuleId",
+    "ObjectOrigin",
+    "StableId",
+    "ThreadInstanceId",
+    "ThreadRoleId",
+    "TraceId",
+]
