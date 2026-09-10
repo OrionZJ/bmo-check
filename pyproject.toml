@@ -30,7 +30,7 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/bmo_check_core", "src/bmo_check_dynamic", "src/bmo_check_static"]
+packages = ["src/bmo_check_core", "src/bmo_check_dynamic", "src/bmo_check_static", "src/bmo_check_diagnostics"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "specs/dynamic/dbt6-mo-off.yaml" = "bmo_check_dynamic/data/dbt6-mo-off.yaml"
@@ -46,4 +46,4 @@ testpaths = ["tests"]
 
 [tool.coverage.run]
 branch = true
-source = ["bmo_check_core", "bmo_check_dynamic", "bmo_check_static"]
+source = ["bmo_check_core", "bmo_check_dynamic", "bmo_check_static", "bmo_check_diagnostics"]

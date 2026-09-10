@@ -85,7 +85,9 @@ sidecars and replays a canonical `StaticCertificate`. The old report and JSON
 serializer remain the compatibility surface until differential certificate tests
 cover every verdict. `bmo_check_core.contracts` now owns the typed DBT
 memory-order contract; route-specific YAML/model classes are input adapters. The
-sidecars are not a shortcut to a static `SAFE` verdict.
+sidecars are not a shortcut to a static `SAFE` verdict. Read-only diagnostic
+snapshots now live in `bmo_check_core.diagnostics`; they are the only planned input
+to a future correlator.
 
 ## 3. Dependency direction
 

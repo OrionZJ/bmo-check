@@ -57,6 +57,12 @@ from .certificate import (
     verify_static_certificate,
     verify_trace_certificate,
 )
+from .diagnostics import (
+    DynamicDiagnosticSnapshot,
+    EvidenceSnapshot,
+    SnapshotError,
+    StaticDiagnosticSnapshot,
+)
 
 __all__ = [
     "AbstractObjectId",
@@ -104,4 +110,8 @@ __all__ = [
     "TraceVerdict",
     "verify_static_certificate",
     "verify_trace_certificate",
+    "DynamicDiagnosticSnapshot",
+    "EvidenceSnapshot",
+    "SnapshotError",
+    "StaticDiagnosticSnapshot",
 ]

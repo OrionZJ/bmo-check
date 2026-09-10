@@ -65,6 +65,10 @@ During migration, existing `bmo_check_static` and `bmo_check_dynamic` models rem
 place behind explicit one-way adapters. Do not create an untracked second business
 model or a generic `common` dumping ground.
 
+`bmo_check_core.contracts` is the canonical DBT memory-order interpretation. The
+read-only snapshot types in `bmo_check_core.diagnostics` are the only allowed
+boundary for future static/dynamic correlation; they do not change verdicts.
+
 The dependency-closure producer additionally exposes an opt-in
 `build_program_manifest_with_evidence` sidecar. It is a migration seam, not a second
 verdict path; keep the legacy manifest output and canonical ledger compared until the
@@ -118,5 +122,6 @@ bmo-check capture|analyze|run|campaign|explain|locate
 bmo-check-static fingerprint|recover|slice|analyze|explain|evaluate
 ```
 
-The target architecture later adds `bmo-check diagnose`. Until Phase C completes,
-diagnostic code must not be attached directly to the current verifier internals.
+The target architecture later adds `bmo-check diagnose`. Snapshot construction may
+start before the correlator, but diagnostic code must not attach directly to verifier
+internals or change a static verdict.

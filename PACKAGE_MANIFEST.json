@@ -4,6 +4,7 @@
   "default_pipeline": "dynamic-trace",
   "packages": {
     "bmo_check_core": "shared identity and contract domain (migration foundation)",
+    "bmo_check_diagnostics": "read-only static/dynamic evidence correlation boundary",
     "bmo_check_dynamic": "default trace-scoped verifier",
     "bmo_check_static": "preserved static whole-binary verifier"
   },

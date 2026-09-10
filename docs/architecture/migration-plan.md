@@ -271,6 +271,11 @@ DynamicDiagnosticSnapshot
 
 Neither snapshot exposes mutable analyzer state.
 
+Implementation record: `docs/exec-plans/active/d1-diagnostic-snapshots.md`. The first
+slice places the immutable snapshot types in `bmo_check_core.diagnostics` and keeps
+`bmo_check_diagnostics` as a core-only facade. Static and dynamic route adapters are
+not wired yet; no correlation or verdict change is implied.
+
 Commit intent: `Expose static and dynamic diagnostic snapshots`.
 
 ### D2 — Trace operand identity
