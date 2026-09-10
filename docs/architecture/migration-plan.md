@@ -193,6 +193,10 @@ Implementation record: `docs/exec-plans/active/c6-slicing-removal.md`. The sixth
 adds typed `ProofFact` and `RemovalDecision` sidecars for shared-memory pruning and
 refuses unmapped or unproved removals.
 
+Implementation record: `docs/exec-plans/active/c6-portability-unknown.md`. The seventh
+slice mirrors relevant portability Unknowns into the canonical ledger while keeping
+the legacy certificate verdict and serialization unchanged.
+
 `SharedStateReport` keeps its current validator until every removal has a canonical
 `RemovalDecision`.
 

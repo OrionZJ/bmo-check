@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from bmo_check_core import UnknownFact as CanonicalUnknownFact
+from bmo_check_core.evidence import UnknownKind as CanonicalUnknownKind
 from bmo_check_static.model import (
     AbstractAddress,
     AddressKind,
@@ -29,9 +31,11 @@ from bmo_check_static.model import (
     Verdict,
 )
 from bmo_check_static.proof import (
+    StaticPortabilityEvidence,
     explain_certificate,
     verify_certificate_scope,
     verify_portability,
+    verify_portability_with_evidence,
 )
 from bmo_check_static.slicing import restrict_to_application_scope
 
@@ -302,6 +306,28 @@ def test_relevant_unknown_blocks_checker_and_safe() -> None:
     assert certificate.verdict == Verdict.UNKNOWN
     assert unknown in certificate.relevant_unknowns
     assert certificate.checker.examined_executions == 0
+
+
+def test_portability_evidence_sidecar_preserves_certificate_and_unknown_kind() -> None:
+    events, edges = _message_passing_events()
+    unknown = UnknownFact(
+        kind=UnknownKind.UNRESOLVED_INDIRECT_CALL,
+        reason="indirect target set is open",
+        impact="callee may access shared state",
+        module="/bin/litmus",
+        pc=0x3000,
+    )
+    legacy = verify_portability(_report(events, edges, unknowns=(unknown,)))
+    snapshot = verify_portability_with_evidence(
+        _report(events, edges, unknowns=(unknown,))
+    )
+
+    assert isinstance(snapshot, StaticPortabilityEvidence)
+    assert snapshot.certificate == legacy
+    assert len(snapshot.unknown_ids) == 1
+    node = snapshot.ledger.get(snapshot.unknown_ids[0])
+    assert isinstance(node, CanonicalUnknownFact)
+    assert node.kind == CanonicalUnknownKind.UNRESOLVED_INDIRECT_CALL
 
 
 def test_opaque_event_does_not_duplicate_its_extraction_unknown() -> None:

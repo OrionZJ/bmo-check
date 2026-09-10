@@ -48,8 +48,9 @@ CFG/indirect-target recovery now has a matching opt-in ledger path. Thread lifec
 synchronization recovery now have matching opt-in ledger paths. Memory-event and
 memory-event recovery now has a matching opt-in ledger path and stable event links.
 Shared-state/escape classification now has a matching opt-in Unknown ledger path;
-slicing now has an opt-in ProofFact/RemovalDecision sidecar. The static verifier still
-performs legacy Unknown relevance filtering and does not consume the new slice ledger.
+slicing now has an opt-in ProofFact/RemovalDecision sidecar, and portability has an
+opt-in relevant-Unknown ledger sidecar. Legacy certificate construction still owns
+the final verdict and does not consume the new slice ledger.
 
 ## 2. Current subsystems
 
