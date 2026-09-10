@@ -283,7 +283,7 @@ def test_fake_premise_id_is_still_a_missing_parent() -> None:
         producer="static@c3",
         subject="scope:scope-a",
         premises=(),
-        content_discriminator='{"rule":"fake","scope":"scope-a"}',
+        content_discriminator='{"covered_events":[],"rule":"fake","scope":"scope-a"}',
     )
     with pytest.raises(LedgerError, match="missing proof premise"):
         EvidenceLedger().add(

@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import TypeAlias
 
-from ..identity import EvidenceId, StableId, ThreadInstanceId, TraceId
+from ..identity import EvidenceId, MemoryEventId, StableId, ThreadInstanceId, TraceId
 
 
 class EvidenceMaterialError(ValueError):
@@ -39,6 +39,8 @@ class UnknownKind(StrEnum):
     INVALID_ELF = "InvalidElf"
     # UNSUPPORTED_ARCHITECTURE 表示目标架构不在验证范围内。
     UNSUPPORTED_ARCHITECTURE = "UnsupportedArchitecture"
+    # MISSING_INTERPRETER 表示 ELF 声明的解释器未能绑定到闭包。
+    MISSING_INTERPRETER = "MissingInterpreter"
     # MISSING_LIBRARY 表示依赖闭包缺少一个运行时模块。
     MISSING_LIBRARY = "MissingLibrary"
     # AMBIGUOUS_LIBRARY 表示同名依赖无法唯一绑定到模块内容。
@@ -61,12 +63,34 @@ class UnknownKind(StrEnum):
     UNKNOWN_ESCAPE = "UnknownEscape"
     # UNKNOWN_SYNCHRONIZATION 表示同步边缺少可用的排序事实。
     UNKNOWN_SYNCHRONIZATION = "UnknownSynchronization"
+    # UNSUPPORTED_DYNAMIC_CODE 表示 JIT 或自修改代码超出静态输入范围。
+    UNSUPPORTED_DYNAMIC_CODE = "UnsupportedDynamicCode"
+    # MISSING_DBT_REVISION 表示证书不能绑定实际 DBT lowering 版本。
+    MISSING_DBT_REVISION = "MissingDbtRevision"
+    # INVALID_DBT_CONTRACT 表示 DBT memory-order 契约格式或内容无效。
+    INVALID_DBT_CONTRACT = "InvalidDbtContract"
+    # INVALID_FUNCTION_EFFECT_CONTRACT 表示外部函数 effect 假设无法复核。
+    INVALID_FUNCTION_EFFECT_CONTRACT = "InvalidFunctionEffectContract"
+    # CFG_BACKEND_FAILURE 表示 CFG 后端没有产出可审计的控制流事实。
+    CFG_BACKEND_FAILURE = "CfgBackendFailure"
+    # INCOMPLETE_INDIRECT_TARGET 表示间接目标候选集尚未封闭。
+    INCOMPLETE_INDIRECT_TARGET = "IncompleteIndirectTarget"
+    # MISSING_SYMBOL_IMPLEMENTATION 表示符号存在但实现无法绑定到模块。
+    MISSING_SYMBOL_IMPLEMENTATION = "MissingSymbolImplementation"
+    # REACHING_DEFINITION_FAILURE 表示调用实参或角色来源无法唯一恢复。
+    REACHING_DEFINITION_FAILURE = "ReachingDefinitionFailure"
+    # UNKNOWN_JOIN_RELATION 表示 join handle 与 child role 的关系不明确。
+    UNKNOWN_JOIN_RELATION = "UnknownJoinRelation"
+    # MEMORY_EVENT_RECOVERY_FAILURE 表示访存 effect 提取失败，不能当作空集合。
+    MEMORY_EVENT_RECOVERY_FAILURE = "MemoryEventRecoveryFailure"
     # UNKNOWN_AFFINE_BOUNDS 表示仿射地址缺少循环或线程边界。
     UNKNOWN_AFFINE_BOUNDS = "UnknownAffineBounds"
     # UNKNOWN_THREAD_ROLE 表示事件无法归属到唯一的静态线程角色。
     UNKNOWN_THREAD_ROLE = "UnknownThreadRole"
     # UNKNOWN_ROOT_CAUSE 表示当前还没有更细的缺口分类。
     UNKNOWN_ROOT_CAUSE = "UnknownRootCause"
+    # UNSUPPORTED_PORTABILITY_INPUT 表示 checker 不支持当前事件或地址形态。
+    UNSUPPORTED_PORTABILITY_INPUT = "UnsupportedPortabilityInput"
     # PORTABILITY_CHECK_INCOMPLETE 表示 memory-model obligation 没有闭合。
     PORTABILITY_CHECK_INCOMPLETE = "PortabilityCheckIncomplete"
     # PORTABILITY_CHECK_TIMEOUT 表示求解器超出明确的时间预算。
@@ -98,6 +122,17 @@ def _evidence_ids(name: str, values: tuple[EvidenceId, ...]) -> tuple[EvidenceId
     for value in values:
         if not isinstance(value, EvidenceId):
             raise EvidenceMaterialError(f"{name} must contain EvidenceId values")
+        normalized.append(value)
+    return tuple(sorted(set(normalized), key=lambda item: item.value))
+
+
+def _memory_event_ids(
+    name: str, values: tuple[MemoryEventId, ...]
+) -> tuple[MemoryEventId, ...]:
+    normalized: list[MemoryEventId] = []
+    for value in values:
+        if not isinstance(value, MemoryEventId):
+            raise EvidenceMaterialError(f"{name} must contain MemoryEventId values")
         normalized.append(value)
     return tuple(sorted(set(normalized), key=lambda item: item.value))
 
@@ -187,6 +222,9 @@ class ProofFact:
     scope: str
     # premises 只能引用其他 ProofFact，具体类别由 ledger 检查。
     premises: tuple[EvidenceId, ...] = ()
+    # covered_events 保存一份证明覆盖的静态访存事件，避免旧适配器把
+    # 一个 proof object 的多事件范围压缩成无法回查的单个 rule。
+    covered_events: tuple[MemoryEventId, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.id, EvidenceId):
@@ -198,6 +236,11 @@ class ProofFact:
         _text("proof rule", self.rule)
         _text("proof scope", self.scope)
         object.__setattr__(self, "premises", _evidence_ids("proof premises", self.premises))
+        object.__setattr__(
+            self,
+            "covered_events",
+            _memory_event_ids("proof covered_events", self.covered_events),
+        )
 
     @classmethod
     def create(
@@ -209,6 +252,7 @@ class ProofFact:
         rule: str,
         scope: str,
         premises: tuple[EvidenceId, ...] = (),
+        covered_events: tuple[MemoryEventId, ...] = (),
     ) -> "ProofFact":
         normalized = _evidence_ids("proof premises", premises)
         schema_version = _schema(schema_version)
@@ -223,7 +267,13 @@ class ProofFact:
                 subject,
                 scope,
                 normalized,
-                {"rule": rule, "scope": scope},
+                {
+                    "covered_events": [item.value for item in _memory_event_ids(
+                        "proof covered_events", covered_events
+                    )],
+                    "rule": rule,
+                    "scope": scope,
+                },
             ),
             schema_version=schema_version,
             producer=producer,
@@ -231,6 +281,7 @@ class ProofFact:
             rule=rule,
             scope=scope,
             premises=normalized,
+            covered_events=_memory_event_ids("proof covered_events", covered_events),
         )
 
     def expected_id(self) -> EvidenceId:
@@ -241,7 +292,11 @@ class ProofFact:
             self.subject,
             self.scope,
             self.premises,
-            {"rule": self.rule, "scope": self.scope},
+            {
+                "covered_events": [item.value for item in self.covered_events],
+                "rule": self.rule,
+                "scope": self.scope,
+            },
         )
 
 

@@ -19,10 +19,11 @@ src/bmo_check_static/        binary-only static SAFE research
 They do not import each other. This remains required during the migration.
 
 The current split is not yet a complete evidence boundary. The shared package now
-contains stable identities and a typed evidence ledger, but static provenance and
-dynamic certificates still use their legacy representations. Dynamic-assisted static
-diagnosis must not be added directly to those legacy paths; C4 adapters must land
-first.
+contains stable identities and a typed evidence ledger, and C4 adds a one-way static
+adapter for characterization. Static provenance and dynamic certificates still use
+their legacy representations. Dynamic-assisted static diagnosis must not be added
+directly to those legacy paths; certificate consumers still need the C5 closure
+verifier before any producer is migrated.
 
 ## Accepted direction
 

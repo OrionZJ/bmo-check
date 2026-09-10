@@ -204,6 +204,16 @@ class ThreadRoleId(StableId):
     prefix: ClassVar[str] = "thread-role"
 
     @classmethod
+    def from_legacy(cls, role: str) -> "ThreadRoleId":
+        """为尚未迁移的静态角色保留稳定身份。
+
+        这个入口只供兼容适配器使用。新分析器必须从父角色、创建点和入口集合
+        计算角色，不能把可读标签当成完整的线程证明。
+        """
+
+        return cls(_digest(cls.prefix, {"legacy_role": _text("legacy role", role)}))
+
+    @classmethod
     def from_parts(
         cls,
         parent_role: "ThreadRoleId | None",

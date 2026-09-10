@@ -124,6 +124,12 @@ The adapter cannot construct ObservedFacts or DiagnosticHints.
 
 Commit intent: `Adapt static facts to canonical evidence`.
 
+Implementation record: `docs/exec-plans/active/c4-static-adapter.md`. The adapter
+maps legacy events, proof objects and Unknowns into stable IDs and an append-only
+ledger through typed links. It is not used by current verdict construction, cannot
+create observations or hints, and rejects payloads whose event/proof references
+would otherwise be dropped.
+
 ### C5 — Proof-closure certificate verifier
 
 Introduce separate static and trace certificate builders plus a replay verifier. At

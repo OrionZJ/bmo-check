@@ -8,7 +8,8 @@ types until C4 introduces one-way adapters.
 
 ## Canonical variants
 
-- `ProofFact` carries a static rule, scope, typed subject and proof-only premises.
+- `ProofFact` carries a static rule, scope, typed subject, proof-only premises and an
+  optional typed set of covered memory events.
 - `ObservedFact` carries a trace, thread instance and typed observation attributes.
 - `DiagnosticHint` references Unknown and Observed IDs for diagnosis only.
 - `UnknownFact` records a registered kind, reason, scope and static provenance.

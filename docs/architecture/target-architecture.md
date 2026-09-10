@@ -158,6 +158,7 @@ EvidenceNode = ProofFact | ObservedFact | DiagnosticHint | UnknownFact
 
 - produced only by static recovery/analysis, a static solver, or a validated contract;
 - has typed subject, producer, rule and premise IDs;
+- may carry a typed set of covered memory-event identities for removal decisions;
 - premises may reference only `ProofFact`;
 - may discharge an `UnknownFact` through an explicit `UnknownDischarge` record;
 - may enter static `SAFE` proof closure.

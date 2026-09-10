@@ -152,6 +152,13 @@ def test_thread_roles_and_evidence_use_canonical_sets() -> None:
     assert two == two_reordered
 
 
+def test_legacy_thread_role_identity_is_stable_but_explicitly_legacy() -> None:
+    first = ThreadRoleId.from_legacy("worker:create@0x401000")
+    second = ThreadRoleId.from_legacy("worker:create@0x401000")
+    assert first == second
+    assert first != ThreadRoleId.from_legacy("worker:create@0x401100")
+
+
 def test_identity_material_rejects_unstable_or_ambiguous_values() -> None:
     with pytest.raises(IdentityMaterialError):
         ModuleId.from_parts("not-a-hash", "executable")
