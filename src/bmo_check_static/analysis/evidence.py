@@ -76,7 +76,7 @@ class StaticMemoryEventEvidence:
         )
 
 
-def _event_identity(module: ModuleFingerprint, event: MemoryEvent) -> MemoryEventId:
+def memory_event_identity(module: ModuleFingerprint, event: MemoryEvent) -> MemoryEventId:
     if not event.id:
         raise MemoryEvidenceError("memory events require a non-empty legacy id")
     if event.module != module.path or event.module_sha256 != module.sha256:
@@ -144,7 +144,7 @@ def extract_memory_events_with_evidence(
         canonical_scope=scope,
     )
     links = tuple(
-        MemoryEventIdentityLink(event.id, _event_identity(module, event))
+        MemoryEventIdentityLink(event.id, memory_event_identity(module, event))
         for event in sorted(report.events, key=lambda item: item.id)
     )
     return StaticMemoryEventEvidence(report=report, ledger=ledger, event_links=links)
@@ -155,4 +155,5 @@ __all__ = [
     "MemoryEventIdentityLink",
     "StaticMemoryEventEvidence",
     "extract_memory_events_with_evidence",
+    "memory_event_identity",
 ]

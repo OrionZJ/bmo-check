@@ -79,8 +79,9 @@ Current migration status: dependency closure, CFG recovery, thread lifecycle,
 synchronization and memory-event recovery each expose an explicit
 legacy-report-plus-ledger sidecar. Memory events also expose stable identity links.
 Shared-state classification now exposes the same sidecar for escape and affine
-Unknowns. The old reports remain authoritative until slicing and certificate
-consumers are migrated; the sidecars are not a shortcut to a static `SAFE` verdict.
+Unknowns, and slicing exposes typed removal decisions. The old reports remain
+authoritative until certificate consumers are migrated; the sidecars are not a
+shortcut to a static `SAFE` verdict.
 
 ## 3. Dependency direction
 

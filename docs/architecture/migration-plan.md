@@ -189,6 +189,10 @@ Implementation record: `docs/exec-plans/active/c6-shared-state-unknown.md`. The 
 slice adds the opt-in path to shared-state/escape classification for TLS, stack and
 affine Unknowns; legacy proof objects and removal lists remain compatibility data.
 
+Implementation record: `docs/exec-plans/active/c6-slicing-removal.md`. The sixth slice
+adds typed `ProofFact` and `RemovalDecision` sidecars for shared-memory pruning and
+refuses unmapped or unproved removals.
+
 `SharedStateReport` keeps its current validator until every removal has a canonical
 `RemovalDecision`.
 

@@ -48,8 +48,8 @@ CFG/indirect-target recovery now has a matching opt-in ledger path. Thread lifec
 synchronization recovery now have matching opt-in ledger paths. Memory-event and
 memory-event recovery now has a matching opt-in ledger path and stable event links.
 Shared-state/escape classification now has a matching opt-in Unknown ledger path;
-slicing/removal producers still have no canonical emission API, and the static
-verifier still performs legacy Unknown relevance filtering.
+slicing now has an opt-in ProofFact/RemovalDecision sidecar. The static verifier still
+performs legacy Unknown relevance filtering and does not consume the new slice ledger.
 
 ## 2. Current subsystems
 
