@@ -14,7 +14,7 @@ from ..evidence import (
     UnknownDischarge,
     UnknownFact,
 )
-from ..identity import EvidenceId, StableId, TraceId
+from ..identity import BinaryClosureId, EvidenceId, StableId, TraceId
 
 
 class SnapshotError(ValueError):
@@ -106,6 +106,8 @@ class StaticDiagnosticSnapshot:
     verdict: CertificateVerdict
     # evidence 只允许 ProofFact/UnknownFact，拒绝动态观察混入静态域。
     evidence: EvidenceSnapshot
+    # binary_closure 用实际 ELF/库 hash 绑定相关范围；缺失时只能模糊匹配。
+    binary_closure: BinaryClosureId | None = None
     # subject_ids 让报告回查指令、事件和对象，不依赖临时数组序号。
     subject_ids: tuple[StableId, ...] = ()
 
@@ -116,6 +118,10 @@ class StaticDiagnosticSnapshot:
             raise SnapshotError("static snapshot verdict must be CertificateVerdict")
         if not isinstance(self.evidence, EvidenceSnapshot):
             raise SnapshotError("static snapshot evidence is invalid")
+        if self.binary_closure is not None and not isinstance(
+            self.binary_closure, BinaryClosureId
+        ):
+            raise SnapshotError("static snapshot binary_closure is invalid")
         if any(not isinstance(item, StableId) for item in self.subject_ids):
             raise SnapshotError("static snapshot subjects must be StableId values")
         for node in self.evidence.nodes:
@@ -165,6 +171,8 @@ class DynamicDiagnosticSnapshot:
     complete: bool
     # evidence 允许 ObservedFact/UnknownFact，不允许静态 ProofFact。
     evidence: EvidenceSnapshot
+    # binary_closure 必须与静态 snapshot 相同，才能把 stable subject 当作 Exact。
+    binary_closure: BinaryClosureId | None = None
 
     def __post_init__(self) -> None:
         _non_empty("snapshot schema_version", self.schema_version)
@@ -175,6 +183,10 @@ class DynamicDiagnosticSnapshot:
             raise SnapshotError("dynamic snapshot complete must be boolean")
         if not isinstance(self.evidence, EvidenceSnapshot):
             raise SnapshotError("dynamic snapshot evidence is invalid")
+        if self.binary_closure is not None and not isinstance(
+            self.binary_closure, BinaryClosureId
+        ):
+            raise SnapshotError("dynamic snapshot binary_closure is invalid")
         for node in self.evidence.nodes:
             if not isinstance(node, (ObservedFact, UnknownFact)):
                 raise SnapshotError(

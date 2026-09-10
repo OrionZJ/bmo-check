@@ -6,10 +6,24 @@ from bmo_check_core.diagnostics import (
     SnapshotError,
     StaticDiagnosticSnapshot,
 )
+from .correlation import (
+    CorrelationError,
+    CorrelationKey,
+    CorrelationRecord,
+    CorrelationStatus,
+    DiagnosticCorrelationReport,
+    correlate_unknowns,
+)
 
 __all__ = [
     "DynamicDiagnosticSnapshot",
     "EvidenceSnapshot",
     "SnapshotError",
     "StaticDiagnosticSnapshot",
+    "CorrelationError",
+    "CorrelationKey",
+    "CorrelationRecord",
+    "CorrelationStatus",
+    "DiagnosticCorrelationReport",
+    "correlate_unknowns",
 ]

@@ -304,6 +304,8 @@ trace sequence and Python object ID are forbidden keys.
 
 Commit intent: `Correlate static Unknowns with runtime observations`.
 
+Implementation record: `docs/exec-plans/active/d3-diagnostic-correlation.md`.
+
 ### D4 — Diagnostic report and CLI
 
 Add `bmo-check diagnose` to produce a versioned report containing:
