@@ -166,6 +166,11 @@ Each migration replaces `details` keys and string evidence with typed subject an
 premise references. Unknown relevance and discharge move out of
 `proof.verifier._collect_unknowns` into explicit scope/discharge records.
 
+Implementation record: `docs/exec-plans/active/c6-recovery-unknown.md`. The first
+slice adds an opt-in canonical ledger path to dependency-closure recovery while
+keeping the legacy manifest API and verdict consumer unchanged. CFG and later
+producers remain to be migrated.
+
 `SharedStateReport` keeps its current validator until every removal has a canonical
 `RemovalDecision`.
 

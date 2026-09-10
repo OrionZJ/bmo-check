@@ -1,8 +1,15 @@
 from __future__ import annotations
 
 from collections import deque
+import json
 from pathlib import Path
 
+from bmo_check_core import (
+    EvidenceLedger,
+    UnknownFact as CanonicalUnknownFact,
+    UnknownKind as CanonicalUnknownKind,
+    ProducerId,
+)
 from bmo_check_static.model import (
     ExecutionScope,
     ModuleFingerprint,
@@ -13,6 +20,7 @@ from bmo_check_static.model import (
 )
 
 from .elf import ElfInspectionError, inspect_elf, sha256_file
+from .evidence import StaticRecoveryEvidence
 
 
 SUPPORTED_MACHINE = "EM_X86_64"
@@ -25,14 +33,55 @@ def _unknown(
     *,
     module: str | None = None,
     details: dict[str, object] | None = None,
+    canonical_ledger: EvidenceLedger | None = None,
+    canonical_scope: str = "static.recovery",
 ) -> UnknownFact:
-    return UnknownFact(
+    legacy = UnknownFact(
         kind=kind,
         reason=reason,
         impact=impact,
         module=module,
         details=details or {},
     )
+    if canonical_ledger is not None:
+        try:
+            canonical_kind = CanonicalUnknownKind(kind.value)
+        except ValueError:
+            canonical_kind = CanonicalUnknownKind.UNKNOWN_ROOT_CAUSE
+        context = [
+            f"legacy.impact={impact}",
+            f"legacy.kind={kind.value}",
+        ]
+        if module is not None:
+            context.append(f"legacy.module={module}")
+        for key in sorted(legacy.details):
+            if not isinstance(key, str):
+                raise ValueError("legacy dependency details keys must be strings")
+            try:
+                value = json.dumps(
+                    legacy.details[key],
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    allow_nan=False,
+                )
+            except (TypeError, ValueError) as error:
+                raise ValueError(
+                    f"legacy dependency detail {key!r} is not canonical JSON"
+                ) from error
+            context.append(f"legacy.detail.{key}={value}")
+        canonical_ledger.add(
+            CanonicalUnknownFact.create(
+                schema_version="static-recovery-1",
+                producer=ProducerId("bmo_check_static.recovery", "c6"),
+                kind=canonical_kind,
+                reason=reason,
+                subject=None,
+                scope=canonical_scope,
+                supporting_context=tuple(sorted(context)),
+            )
+        )
+    return legacy
 
 
 def _candidate_paths(
@@ -55,6 +104,8 @@ def _resolve_module(
     roots: tuple[Path, ...],
     *,
     missing_kind: UnknownKind,
+    canonical_ledger: EvidenceLedger | None = None,
+    canonical_scope: str = "static.recovery",
 ) -> tuple[Path | None, UnknownFact | None]:
     candidates = _candidate_paths(name, requester, roots)
     if not candidates:
@@ -64,6 +115,8 @@ def _resolve_module(
             "binary dependency closure is incomplete",
             module=str(requester) if requester else None,
             details={"name": name, "roots": [str(root) for root in roots]},
+            canonical_ledger=canonical_ledger,
+            canonical_scope=canonical_scope,
         )
 
     hashes = {sha256_file(path) for path in candidates}
@@ -74,12 +127,18 @@ def _resolve_module(
             "the analyzer cannot bind synchronization semantics to one implementation",
             module=str(requester) if requester else None,
             details={"name": name, "candidates": [str(path) for path in candidates]},
+            canonical_ledger=canonical_ledger,
+            canonical_scope=canonical_scope,
         )
     return candidates[0], None
 
 
 def _validate_module(
-    module: ModuleFingerprint, unknowns: list[UnknownFact]
+    module: ModuleFingerprint,
+    unknowns: list[UnknownFact],
+    *,
+    canonical_ledger: EvidenceLedger | None = None,
+    canonical_scope: str = "static.recovery",
 ) -> bool:
     valid = True
     if module.elf.elf_class != 64 or module.elf.machine != SUPPORTED_MACHINE:
@@ -89,6 +148,8 @@ def _validate_module(
                 f"expected ELF64 {SUPPORTED_MACHINE}, got ELF{module.elf.elf_class} {module.elf.machine}",
                 "Milestone 0 only models x86-64 binaries",
                 module=module.path,
+                canonical_ledger=canonical_ledger,
+                canonical_scope=canonical_scope,
             )
         )
         valid = False
@@ -101,6 +162,9 @@ def build_program_manifest(
     execution: ExecutionScope,
     dbt_contract_version: str,
     dbt_revision: str | None,
+    *,
+    canonical_ledger: EvidenceLedger | None = None,
+    canonical_scope: str = "static.recovery",
 ) -> ProgramManifest:
     roots = tuple(root.resolve() for root in library_roots)
     unknowns: list[UnknownFact] = []
@@ -110,7 +174,12 @@ def build_program_manifest(
 
     try:
         executable = inspect_elf(executable_path, ModuleRole.EXECUTABLE)
-        _validate_module(executable, unknowns)
+        _validate_module(
+            executable,
+            unknowns,
+            canonical_ledger=canonical_ledger,
+            canonical_scope=canonical_scope,
+        )
     except FileNotFoundError:
         unknowns.append(
             _unknown(
@@ -118,6 +187,8 @@ def build_program_manifest(
                 f"executable does not exist: {executable_path}",
                 "there is no binary to analyze",
                 module=str(executable_path),
+                canonical_ledger=canonical_ledger,
+                canonical_scope=canonical_scope,
             )
         )
     except ElfInspectionError as error:
@@ -127,6 +198,8 @@ def build_program_manifest(
                 str(error),
                 "the executable fingerprint and dependencies are unavailable",
                 module=str(executable_path),
+                canonical_ledger=canonical_ledger,
+                canonical_scope=canonical_scope,
             )
         )
 
@@ -136,6 +209,8 @@ def build_program_manifest(
                 UnknownKind.MISSING_DBT_REVISION,
                 "DBT revision was not supplied",
                 "a future SAFE certificate cannot be bound to one lowering implementation",
+                canonical_ledger=canonical_ledger,
+                canonical_scope=canonical_scope,
             )
         )
 
@@ -152,13 +227,20 @@ def build_program_manifest(
                 Path(executable.path),
                 roots,
                 missing_kind=UnknownKind.MISSING_INTERPRETER,
+                canonical_ledger=canonical_ledger,
+                canonical_scope=canonical_scope,
             )
             if failure:
                 unknowns.append(failure)
             elif path is not None:
                 try:
                     interpreter = inspect_elf(path, ModuleRole.INTERPRETER)
-                    _validate_module(interpreter, unknowns)
+                    _validate_module(
+                        interpreter,
+                        unknowns,
+                        canonical_ledger=canonical_ledger,
+                        canonical_scope=canonical_scope,
+                    )
                     seen_paths.add(interpreter.path)
                 except (FileNotFoundError, ElfInspectionError) as error:
                     unknowns.append(
@@ -167,6 +249,8 @@ def build_program_manifest(
                             str(error),
                             "the concrete interpreter implementation is unavailable",
                             module=str(path),
+                            canonical_ledger=canonical_ledger,
+                            canonical_scope=canonical_scope,
                         )
                     )
 
@@ -178,6 +262,8 @@ def build_program_manifest(
                 Path(requester.path),
                 roots,
                 missing_kind=UnknownKind.MISSING_LIBRARY,
+                canonical_ledger=canonical_ledger,
+                canonical_scope=canonical_scope,
             )
             if failure:
                 unknowns.append(failure)
@@ -188,7 +274,12 @@ def build_program_manifest(
                 continue
             try:
                 library = inspect_elf(path, ModuleRole.SHARED_LIBRARY)
-                _validate_module(library, unknowns)
+                _validate_module(
+                    library,
+                    unknowns,
+                    canonical_ledger=canonical_ledger,
+                    canonical_scope=canonical_scope,
+                )
             except (FileNotFoundError, ElfInspectionError) as error:
                 unknowns.append(
                     _unknown(
@@ -196,6 +287,8 @@ def build_program_manifest(
                         str(error),
                         "a required library implementation could not be inspected",
                         module=str(path),
+                        canonical_ledger=canonical_ledger,
+                        canonical_scope=canonical_scope,
                     )
                 )
                 continue
@@ -214,3 +307,27 @@ def build_program_manifest(
         closure_complete=not unknowns,
         unknowns=tuple(unknowns),
     )
+
+
+def build_program_manifest_with_evidence(
+    executable_path: Path,
+    library_roots: tuple[Path, ...],
+    execution: ExecutionScope,
+    dbt_contract_version: str,
+    dbt_revision: str | None,
+    *,
+    scope: str = "static.recovery",
+) -> StaticRecoveryEvidence:
+    """以 opt-in 方式运行依赖闭包 producer，并保存 canonical Unknown。"""
+
+    ledger = EvidenceLedger()
+    manifest = build_program_manifest(
+        executable_path,
+        library_roots,
+        execution,
+        dbt_contract_version,
+        dbt_revision,
+        canonical_ledger=ledger,
+        canonical_scope=scope,
+    )
+    return StaticRecoveryEvidence(manifest=manifest, ledger=ledger)

@@ -40,6 +40,10 @@ the dynamic route has not been connected to static evidence. These additions clo
 the data-model and replay seams identified below; they do not claim that producer
 provenance or verdict construction has already migrated.
 
+C6 additionally gives dependency-closure recovery an opt-in ledger-emission path.
+The default manifest producer and every later static producer still use legacy
+payloads, so the audit's multi-layer leakage findings remain active.
+
 ## 2. Current subsystems
 
 | Subsystem | Current owner | Actual responsibility |

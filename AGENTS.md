@@ -65,6 +65,11 @@ During migration, existing `bmo_check_static` and `bmo_check_dynamic` models rem
 place behind explicit one-way adapters. Do not create an untracked second business
 model or a generic `common` dumping ground.
 
+The dependency-closure producer additionally exposes an opt-in
+`build_program_manifest_with_evidence` sidecar. It is a migration seam, not a second
+verdict path; keep the legacy manifest output and canonical ledger compared until the
+remaining recovery producers migrate.
+
 ## Change discipline
 
 Use the sequence in `docs/architecture/migration-plan.md`:
