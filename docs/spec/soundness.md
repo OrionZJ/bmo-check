@@ -257,6 +257,13 @@ logic MUST NOT operate directly on arbitrary decoded dictionaries.
 
 Static certificate verification MUST traverse all evidence reachable from `SAFE`:
 
+The executable canonical replay API is `bmo_check_core.certificate.verify_static_certificate`.
+It rejects non-`ProofFact` roots, missing removal coverage, omitted or unresolved
+Unknowns, bounded `SAFE` results and mismatched certificate bindings. The trace API
+`verify_trace_certificate` separately checks trace-bound `ObservedFact` roots. The
+legacy route certificate remains outside this API until its C6 migration and
+differential check are complete.
+
 ```text
 for every reachable evidence node:
     exists

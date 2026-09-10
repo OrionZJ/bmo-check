@@ -36,6 +36,19 @@ from .evidence import (
     UnknownFact,
     UnknownKind,
 )
+from .certificate import (
+    CertificateBinding,
+    CertificateError,
+    CertificateVerdict,
+    RemovalDecision,
+    StaticCertificate,
+    StaticVerification,
+    TraceCertificate,
+    TraceVerification,
+    TraceVerdict,
+    verify_static_certificate,
+    verify_trace_certificate,
+)
 
 __all__ = [
     "AbstractObjectId",
@@ -66,4 +79,15 @@ __all__ = [
     "UnknownDischarge",
     "UnknownFact",
     "UnknownKind",
+    "CertificateBinding",
+    "CertificateError",
+    "CertificateVerdict",
+    "RemovalDecision",
+    "StaticCertificate",
+    "StaticVerification",
+    "TraceCertificate",
+    "TraceVerification",
+    "TraceVerdict",
+    "verify_static_certificate",
+    "verify_trace_certificate",
 ]

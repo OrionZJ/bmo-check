@@ -144,6 +144,11 @@ Required negative tests:
 - bounded no-counterexample is rejected as `SAFE`;
 - mismatched binary/library/DBT binding is rejected.
 
+Implementation record: `docs/exec-plans/active/c5-certificate-closure.md`. The core
+certificate package now provides separate static/trace certificate types, typed
+bindings and replay verifiers. The existing legacy certificate builder is still not
+wired to this API; C6 must migrate a producer and compare both outputs first.
+
 Commit intent: `Validate static proof closure in certificates`.
 
 ### C6 — Migrate Unknown production and removal decisions

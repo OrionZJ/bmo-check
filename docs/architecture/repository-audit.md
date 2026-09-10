@@ -30,6 +30,16 @@ The next implementation phase must first introduce canonical identity and eviden
 types. Dynamic correlation comes only after static Unknowns and dynamic observations
 can meet through stable IDs without either analyzer importing the other's internals.
 
+## 1.1 Post-C4/C5 implementation delta
+
+On the current `dev` branch, `bmo_check_core` now provides stable identities, typed
+evidence and separate static/trace certificate replay checks. The static adapter at
+`bmo_check_static/adapters/evidence.py` translates legacy events, proof objects and
+Unknowns through typed links, but the old static verifier remains authoritative and
+the dynamic route has not been connected to static evidence. These additions close
+the data-model and replay seams identified below; they do not claim that producer
+provenance or verdict construction has already migrated.
+
 ## 2. Current subsystems
 
 | Subsystem | Current owner | Actual responsibility |

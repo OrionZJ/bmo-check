@@ -62,6 +62,15 @@ def test_static_and_dynamic_routes_have_no_cross_route_imports() -> None:
             and not imported.startswith("bmo_check_diagnostics")
             for imported in _package_imports(path)
         ), path
+    for path in (src / "bmo_check_core").rglob("*.py"):
+        assert all(
+            not imported.startswith("bmo_check_static")
+            and not imported.startswith("bmo_check_dynamic")
+            and not imported.startswith("bmo_check_diagnostics")
+            and not imported.startswith("bmo_check_evaluation")
+            and not imported.startswith("bmo_check_cli")
+            for imported in _package_imports(path)
+        ), path
 
 
 def test_semantic_routes_do_not_branch_on_benchmark_names() -> None:
