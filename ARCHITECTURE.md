@@ -20,11 +20,11 @@ They do not import each other. This remains required during the migration.
 
 The current split is not yet a complete evidence boundary. The shared package now
 contains stable identities, a typed evidence ledger, a one-way static adapter and a
-canonical certificate closure verifier. Dependency-closure recovery now has an
-opt-in canonical Unknown sidecar, but static provenance and dynamic certificates
-still use their legacy representations. Dynamic-assisted static diagnosis must not
-be added directly to those legacy paths; later C6 producers and certificate
-consumers must be migrated with differential checks first.
+canonical certificate closure verifier. Dependency-closure and CFG recovery now
+have opt-in canonical Unknown sidecars, but static provenance and dynamic
+certificates still use their legacy representations. Dynamic-assisted static
+diagnosis must not be added directly to those legacy paths; later C6 producers and
+certificate consumers must be migrated with differential checks first.
 
 ## Accepted direction
 

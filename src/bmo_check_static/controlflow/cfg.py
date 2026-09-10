@@ -5,7 +5,9 @@ from pathlib import Path
 from capstone import CS_GRP_CALL, CS_GRP_JUMP
 from capstone.x86 import X86_OP_MEM, X86_OP_REG
 
+from bmo_check_core import EvidenceLedger
 from bmo_check_static.binary.angr_backend import AngrBackendError, load_cfg
+from bmo_check_static.binary.evidence import emit_static_unknown
 from bmo_check_static.binary.elf import executable_segments
 from bmo_check_static.binary.symbols import (
     function_pointer_sections,
@@ -28,6 +30,8 @@ from bmo_check_static.model import (
     UnknownFact,
     UnknownKind,
 )
+
+from .evidence import StaticControlFlowEvidence
 
 
 def _location(
@@ -310,13 +314,19 @@ def _indirect_target_set(
 
 
 def _empty_failure_report(
-    module: ModuleFingerprint, reason: str
+    module: ModuleFingerprint,
+    reason: str,
+    *,
+    canonical_ledger: EvidenceLedger | None = None,
+    canonical_scope: str = "static.recovery",
 ) -> ControlFlowReport:
-    unknown = UnknownFact(
-        kind=UnknownKind.CFG_BACKEND_FAILURE,
-        reason=reason,
-        impact="reachable code and indirect targets are unavailable",
+    unknown = emit_static_unknown(
+        UnknownKind.CFG_BACKEND_FAILURE,
+        reason,
+        "reachable code and indirect targets are unavailable",
         module=module.path,
+        canonical_ledger=canonical_ledger,
+        canonical_scope=canonical_scope,
     )
     return ControlFlowReport(
         module_path=module.path,
@@ -338,11 +348,19 @@ def _empty_failure_report(
 def recover_control_flow(
     module: ModuleFingerprint,
     manifest: ProgramManifest,
+    *,
+    canonical_ledger: EvidenceLedger | None = None,
+    canonical_scope: str = "static.recovery",
 ) -> ControlFlowReport:
     try:
         context = load_cfg(module)
     except AngrBackendError as error:
-        return _empty_failure_report(module, str(error))
+        return _empty_failure_report(
+            module,
+            str(error),
+            canonical_ledger=canonical_ledger,
+            canonical_scope=canonical_scope,
+        )
 
     main_object = context.project.loader.main_object
     definitions_by_name: dict[str, tuple[CodeLocation, ...]] = {}
@@ -483,13 +501,15 @@ def recover_control_flow(
             )
             if not targets.complete:
                 unknowns.append(
-                    UnknownFact(
-                        kind=UnknownKind.INCOMPLETE_INDIRECT_TARGET,
-                        reason=targets.reason or "call target set is incomplete",
-                        impact="callee shared-memory effects may be missing",
+                    emit_static_unknown(
+                        UnknownKind.INCOMPLETE_INDIRECT_TARGET,
+                        targets.reason or "call target set is incomplete",
+                        "callee shared-memory effects may be missing",
                         module=module.path,
                         pc=call_pc,
                         details={"target_symbol": target_symbol},
+                        canonical_ledger=canonical_ledger,
+                        canonical_scope=canonical_scope,
                     )
                 )
 
@@ -522,10 +542,10 @@ def recover_control_flow(
         )
         if not targets.complete:
             unknowns.append(
-                UnknownFact(
-                    kind=UnknownKind.INCOMPLETE_INDIRECT_TARGET,
-                    reason=targets.reason or "indirect target set is incomplete",
-                    impact="reachable shared-memory effects may be missing",
+                emit_static_unknown(
+                    UnknownKind.INCOMPLETE_INDIRECT_TARGET,
+                    targets.reason or "indirect target set is incomplete",
+                    "reachable shared-memory effects may be missing",
                     module=module.path,
                     pc=site_pc,
                     details={
@@ -537,6 +557,8 @@ def recover_control_flow(
                             for target in targets.known_targets
                         ]
                     },
+                    canonical_ledger=canonical_ledger,
+                    canonical_scope=canonical_scope,
                 )
             )
 
@@ -570,3 +592,21 @@ def recover_control_flow(
         coverage=coverage,
         unknowns=tuple(unique_unknowns.values()),
     )
+
+
+def recover_control_flow_with_evidence(
+    module: ModuleFingerprint,
+    manifest: ProgramManifest,
+    *,
+    scope: str = "static.recovery",
+) -> StaticControlFlowEvidence:
+    """以 opt-in 方式运行 CFG producer，并保存 canonical Unknown。"""
+
+    ledger = EvidenceLedger()
+    report = recover_control_flow(
+        module,
+        manifest,
+        canonical_ledger=ledger,
+        canonical_scope=scope,
+    )
+    return StaticControlFlowEvidence(report=report, ledger=ledger)

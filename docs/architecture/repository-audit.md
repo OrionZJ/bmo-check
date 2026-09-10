@@ -44,6 +44,10 @@ C6 additionally gives dependency-closure recovery an opt-in ledger-emission path
 The default manifest producer and every later static producer still use legacy
 payloads, so the audit's multi-layer leakage findings remain active.
 
+CFG/indirect-target recovery now has a matching opt-in ledger path. Thread lifecycle,
+synchronization, memory-event and slicing producers still have no canonical emission
+API, and the static verifier still performs legacy Unknown relevance filtering.
+
 ## 2. Current subsystems
 
 | Subsystem | Current owner | Actual responsibility |

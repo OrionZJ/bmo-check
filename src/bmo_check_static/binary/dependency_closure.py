@@ -1,15 +1,9 @@
 from __future__ import annotations
 
 from collections import deque
-import json
 from pathlib import Path
 
-from bmo_check_core import (
-    EvidenceLedger,
-    UnknownFact as CanonicalUnknownFact,
-    UnknownKind as CanonicalUnknownKind,
-    ProducerId,
-)
+from bmo_check_core import EvidenceLedger
 from bmo_check_static.model import (
     ExecutionScope,
     ModuleFingerprint,
@@ -20,7 +14,7 @@ from bmo_check_static.model import (
 )
 
 from .elf import ElfInspectionError, inspect_elf, sha256_file
-from .evidence import StaticRecoveryEvidence
+from .evidence import StaticRecoveryEvidence, emit_static_unknown
 
 
 SUPPORTED_MACHINE = "EM_X86_64"
@@ -36,52 +30,15 @@ def _unknown(
     canonical_ledger: EvidenceLedger | None = None,
     canonical_scope: str = "static.recovery",
 ) -> UnknownFact:
-    legacy = UnknownFact(
-        kind=kind,
-        reason=reason,
-        impact=impact,
+    return emit_static_unknown(
+        kind,
+        reason,
+        impact,
         module=module,
-        details=details or {},
+        details=details,
+        canonical_ledger=canonical_ledger,
+        canonical_scope=canonical_scope,
     )
-    if canonical_ledger is not None:
-        try:
-            canonical_kind = CanonicalUnknownKind(kind.value)
-        except ValueError:
-            canonical_kind = CanonicalUnknownKind.UNKNOWN_ROOT_CAUSE
-        context = [
-            f"legacy.impact={impact}",
-            f"legacy.kind={kind.value}",
-        ]
-        if module is not None:
-            context.append(f"legacy.module={module}")
-        for key in sorted(legacy.details):
-            if not isinstance(key, str):
-                raise ValueError("legacy dependency details keys must be strings")
-            try:
-                value = json.dumps(
-                    legacy.details[key],
-                    ensure_ascii=False,
-                    sort_keys=True,
-                    separators=(",", ":"),
-                    allow_nan=False,
-                )
-            except (TypeError, ValueError) as error:
-                raise ValueError(
-                    f"legacy dependency detail {key!r} is not canonical JSON"
-                ) from error
-            context.append(f"legacy.detail.{key}={value}")
-        canonical_ledger.add(
-            CanonicalUnknownFact.create(
-                schema_version="static-recovery-1",
-                producer=ProducerId("bmo_check_static.recovery", "c6"),
-                kind=canonical_kind,
-                reason=reason,
-                subject=None,
-                scope=canonical_scope,
-                supporting_context=tuple(sorted(context)),
-            )
-        )
-    return legacy
 
 
 def _candidate_paths(

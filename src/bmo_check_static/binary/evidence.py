@@ -7,10 +7,21 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 
-from bmo_check_core import EvidenceId, EvidenceLedger, UnknownFact
-from bmo_check_static.model import ProgramManifest
+from bmo_check_core import (
+    EvidenceId,
+    EvidenceLedger,
+    ProducerId,
+    UnknownFact as CanonicalUnknownFact,
+    UnknownKind as CanonicalUnknownKind,
+)
+from bmo_check_static.model import (
+    ProgramManifest,
+    UnknownFact as LegacyUnknownFact,
+    UnknownKind as LegacyUnknownKind,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,11 +38,80 @@ class StaticRecoveryEvidence:
                 {
                     node.id
                     for node in self.ledger.nodes()
-                    if isinstance(node, UnknownFact)
+                    if isinstance(node, CanonicalUnknownFact)
                 },
                 key=lambda item: item.value,
             )
         )
 
 
-__all__ = ["StaticRecoveryEvidence"]
+def emit_static_unknown(
+    kind: LegacyUnknownKind,
+    reason: str,
+    impact: str,
+    *,
+    module: str | None = None,
+    pc: int | None = None,
+    details: dict[str, object] | None = None,
+    canonical_ledger: EvidenceLedger | None = None,
+    canonical_scope: str = "static.recovery",
+) -> LegacyUnknownFact:
+    """同时生成旧 Unknown 和可选的 canonical Unknown。
+
+    旧报告仍需要 Pydantic 事实；传入 ledger 时，producer 还会把同一个缺口
+    写入 canonical 图。两个结果来自同一组字段，调用者不会自行拼出第二套原因。
+    """
+
+    legacy = LegacyUnknownFact(
+        kind=kind,
+        reason=reason,
+        impact=impact,
+        module=module,
+        pc=pc,
+        details=details or {},
+    )
+    if canonical_ledger is None:
+        return legacy
+    try:
+        canonical_kind = CanonicalUnknownKind(kind.value)
+    except ValueError:
+        canonical_kind = CanonicalUnknownKind.UNKNOWN_ROOT_CAUSE
+    context = [
+        f"legacy.impact={impact}",
+        f"legacy.kind={kind.value}",
+    ]
+    if module is not None:
+        context.append(f"legacy.module={module}")
+    if pc is not None:
+        context.append(f"legacy.pc={pc:#x}")
+    for key in sorted(legacy.details):
+        if not isinstance(key, str):
+            raise ValueError("legacy recovery details keys must be strings")
+        try:
+            value = json.dumps(
+                legacy.details[key],
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+        except (TypeError, ValueError) as error:
+            raise ValueError(
+                f"legacy recovery detail {key!r} is not canonical JSON"
+            ) from error
+        context.append(f"legacy.detail.{key}={value}")
+    canonical_ledger.add(
+        CanonicalUnknownFact.create(
+            schema_version="static-recovery-1",
+            producer=ProducerId("bmo_check_static.recovery", "c6"),
+            kind=canonical_kind,
+            reason=reason,
+            subject=None,
+            scope=canonical_scope,
+            supporting_context=tuple(sorted(context)),
+        )
+    )
+    return legacy
+
+
+__all__ = ["StaticRecoveryEvidence", "emit_static_unknown"]

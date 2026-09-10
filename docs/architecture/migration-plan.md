@@ -171,6 +171,11 @@ slice adds an opt-in canonical ledger path to dependency-closure recovery while
 keeping the legacy manifest API and verdict consumer unchanged. CFG and later
 producers remain to be migrated.
 
+Implementation record: `docs/exec-plans/active/c6-cfg-unknown.md`. The second slice
+adds the same opt-in path to CFG/indirect-target recovery; backend and incomplete
+target Unknowns are emitted canonically while the legacy `ControlFlowReport` remains
+unchanged.
+
 `SharedStateReport` keeps its current validator until every removal has a canonical
 `RemovalDecision`.
 
