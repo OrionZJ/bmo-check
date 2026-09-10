@@ -60,6 +60,11 @@ Add test groups for:
 
 Commit intent: `Characterize evidence and verdict boundaries`.
 
+Implementation record: `docs/exec-plans/active/c1-characterization.md`. The current
+checkpoint covers the static/dynamic certificate shapes, Unknown visibility, bounded
+synthetic counts, route import boundaries and benchmark-name checks. It does not yet
+claim that the legacy dictionary-based models are the canonical evidence domain.
+
 ### C2 — Stable identity types
 
 Introduce `bmo_check_core.identity` with canonical encoders for binary closure, module,
