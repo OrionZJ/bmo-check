@@ -4,6 +4,8 @@ import re
 from collections import defaultdict, deque
 from pathlib import Path
 
+from bmo_check_core import EvidenceLedger
+from bmo_check_static.binary.evidence import emit_static_unknown
 from bmo_check_static.binary.capstone_backend import collect_instruction_facts
 from bmo_check_static.model import (
     AbstractAddress,
@@ -46,6 +48,56 @@ _OPENMP_BARRIER_APIS = {
 _OPENMP_ACQUIRE_APIS = {"GOMP_critical_start"}
 _OPENMP_RELEASE_APIS = {"GOMP_critical_end"}
 _INTEGER_ARGUMENTS = ("rdi", "rsi", "rdx", "rcx", "r8", "r9")
+
+
+def _unknown(
+    kind: UnknownKind,
+    reason: str,
+    impact: str,
+    *,
+    module: str | None = None,
+    pc: int | None = None,
+    function: str | None = None,
+    details: dict[str, object] | None = None,
+    canonical_ledger: EvidenceLedger | None = None,
+    canonical_scope: str = "static.memory",
+) -> UnknownFact:
+    """旧 MemoryEventReport 与 canonical ledger 共享同一个 Unknown 来源。"""
+
+    return emit_static_unknown(
+        kind,
+        reason,
+        impact,
+        module=module,
+        pc=pc,
+        function=function,
+        details=details,
+        canonical_ledger=canonical_ledger,
+        canonical_scope=canonical_scope,
+    )
+
+
+def _mirror_unknowns(
+    unknowns: tuple[UnknownFact, ...],
+    ledger: EvidenceLedger | None,
+    scope: str,
+) -> None:
+    """访存 producer 复用指令事实时，保留其可达 Unknown 的来源。"""
+
+    if ledger is None:
+        return
+    for unknown in unknowns:
+        _unknown(
+            unknown.kind,
+            unknown.reason,
+            unknown.impact,
+            module=unknown.module,
+            pc=unknown.pc,
+            function=unknown.function,
+            details=unknown.details,
+            canonical_ledger=ledger,
+            canonical_scope=scope,
+        )
 
 
 def _merge_heap_argument_values(
@@ -550,6 +602,8 @@ def extract_memory_events(
     function_internal_objects: dict[str, str] | None = None,
     worker_argument_base: str | None = None,
     worker_argument_alias_base: str | None = None,
+    canonical_ledger: EvidenceLedger | None = None,
+    canonical_scope: str = "static.memory",
 ) -> MemoryEventReport:
     try:
         if not control_flow.functions or not control_flow.basic_blocks:
@@ -908,13 +962,15 @@ def extract_memory_events(
                 )
             )
             unknowns.append(
-                UnknownFact(
-                    kind=UnknownKind.UNKNOWN_THREAD_ROLE,
-                    reason=role.start_targets.reason or "thread entry is incomplete",
-                    impact="the unknown worker may access any shared object",
+                _unknown(
+                    UnknownKind.UNKNOWN_THREAD_ROLE,
+                    role.start_targets.reason or "thread entry is incomplete",
+                    "the unknown worker may access any shared object",
                     module=module.path,
                     pc=role.create_site.pc if role.create_site else None,
                     details={"event_id": event_id, "role": role.id},
+                    canonical_ledger=canonical_ledger,
+                    canonical_scope=canonical_scope,
                 )
             )
 
@@ -929,6 +985,7 @@ def extract_memory_events(
             if not roles:
                 continue
             unknowns.extend(fact.unknowns)
+            _mirror_unknowns(fact.unknowns, canonical_ledger, canonical_scope)
             source_ordering, target_ordering = _event_ordering(fact)
             for role in sorted(roles):
                 provenance_addresses = role_address_provenance[role].addresses
@@ -973,14 +1030,16 @@ def extract_memory_events(
                         append_event(event)
                         if address.kind == AddressKind.UNKNOWN:
                             unknowns.append(
-                                UnknownFact(
-                                    kind=UnknownKind.UNKNOWN_SHARED_ADDRESS,
-                                    reason="memory address is not reduced to a bounded object",
-                                    impact="the event must remain a MayAlias communication candidate",
+                                _unknown(
+                                    UnknownKind.UNKNOWN_SHARED_ADDRESS,
+                                    "memory address is not reduced to a bounded object",
+                                    "the event must remain a MayAlias communication candidate",
                                     module=module.path,
                                     pc=fact.pc,
                                     function=function_names.get(function_pc),
                                     details={"event_id": event_id, "expression": address.expression},
+                                    canonical_ledger=canonical_ledger,
+                                    canonical_scope=canonical_scope,
                                 )
                             )
                 if fact.fence is not None:
@@ -1018,13 +1077,15 @@ def extract_memory_events(
                         )
                     )
                     unknowns.append(
-                        UnknownFact(
-                            kind=UnknownKind.UNKNOWN_MEMORY_EFFECT,
-                            reason="syscall memory effects are not summarized",
-                            impact="the syscall remains in the shared-memory slice",
+                        _unknown(
+                            UnknownKind.UNKNOWN_MEMORY_EFFECT,
+                            "syscall memory effects are not summarized",
+                            "the syscall remains in the shared-memory slice",
                             module=module.path,
                             pc=fact.pc,
                             details={"event_id": event_id},
+                            canonical_ledger=canonical_ledger,
+                            canonical_scope=canonical_scope,
                         )
                     )
 
@@ -1095,19 +1156,21 @@ def extract_memory_events(
                                 )
                             )
                             unknowns.append(
-                                UnknownFact(
-                                    kind=UnknownKind.UNKNOWN_MEMORY_EFFECT,
-                                    reason=(
+                                _unknown(
+                                    UnknownKind.UNKNOWN_MEMORY_EFFECT,
+                                    (
                                         f"call {symbol!r} argument {argument_index} "
                                         "address is not recoverable"
                                     ),
-                                    impact="the external memory access remains a MayAlias candidate",
+                                    "the external memory access remains a MayAlias candidate",
                                     module=module.path,
                                     pc=call.location.pc,
                                     function=function_names.get(
                                         call.containing_function_pc
                                     ),
                                     details={"event_id": unknown_event_id},
+                                    canonical_ledger=canonical_ledger,
+                                    canonical_scope=canonical_scope,
                                 )
                             )
                             continue
@@ -1182,19 +1245,21 @@ def extract_memory_events(
                             )
                         )
                         unknowns.append(
-                            UnknownFact(
-                                kind=UnknownKind.UNKNOWN_MEMORY_EFFECT,
-                                reason=(
+                            _unknown(
+                                UnknownKind.UNKNOWN_MEMORY_EFFECT,
+                                (
                                     f"call {symbol!r} has an unmodeled runtime object "
                                     f"{internal_object}"
                                 ),
-                                impact="full-process scope must retain the runtime effect",
+                                "full-process scope must retain the runtime effect",
                                 module=module.path,
                                 pc=call.location.pc,
                                 function=function_names.get(
                                     call.containing_function_pc
                                 ),
                                 details={"event_id": runtime_event_id},
+                                canonical_ledger=canonical_ledger,
+                                canonical_scope=canonical_scope,
                             )
                         )
                     continue
@@ -1301,13 +1366,13 @@ def extract_memory_events(
                 )
                 if kind == EventKind.OPAQUE_CALL:
                     unknowns.append(
-                        UnknownFact(
-                            kind=UnknownKind.UNKNOWN_MEMORY_EFFECT,
-                            reason=(
+                        _unknown(
+                            UnknownKind.UNKNOWN_MEMORY_EFFECT,
+                            (
                                 f"call {symbol!r} has no usable memory-effect summary: "
                                 f"{summary_reason or 'unknown reason'}"
                             ),
-                            impact=(
+                            (
                                 f"the call may read or write runtime object {internal_object}"
                                 if internal_object is not None
                                 else "the call may read or write any shared object"
@@ -1322,6 +1387,8 @@ def extract_memory_events(
                                 "internal_object": internal_object,
                                 "call_arguments": call_argument_details,
                             },
+                            canonical_ledger=canonical_ledger,
+                            canonical_scope=canonical_scope,
                         )
                     )
 
@@ -1358,13 +1425,15 @@ def extract_memory_events(
                     )
                 )
                 unknowns.append(
-                    UnknownFact(
-                        kind=UnknownKind.UNKNOWN_MEMORY_EFFECT,
-                        reason=site.targets.reason or "indirect jump target set is incomplete",
-                        impact="unrecovered target code may access any shared object",
+                    _unknown(
+                        UnknownKind.UNKNOWN_MEMORY_EFFECT,
+                        site.targets.reason or "indirect jump target set is incomplete",
+                        "unrecovered target code may access any shared object",
                         module=module.path,
                         pc=site.location.pc,
                         details={"event_id": event_id},
+                        canonical_ledger=canonical_ledger,
+                        canonical_scope=canonical_scope,
                     )
                 )
 
@@ -1383,11 +1452,13 @@ def extract_memory_events(
             unknowns=tuple(unique_unknowns.values()),
         )
     except Exception as error:
-        unknown = UnknownFact(
-            kind=UnknownKind.MEMORY_EVENT_RECOVERY_FAILURE,
-            reason=str(error),
-            impact="shared-memory effects are unavailable; later analysis must not use an empty slice",
+        unknown = _unknown(
+            UnknownKind.MEMORY_EVENT_RECOVERY_FAILURE,
+            str(error),
+            "shared-memory effects are unavailable; later analysis must not use an empty slice",
             module=module.path,
+            canonical_ledger=canonical_ledger,
+            canonical_scope=canonical_scope,
         )
         sentinel = MemoryEvent(
             id="unknown:memory-event-recovery",

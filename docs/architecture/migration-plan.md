@@ -181,6 +181,10 @@ slice adds the opt-in path to thread lifecycle and synchronization recovery. Cal
 role, join, symbol, disassembly and return-path Unknowns are emitted canonically while
 legacy reports remain unchanged.
 
+Implementation record: `docs/exec-plans/active/c6-memory-events-unknown.md`. The fourth
+slice adds the opt-in path to memory-event recovery, stable legacy-event links and
+canonical Unknown emission for address, syscall, opaque-call and extraction gaps.
+
 `SharedStateReport` keeps its current validator until every removal has a canonical
 `RemovalDecision`.
 

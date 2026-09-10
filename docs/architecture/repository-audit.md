@@ -46,8 +46,9 @@ payloads, so the audit's multi-layer leakage findings remain active.
 
 CFG/indirect-target recovery now has a matching opt-in ledger path. Thread lifecycle,
 synchronization recovery now have matching opt-in ledger paths. Memory-event and
-slicing producers still have no canonical emission API, and the static verifier still
-performs legacy Unknown relevance filtering.
+memory-event recovery now has a matching opt-in ledger path and stable event links.
+Slicing/shared-state producers still have no canonical emission API, and the static
+verifier still performs legacy Unknown relevance filtering.
 
 ## 2. Current subsystems
 
