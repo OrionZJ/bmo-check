@@ -287,6 +287,8 @@ is explicitly ambiguous.
 
 Commit intent: `Bind runtime accesses to memory operands`.
 
+Implementation record: `docs/exec-plans/active/d2-trace-operand-identity.md`.
+
 ### D3 — Correlation model
 
 Implement correlation using, in order:

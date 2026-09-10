@@ -10,6 +10,7 @@ from .format import (
     MAGIC,
     RECORD,
     VERSION_MAJOR,
+    VERSION_MINOR,
     TraceFormatError,
     event_files,
 )
@@ -104,10 +105,11 @@ def validate_trace(trace_dir: Path) -> TraceValidation:
                 raw_header = stream.read(HEADER.size)
                 if len(raw_header) != HEADER.size:
                     raise TraceFormatError(f"truncated trace header: {path}")
-                magic, major, _minor, record_size = HEADER.unpack(raw_header)
+                magic, major, minor, record_size = HEADER.unpack(raw_header)
                 if (
                     magic != MAGIC
                     or major != VERSION_MAJOR
+                    or minor > VERSION_MINOR
                     or record_size != RECORD.size
                 ):
                     raise TraceFormatError(f"unsupported trace format: {path}")
@@ -191,6 +193,15 @@ def validate_trace(trace_dir: Path) -> TraceValidation:
                         event_id = f"t{thread_id}:e{sequence}"
                         if flags & ~known_flags:
                             add_reason(f"unsupported flags for {event_id}: {flags}")
+                        if flags & int(EventFlags.OPERAND_INDEX):
+                            if kind not in memory_kinds:
+                                add_reason(
+                                    f"operand discriminator on non-memory event {event_id}"
+                                )
+                            elif minor < 2:
+                                add_reason(
+                                    f"operand discriminator requires trace format 1.2: {event_id}"
+                                )
                         if kind in memory_kinds and size <= 0:
                             add_reason(f"zero-width memory event {event_id}")
                         if kind in memory_kinds and address + size > 1 << 64:

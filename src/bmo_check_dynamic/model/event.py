@@ -71,6 +71,8 @@ class EventFlags(IntFlag):
     CONTROL_CLOSED = 1 << 3
     # FS/GS 相对访存属于当前线程的 TLS，不能按相同数值地址跨线程连边。
     TLS = 1 << 4
+    # 新 trace 用 aux 保存 memory operand slot；旧 trace 没有这个 flag。
+    OPERAND_INDEX = 1 << 5
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,6 +89,28 @@ class TraceEvent:
     value: int = 0
     flags: EventFlags = EventFlags.NONE
     aux: int = 0
+    # None 表示旧 trace 或无法区分多个 operand；不能据此任选一个静态 operand。
+    operand_index: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.operand_index is not None:
+            if (
+                isinstance(self.operand_index, bool)
+                or not isinstance(self.operand_index, int)
+                or self.operand_index < 0
+            ):
+                raise ValueError("operand_index must be a non-negative integer")
+            if not self.kind.is_memory:
+                raise ValueError("operand_index is valid only for memory events")
+            # 让手工构造的 event 与 native trace 使用同一 wire flag。
+            object.__setattr__(self, "aux", self.operand_index)
+            object.__setattr__(
+                self,
+                "flags",
+                self.flags | EventFlags.OPERAND_INDEX,
+            )
+        elif self.flags & EventFlags.OPERAND_INDEX:
+            raise ValueError("operand flag requires operand_index")
 
     @property
     def event_id(self) -> str:

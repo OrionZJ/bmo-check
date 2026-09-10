@@ -10,7 +10,7 @@ from bmo_check_dynamic.model import EventFlags, EventKind, TraceEvent
 
 MAGIC = b"BMOTRACE"
 VERSION_MAJOR = 1
-VERSION_MINOR = 1
+VERSION_MINOR = 2
 HEADER = struct.Struct("<8sHHI")
 # kind, flags, thread, sequence, ticket, pc, address, value, size, aux
 RECORD = struct.Struct("<HHIQQQQQII")
@@ -29,10 +29,15 @@ class TraceWriter:
         self._stream.write(HEADER.pack(MAGIC, VERSION_MAJOR, VERSION_MINOR, RECORD.size))
 
     def write(self, event: TraceEvent) -> None:
+        aux = event.aux
+        flags = event.flags
+        if event.operand_index is not None:
+            aux = event.operand_index
+            flags |= EventFlags.OPERAND_INDEX
         self._stream.write(
             RECORD.pack(
                 int(event.kind),
-                int(event.flags),
+                int(flags),
                 event.thread_id,
                 event.sequence,
                 event.ticket,
@@ -40,7 +45,7 @@ class TraceWriter:
                 event.address,
                 event.value,
                 event.size,
-                event.aux,
+                aux,
             )
         )
 
@@ -63,8 +68,13 @@ class TraceReader:
             raw_header = stream.read(HEADER.size)
             if len(raw_header) != HEADER.size:
                 raise TraceFormatError(f"truncated trace header: {self.path}")
-            magic, major, _minor, record_size = HEADER.unpack(raw_header)
-            if magic != MAGIC or major != VERSION_MAJOR or record_size != RECORD.size:
+            magic, major, minor, record_size = HEADER.unpack(raw_header)
+            if (
+                magic != MAGIC
+                or major != VERSION_MAJOR
+                or minor > VERSION_MINOR
+                or record_size != RECORD.size
+            ):
                 raise TraceFormatError(f"unsupported trace format: {self.path}")
             while raw := stream.read(RECORD.size):
                 if len(raw) != RECORD.size:
@@ -85,6 +95,11 @@ class TraceReader:
                     event_kind = EventKind(kind)
                 except ValueError as error:
                     raise TraceFormatError(f"unknown event kind {kind}: {self.path}") from error
+                if flags & int(EventFlags.OPERAND_INDEX):
+                    if minor < 2 or not event_kind.is_memory:
+                        raise TraceFormatError(
+                            f"invalid operand discriminator for {event_kind.name}: {self.path}"
+                        )
                 yield TraceEvent(
                     thread_id=thread_id,
                     sequence=sequence,
@@ -96,6 +111,13 @@ class TraceReader:
                     value=value,
                     flags=EventFlags(flags),
                     aux=aux,
+                    operand_index=(
+                        aux
+                        if minor >= 2
+                        and flags & int(EventFlags.OPERAND_INDEX)
+                        and event_kind.is_memory
+                        else None
+                    ),
                 )
 
 

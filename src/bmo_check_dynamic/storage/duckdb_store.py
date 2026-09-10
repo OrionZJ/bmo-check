@@ -67,6 +67,11 @@ class TraceStore:
         count = 0
         pending_syscalls: dict[int, dict[str, object]] = {}
         for event in events:
+            flags = event.flags
+            aux = event.aux
+            if event.operand_index is not None:
+                flags |= EventFlags.OPERAND_INDEX
+                aux = event.operand_index
             rows.append(
                 (
                     event.event_id,
@@ -78,8 +83,8 @@ class TraceStore:
                     event.address,
                     event.size,
                     event.value,
-                    int(event.flags),
-                    event.aux,
+                    int(flags),
+                    aux,
                 )
             )
             count += 1
@@ -135,7 +140,7 @@ class TraceStore:
                                 synthetic.size,
                                 synthetic.value,
                                 int(synthetic.flags),
-                                synthetic.aux,
+                        synthetic.aux,
                             )
                         )
                         first = synthetic.address >> 12
@@ -338,15 +343,22 @@ class TraceStore:
 
 
 def _row_to_event(row: tuple[object, ...]) -> TraceEvent:
+    kind = EventKind(int(row[4]))
+    flags = EventFlags(int(row[8]))
     return TraceEvent(
         thread_id=int(row[0]),
         sequence=int(row[1]),
         ticket=int(row[2]),
         pc=int(row[3]),
-        kind=EventKind(int(row[4])),
+        kind=kind,
         address=int(row[5]),
         size=int(row[6]),
         value=int(row[7]),
-        flags=EventFlags(int(row[8])),
+        flags=flags,
         aux=int(row[9]),
+        operand_index=(
+            int(row[9])
+            if flags & EventFlags.OPERAND_INDEX and kind.is_memory
+            else None
+        ),
     )

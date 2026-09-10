@@ -14,7 +14,7 @@ namespace {
 
 constexpr char kMagic[8] = {'B', 'M', 'O', 'T', 'R', 'A', 'C', 'E'};
 constexpr uint16_t kVersionMajor = 1;
-constexpr uint16_t kVersionMinor = 1;
+constexpr uint16_t kVersionMinor = 2;
 
 enum class EventKind : uint16_t {
     Load = 1,
@@ -54,6 +54,7 @@ enum EventFlags : uint16_t {
     LockPrefix = 1 << 1,
     Xchg = 1 << 2,
     Tls = 1 << 4,
+    OperandIndex = 1 << 5,
 };
 
 enum class DropReason : size_t {
@@ -213,10 +214,11 @@ void write_record(EventKind kind, app_pc pc, uintptr_t address, uint32_t size,
 }
 
 void record_memory(uint32_t kind, app_pc pc, void *address, uint32_t size,
-                   uint32_t flags) {
+                   uint32_t flags, uint32_t operand_index) {
+    flags |= EventFlags::OperandIndex;
     write_record(static_cast<EventKind>(kind), pc,
                  reinterpret_cast<uintptr_t>(address), size,
-                 static_cast<uint16_t>(flags));
+                 static_cast<uint16_t>(flags), 0, operand_index);
 }
 
 void record_boundary(uint32_t kind, app_pc pc) {
@@ -354,11 +356,11 @@ dr_emit_flags_t instrument_instruction(void *drcontext, void *, instrlist_t *bb,
         } else {
             const EventKind kind = atomic ? EventKind::AtomicRmw
                                           : (source ? EventKind::Load : EventKind::Store);
-            dr_insert_clean_call(
-                drcontext, bb, instr, reinterpret_cast<void *>(record_memory), false, 5,
+                dr_insert_clean_call(
+                drcontext, bb, instr, reinterpret_cast<void *>(record_memory), false, 6,
                 OPND_CREATE_INT32(static_cast<uint32_t>(kind)), OPND_CREATE_INTPTR(pc),
                 opnd_create_reg(address_reg), OPND_CREATE_INT32(access_size),
-                OPND_CREATE_INT32(flags));
+                OPND_CREATE_INT32(flags), OPND_CREATE_INT32(index));
             atomic_recorded = atomic;
         }
         drreg_unreserve_register(drcontext, bb, instr, scratch_reg);
