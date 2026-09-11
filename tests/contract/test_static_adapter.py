@@ -200,19 +200,20 @@ def test_adapter_rejects_proof_that_would_drop_an_event_reference() -> None:
 
 
 def test_adapter_source_has_no_dynamic_or_diagnostics_imports() -> None:
-    path = Path(__file__).resolve().parents[2] / "src" / "bmo_check_static" / "adapters" / "evidence.py"
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    imports: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            imports.update(alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            imports.add(node.module)
-    assert all(
-        not name.startswith("bmo_check_dynamic")
-        and not name.startswith("bmo_check_diagnostics")
-        for name in imports
-    )
+    root = Path(__file__).resolve().parents[2] / "src" / "bmo_check_static" / "adapters"
+    for path in (root / "evidence.py", root / "diagnostic_snapshot.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        imports: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                imports.update(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                imports.add(node.module)
+        assert all(
+            not name.startswith("bmo_check_dynamic")
+            and not name.startswith("bmo_check_diagnostics")
+            for name in imports
+        )
 
 
 def test_canonical_unknown_registry_covers_legacy_static_kinds() -> None:

@@ -32,6 +32,10 @@ from bmo_check_static.proof import (
     build_static_certificate_with_evidence,
     verify_portability,
 )
+from bmo_check_static.adapters import (
+    DiagnosticSnapshotAdapterError,
+    static_snapshot_from_certificate,
+)
 from bmo_check_static.slicing import build_shared_memory_slice_with_evidence
 from bmo_check_static.threading.evidence import StaticThreadEvidence
 
@@ -124,6 +128,12 @@ def test_bridge_replays_legacy_safe_with_typed_slice() -> None:
     assert result.certificate.verdict == CertificateVerdict.SAFE
     assert result.verification.proof_closure == ()
 
+    snapshot = static_snapshot_from_certificate(result)
+    assert snapshot.verdict == CertificateVerdict.SAFE
+    assert snapshot.binary_closure == binding.binary_closure
+    assert snapshot.unknown_ids == ()
+    assert snapshot.ledger().nodes() == ()
+
 
 def test_bridge_rejects_dynamic_observation() -> None:
     scope = "static.test"
@@ -162,3 +172,34 @@ def test_bridge_rejects_dynamic_observation() -> None:
             portability,
             binding_from_manifest(_manifest(), scope=scope),
         )
+
+
+def test_static_snapshot_rejects_observation_added_after_certificate_build() -> None:
+    scope = "static.test"
+    result = build_static_certificate_with_evidence(
+        _empty_slice(scope),
+        _portability(scope),
+        binding_from_manifest(_manifest(), scope=scope),
+    )
+    trace = TraceId.from_parts(
+        "trace-v1",
+        HASH,
+        (ModuleId.from_parts(HASH, "executable"),),
+        ("synthetic",),
+        HASH,
+    )
+    observed = ObservedFact.create(
+        schema_version="trace-1",
+        producer=ProducerId("test", "1"),
+        trace_id=trace,
+        execution_id=ThreadInstanceId.from_parts(trace, 1),
+        subject=None,
+        observation_kind="memory",
+    )
+    result.ledger.add(observed)
+
+    with pytest.raises(
+        DiagnosticSnapshotAdapterError,
+        match="observations or hints",
+    ):
+        static_snapshot_from_certificate(result)

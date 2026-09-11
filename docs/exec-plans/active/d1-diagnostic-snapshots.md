@@ -15,6 +15,14 @@ future diagnostics service without exposing analyzer internals:
 The new `bmo_check_diagnostics` package only re-exports these core types and imports
 neither static nor dynamic route code.
 
+The static route now has a one-way adapter,
+`bmo_check_static.adapters.static_snapshot_from_certificate`. It accepts only the
+replayed `StaticCertificateEvidence`, copies all static nodes and discharges into a
+fresh immutable snapshot, and derives subject identities from typed fields. It
+replays at the boundary so a ledger mutation after certificate construction cannot
+silently become a diagnostic input. The adapter rejects `ObservedFact` and
+`DiagnosticHint` even when they are unrelated to the certificate roots.
+
 ## Safety boundary
 
 - Static snapshots reject observations and hints before correlation starts.
@@ -25,6 +33,7 @@ neither static nor dynamic route code.
 
 ## Next gate
 
-Build read-only adapters from the existing static sidecars and dynamic trace
-normalizer into these snapshots. Only after those adapters have characterization
-tests should the correlator emit `DiagnosticHint` values.
+The static adapter is covered by certificate-bridge tests. The dynamic trace
+normalizer still needs a corresponding adapter; until both adapters have
+characterization tests, the correlator must remain a read-only correlation result
+and cannot emit proof or discharge records.
