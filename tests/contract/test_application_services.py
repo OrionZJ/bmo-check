@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
+from bmo_check_evaluation import EvaluationApplicationError, ParsecEvaluationRequest
 from bmo_check_dynamic.application import (
     AnalyzeRequest,
     CaptureRequest,
@@ -78,3 +81,42 @@ def test_dynamic_analyze_service_passes_typed_request(monkeypatch, tmp_path: Pat
         "dbt_contract": request.dbt_contract,
         "config": request.config,
     }
+
+
+def test_parsec_evaluation_request_round_trips_explicit_worker_payload(
+    tmp_path: Path,
+) -> None:
+    request = ParsecEvaluationRequest(
+        suite=tmp_path / "suite.yaml",
+        parsec_root=tmp_path / "parsec",
+        dbt_contract=tmp_path / "dbt.yaml",
+        pthread_spec=tmp_path / "pthread.yaml",
+        function_effects=tmp_path / "effects.yaml",
+        output_dir=tmp_path / "out",
+        benchmark_ids=("fixture",),
+        library_roots=(tmp_path / "lib",),
+        threads_override=2,
+        environment=(("MODE", "test"),),
+        dbt_revision="a" * 40,
+        scope="application",
+        run_native=True,
+        analysis_memory_limit_mb=128,
+        in_process=True,
+    )
+
+    assert ParsecEvaluationRequest.from_payload(request.to_payload()) == request
+
+
+def test_parsec_evaluation_request_rejects_invalid_resource_limit(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(EvaluationApplicationError, match="max_events"):
+        ParsecEvaluationRequest(
+            suite=tmp_path / "suite.yaml",
+            parsec_root=tmp_path / "parsec",
+            dbt_contract=tmp_path / "dbt.yaml",
+            pthread_spec=tmp_path / "pthread.yaml",
+            function_effects=tmp_path / "effects.yaml",
+            output_dir=tmp_path / "out",
+            max_events=0,
+        )

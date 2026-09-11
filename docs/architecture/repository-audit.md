@@ -52,6 +52,15 @@ slicing now has an opt-in ProofFact/RemovalDecision sidecar, and portability has
 opt-in relevant-Unknown ledger sidecar. Legacy certificate construction still owns
 the final verdict and does not consume the new slice ledger.
 
+## 1.2 Post-C8 implementation delta
+
+The static and dynamic primary commands now convert their arguments into typed
+application requests. PARSEC suite selection, ablations, native-run policy and
+per-benchmark resource isolation moved to `bmo_check_evaluation`; the static CLI
+keeps only argument adaptation and report rendering. This removes the former
+evaluation loop from the CLI, but the route-specific evaluation models remain a
+compatibility representation until they are migrated to the evaluation package.
+
 ## 2. Current subsystems
 
 | Subsystem | Current owner | Actual responsibility |
@@ -61,7 +70,7 @@ the final verdict and does not consume the new slice ledger.
 | Static memory analysis | `bmo_check_static/analysis/` | instruction effects, address provenance, escape, lockset, lifecycle and partition analysis |
 | Static slicing | `bmo_check_static/slicing/` | conflict candidates, synchronization edges, application scope and proof-carrying event removal |
 | Static portability | `bmo_check_static/proof/` | finite memory-model encoding, Unknown collection, verdict and certificate construction |
-| Static evaluation | `bmo_check_static/evaluation/` plus `cli.py` | PARSEC manifests, ablations, native comparison and risk screening |
+| Static evaluation | `bmo_check_evaluation/parsec.py` plus `bmo_check_static/evaluation/` adapters | PARSEC manifests, ablations, native comparison and risk screening |
 | Dynamic capture | `bmo_check_dynamic/capture/`, `native/` | launch DynamoRIO, collect fixed records, bind modules and report dropped events |
 | Dynamic trace ingestion | `bmo_check_dynamic/trace/`, `storage/` | format validation, syscall closure, streaming DuckDB import and object generations |
 | Dynamic normalization and slicing | `bmo_check_dynamic/normalize/`, `analysis/` | runtime objects, exact overlaps, lifecycle filtering, application partition and windows |
@@ -126,9 +135,9 @@ The following dependencies are confirmed architecture leaks, not merely style is
 6. `bmo_check_static.analysis.memory_events` combines instruction normalization,
    interprocedural address propagation, function-effect contracts, synchronization
    summaries, Unknown creation and program-order construction.
-7. Static PARSEC evaluation orchestration is duplicated inside `bmo_check_static.cli`
-   instead of calling a single application service. The CLI knows recovery and proof
-   internals as well as worker process policy.
+7. Static PARSEC evaluation models still live under `bmo_check_static.model` even
+   though orchestration now lives in `bmo_check_evaluation`; this keeps the legacy
+   report schema stable but leaves a documented migration seam.
 8. `bmo_check_static.model.evaluation` contains `PartitionHint` and `LifecycleHint`
    alongside core facts. Evaluation inputs can therefore reach analysis through the
    same broad `model` namespace as proof inputs.
@@ -187,7 +196,7 @@ The largest tracked Python files at the baseline are:
 | `analysis/address_provenance.py` | 2150 | value lattice, transfer, interprocedural summaries, heap fields and address recovery |
 | `analysis/shared_state.py` | 1561 | grouping, alias, escape, lifecycle, locksets, partitions, proof creation and removal |
 | `analysis/memory_events.py` | 1405 | normalization, contracts, roles, effects, Unknowns and program order |
-| static `cli.py` | 883 | every static command plus evaluation worker orchestration |
+| static `cli.py` | 350 | static command parsing, service adaptation and output rendering |
 | static `proof/verifier.py` | 600 | Unknown relevance, scope, coverage, verdict, certificate and explanation |
 | dynamic `proof/checker.py` | 559 | concrete and symbolic encodings plus witness validation |
 | dynamic `pipeline.py` | 477 | all dynamic application-service responsibilities |

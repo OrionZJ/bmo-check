@@ -62,7 +62,7 @@ src/
 │   ├── classification/     extensible root-cause classifiers
 │   └── report/             diagnostic report schema and explanation
 ├── bmo_check_evaluation/
-│   ├── parsec/             manifests, harness and aggregation
+│   ├── parsec.py           typed PARSEC harness and aggregation service
 │   └── regression/         reproducible experiment drivers
 └── bmo_check_cli/
     ├── dynamic.py          capture, analyze, run and campaign commands
@@ -90,8 +90,9 @@ snapshots now live in `bmo_check_core.diagnostics`; the static route exposes its
 replayed certificate through a one-way snapshot adapter, while the dynamic route
 adapter is still pending. These snapshots are the only planned input to a future
 correlator. The static and dynamic CLIs' primary capture/recover/analyze paths now
-construct typed application requests; the legacy PARSEC evaluation loop remains in
-the static compatibility CLI until its independent service extraction.
+construct typed application requests. PARSEC orchestration now lives in
+`bmo_check_evaluation`, including its per-benchmark worker and report aggregation;
+the static compatibility CLI only converts arguments and renders the returned report.
 
 ## 3. Dependency direction
 

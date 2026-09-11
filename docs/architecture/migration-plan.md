@@ -235,14 +235,15 @@ Commit intent for this slice: `Bridge static verdicts to canonical certificates`
 Extract one static and one dynamic orchestration service. Move PARSEC orchestration to
 `bmo_check_evaluation`. CLIs parse inputs and render outputs only.
 
-The first C8 slice adds `bmo_check_static.application.StaticRequest` and
-`bmo_check_dynamic.application.{CaptureRequest,AnalyzeRequest}`. Fingerprint,
-recover, slice and analyze command paths now pass typed requests through these
-services, while the old report/certificate JSON remains unchanged. The static
-PARSEC evaluation loop is intentionally still a compatibility path; it must move
-to `bmo_check_evaluation` in a separate atomic change before C8 is fully closed.
+The C8 migration adds `bmo_check_static.application.StaticRequest`,
+`bmo_check_dynamic.application.{CaptureRequest,AnalyzeRequest}`, and the typed
+`bmo_check_evaluation.ParsecEvaluationRequest`. Fingerprint, recover, slice, analyze
+and evaluate command paths now pass typed requests through services, while the old
+report/certificate JSON remains unchanged. PARSEC ablations, native-run policy and
+per-benchmark worker isolation are owned by the evaluation service; the static
+compatibility CLI has no evaluation loop.
 
-Commit intent: `Separate application services from CLI and evaluation`.
+Commit intent: `Move PARSEC evaluation to application service`.
 
 ### Phase C exit criteria
 
@@ -485,7 +486,7 @@ The expected sequence is:
 6. `Validate static proof closure in certificates`
 7. subsystem-specific Unknown/provenance migrations
 8. `Unify source and target memory-order contracts`
-9. `Separate application services from CLI and evaluation`
+9. `Extract typed application services and PARSEC evaluation`
 10. `Expose static and dynamic diagnostic snapshots`
 11. `Bind runtime accesses to memory operands`
 12. `Correlate static Unknowns with runtime observations`

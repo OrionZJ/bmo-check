@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
-import subprocess
 import sys
 from pathlib import Path
-from time import monotonic
+
+from bmo_check_evaluation import (
+    EvaluationApplicationError,
+    ParsecEvaluationRequest,
+    run_parsec,
+)
 
 from bmo_check_static.application import (
     StaticRequest,
@@ -23,49 +26,17 @@ def _default_static_spec(name: str) -> Path:
         return repository_spec
     return Path(__file__).resolve().parent / "data" / name
 
-from bmo_check_static.analysis import (
-    analyze_shared_state,
-    extract_memory_events,
-    prove_symbolic_lifecycle,
-    prove_symbolic_partition,
-)
-from bmo_check_static.binary.dependency_closure import build_program_manifest
 from bmo_check_static.binary.symbols import function_symbols
-from bmo_check_static.config import load_contract_version, load_function_effect_contract
-from bmo_check_static.controlflow import recover_control_flow
 from bmo_check_static.model import (
-    AblationMeasurement,
-    BenchmarkMeasurement,
     CheckerLimits,
-    EvaluationReport,
-    EvaluationStatus,
-    ExecutionScope,
     FingerprintReport,
-    NativeRunMeasurement,
-    PhaseTimings,
     PortabilityCertificate,
     ProgramManifest,
     ProgramRecoveryReport,
     ProgramSliceReport,
-    RiskScreeningStatus,
     StrictModel,
-    UnknownFact,
-    UnknownKind,
-)
-from bmo_check_static.evaluation import (
-    ABLATION_LEVELS,
-    ablate_shared_state,
-    find_publication_risks,
-    load_evaluation_suite,
-    run_native_benchmark,
 )
 from bmo_check_static.proof import explain_certificate, verify_portability
-from bmo_check_static.synchronization import analyze_pthread_synchronization
-from bmo_check_static.slicing import (
-    build_shared_memory_slice,
-    restrict_to_application_scope,
-)
-from bmo_check_static.threading import discover_pthread_threads
 
 
 def _argv_json(value: str) -> tuple[str, ...]:
@@ -120,22 +91,6 @@ def _environment(values: list[str]) -> dict[str, str]:
             raise argparse.ArgumentTypeError("environment key cannot be empty")
         result[key] = item
     return result
-
-
-def _git_revision(root: Path | None) -> str | None:
-    if root is None:
-        return None
-    try:
-        completed = subprocess.run(
-            ["git", "-C", str(root), "rev-parse", "HEAD"],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-    except (OSError, subprocess.CalledProcessError):
-        return None
-    revision = completed.stdout.strip()
-    return revision or None
 
 
 def _write_json(report: StrictModel, output: Path | None) -> None:
@@ -239,443 +194,50 @@ def _explain(args: argparse.Namespace) -> int:
     return 0
 
 
-def _file_sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+def _evaluation_request_from_args(
+    args: argparse.Namespace,
+) -> ParsecEvaluationRequest:
+    """把 CLI 参数一次性转换成评测 service 的 typed request。"""
+
+    return ParsecEvaluationRequest(
+        suite=args.suite,
+        parsec_root=args.parsec_root,
+        dbt_contract=args.dbt_contract,
+        pthread_spec=args.pthread_spec,
+        function_effects=args.function_effects,
+        output_dir=args.output_dir,
+        benchmark_ids=tuple(args.benchmark),
+        library_roots=tuple(args.library_root),
+        threads_override=args.threads_override,
+        environment=tuple(sorted(_environment(args.environment).items())),
+        dbt_revision=args.dbt_revision,
+        dbt_root=args.dbt_root,
+        scope=args.scope,
+        run_native=args.run_native,
+        native_timeout_seconds=args.native_timeout_seconds,
+        analysis_memory_limit_mb=args.analysis_memory_limit_mb,
+        analysis_timeout_seconds=args.analysis_timeout_seconds,
+        max_events=args.max_events,
+        max_threads=args.max_threads,
+        max_executions=args.max_executions,
+        checker_timeout_ms=args.checker_timeout_ms,
+        in_process=args.in_process,
+    )
 
 
 def _evaluate(args: argparse.Namespace) -> int:
-    if args.in_process:
-        try:
-            import resource
-
-            limit = args.analysis_memory_limit_mb * 1024 * 1024
-            resource.setrlimit(resource.RLIMIT_AS, (limit, limit))
-        except (ImportError, OSError, ValueError):
-            # 非 WSL 平台不能设置地址空间上限时，父进程仍保留墙钟超时和退出码。
-            pass
     try:
-        suite = load_evaluation_suite(args.suite)
-    except ValueError as error:
+        report = run_parsec(_evaluation_request_from_args(args))
+    except EvaluationApplicationError as error:
         raise argparse.ArgumentTypeError(str(error)) from error
-    requested = set(args.benchmark)
-    available = {item.id for item in suite.benchmarks}
-    missing = requested - available
-    if missing:
-        raise argparse.ArgumentTypeError(
-            f"suite has no benchmark IDs: {', '.join(sorted(missing))}"
-        )
-    definitions = tuple(
-        item for item in suite.benchmarks if not requested or item.id in requested
-    )
-    args.output_dir.mkdir(parents=True, exist_ok=True)
-    limits = _checker_limits(args)
-    suite_started = monotonic()
-    measurements: list[BenchmarkMeasurement] = []
-
-    for definition in definitions:
-        threads = args.threads_override or definition.threads
-        argv = tuple(item.replace("{threads}", str(threads)) for item in definition.argv)
-        executable = (args.parsec_root / definition.executable).resolve()
-        pipeline_args = argparse.Namespace(
-            executable=executable,
-            library_root=args.library_root,
-            argv_json=argv,
-            threads=(threads, threads),
-            environment=args.environment,
-            dbt_contract=args.dbt_contract,
-            dbt_revision=args.dbt_revision,
-            dbt_root=args.dbt_root,
-            pthread_spec=args.pthread_spec,
-            function_effects=args.function_effects,
-            scope=args.scope,
-        )
-
-        recovery_started = monotonic()
-        recovery = _build_recovery(pipeline_args)
-        recovery_seconds = monotonic() - recovery_started
-        event_seconds = 0.0
-        shared_state_seconds = 0.0
-        memory_events = None
-        shared_state = None
-        partition_proofs = ()
-        lifecycle_proof = None
-        module = recovery.manifest.executable
-        if (
-            module is not None
-            and recovery.control_flow is not None
-            and recovery.thread_roles is not None
-        ):
-            event_started = monotonic()
-            effect_contract = load_function_effect_contract(args.function_effects)
-            if definition.lifecycle_hint is not None:
-                lifecycle_proof = prove_symbolic_lifecycle(
-                    module, definition.lifecycle_hint, threads
-                )
-            memory_events = extract_memory_events(
-                module,
-                recovery.control_flow,
-                recovery.thread_roles,
-                recovery.synchronization,
-                function_effects=effect_contract.effects,
-                function_integer_arguments=effect_contract.integer_arguments,
-                function_memory_arguments=effect_contract.memory_arguments,
-                function_internal_objects=effect_contract.internal_objects,
-                worker_argument_base=(
-                    lifecycle_proof.worker_argument_base
-                    if lifecycle_proof is not None and lifecycle_proof.proven
-                    else None
-                ),
-                worker_argument_alias_base=(
-                    definition.lifecycle_hint.worker_argument_alias_base
-                    if lifecycle_proof is not None
-                    and lifecycle_proof.proven
-                    and definition.lifecycle_hint is not None
-                    else None
-                ),
-            )
-            event_seconds = monotonic() - event_started
-            shared_started = monotonic()
-            partition_proofs = tuple(
-                prove_symbolic_partition(module, hint, threads)
-                for hint in definition.partition_hints
-            )
-            shared_state = analyze_shared_state(
-                module,
-                recovery.control_flow,
-                recovery.thread_roles,
-                memory_events,
-                partition_proofs,
-                lifecycle_proof,
-                definition.normal_completion_only,
-            )
-            shared_state_seconds = monotonic() - shared_started
-
-        ablations: list[AblationMeasurement] = []
-        for level in ABLATION_LEVELS:
-            slice_started = monotonic()
-            if memory_events is not None and shared_state is not None:
-                level_state = ablate_shared_state(memory_events, shared_state, level)
-                shared_slice = build_shared_memory_slice(
-                    memory_events, level_state, recovery.thread_roles
-                )
-                if args.scope == "application" and module is not None:
-                    shared_slice = restrict_to_application_scope(
-                        shared_slice,
-                        executable_sha256=module.sha256,
-                    )
-                program_report = ProgramSliceReport(
-                    recovery=recovery,
-                    memory_events=memory_events,
-                    shared_state=level_state,
-                    shared_slice=shared_slice,
-                    unknowns=recovery.unknowns,
-                )
-            else:
-                shared_slice = None
-                program_report = ProgramSliceReport(
-                    recovery=recovery,
-                    unknowns=recovery.manifest.unknowns + recovery.unknowns,
-                )
-            slice_seconds = monotonic() - slice_started
-
-            checker_started = monotonic()
-            certificate = verify_portability(
-                program_report,
-                limits,
-                analysis_options={
-                    "scope": args.scope,
-                    "pruning_level": level.value,
-                    "normal_completion_only": definition.normal_completion_only,
-                    # 同步摘要由 pthread 规格参与生成；规格变化时必须重做证书。
-                    "pthread_spec_sha256": _file_sha256(args.pthread_spec),
-                    # suite 只给出机器码入口；proof 结果也写入 scope，防止
-                    # 换输入或证明失败后误复用旧 certificate。
-                    "partition_hints": [
-                        item.model_dump(mode="json")
-                        for item in definition.partition_hints
-                    ],
-                    "partition_proofs": [
-                        {
-                            "proven": item.proven,
-                            "object_base": item.object_base,
-                            "index_term": item.index_term,
-                            "element_size": item.element_size,
-                            "item_count": item.item_count,
-                            "thread_count": item.thread_count,
-                            "evidence": list(item.evidence),
-                            "worker_pc": item.worker_pc,
-                            "loop_pc": item.loop_pc,
-                        }
-                        for item in partition_proofs
-                    ],
-                    "lifecycle_hint": (
-                        definition.lifecycle_hint.model_dump(mode="json")
-                        if definition.lifecycle_hint is not None
-                        else None
-                    ),
-                    "lifecycle_proof": (
-                        {
-                            "proven": lifecycle_proof.proven,
-                            "start_pc": lifecycle_proof.start_pc,
-                            "post_join_pc": lifecycle_proof.post_join_pc,
-                            "thread_count": lifecycle_proof.thread_count,
-                            "created_handles": list(lifecycle_proof.created_handles),
-                            "joined_handles": list(lifecycle_proof.joined_handles),
-                            "created_arguments": list(
-                                lifecycle_proof.created_arguments
-                            ),
-                            "worker_argument_base": (
-                                lifecycle_proof.worker_argument_base
-                            ),
-                            "evidence": list(lifecycle_proof.evidence),
-                        }
-                        if lifecycle_proof is not None
-                        else None
-                    ),
-                },
-            )
-            checker_seconds = monotonic() - checker_started
-            screening_started = monotonic()
-            findings = (
-                find_publication_risks(shared_slice)
-                if shared_slice is not None
-                else ()
-            )
-            screening_seconds = monotonic() - screening_started
-            if certificate.verdict.value == "SAFE":
-                screening_status = RiskScreeningStatus.PROVED_SAFE
-            elif certificate.verdict.value == "COUNTEREXAMPLE":
-                screening_status = RiskScreeningStatus.CONFIRMED_COUNTEREXAMPLE
-            elif findings:
-                screening_status = RiskScreeningStatus.POTENTIAL_RISK
-            else:
-                screening_status = RiskScreeningStatus.NO_RISK_FOUND
-            certificate_path = (
-                args.output_dir / definition.id / f"{level.value}.certificate.json"
-            )
-            _write_json(certificate, certificate_path)
-            pruning_counts = certificate.coverage.pruning_counts
-            ablations.append(
-                AblationMeasurement(
-                    level=level,
-                    timings=PhaseTimings(
-                        recovery_seconds=recovery_seconds,
-                        event_seconds=event_seconds,
-                        shared_state_seconds=shared_state_seconds,
-                        slice_seconds=slice_seconds,
-                        checker_seconds=checker_seconds,
-                        screening_seconds=screening_seconds,
-                    ),
-                    total_events=(
-                        shared_slice.coverage.total_events if shared_slice else 0
-                    ),
-                    remaining_events=(
-                        shared_slice.coverage.remaining_shared_events
-                        if shared_slice
-                        else 0
-                    ),
-                    conflict_candidates=(
-                        len(shared_slice.conflicts) if shared_slice else 0
-                    ),
-                    pruning_counts=pruning_counts,
-                    checker_executions=certificate.checker.examined_executions,
-                    verdict=certificate.verdict,
-                    relevant_unknowns=len(certificate.relevant_unknowns),
-                    screening_status=screening_status,
-                    risk_findings=findings,
-                    certificate_file=str(
-                        certificate_path.relative_to(args.output_dir).as_posix()
-                    ),
-                    certificate_sha256=_file_sha256(certificate_path),
-                )
-            )
-
-        native = NativeRunMeasurement()
-        if args.run_native:
-            native = run_native_benchmark(
-                definition,
-                args.parsec_root,
-                argv,
-                args.native_timeout_seconds,
-            )
-        measurements.append(
-            BenchmarkMeasurement(
-                benchmark_id=definition.id,
-                executable=str(executable),
-                executable_sha256=(module.sha256 if module is not None else None),
-                argv=argv,
-                threads=threads,
-                ablations=tuple(ablations),
-                native_run=native,
-            )
-        )
-
-    report = EvaluationReport(
-        suite_name=suite.name,
-        parsec_root=str(args.parsec_root.resolve()),
-        library_roots=tuple(str(path.resolve()) for path in args.library_root),
-        dbt_contract=str(args.dbt_contract.resolve()),
-        dbt_revision=args.dbt_revision or _git_revision(args.dbt_root),
-        benchmarks=tuple(measurements),
-        total_seconds=monotonic() - suite_started,
-    )
     _write_json(report, args.output_dir / "evaluation.json")
     return 0
 
 
-def _evaluation_worker_command(
-    args: argparse.Namespace, benchmark_id: str
-) -> list[str]:
-    command = [
-        sys.executable,
-        "-m",
-        "bmo_check_static.cli",
-        "evaluate",
-        "--suite",
-        str(args.suite),
-        "--parsec-root",
-        str(args.parsec_root),
-        "--benchmark",
-        benchmark_id,
-        "--dbt-contract",
-        str(args.dbt_contract),
-        "--pthread-spec",
-        str(args.pthread_spec),
-        "--function-effects",
-        str(args.function_effects),
-        "--output-dir",
-        str(args.output_dir),
-        "--analysis-memory-limit-mb",
-        str(args.analysis_memory_limit_mb),
-        "--analysis-timeout-seconds",
-        str(args.analysis_timeout_seconds),
-        "--scope",
-        args.scope,
-        "--max-events",
-        str(args.max_events),
-        "--max-threads",
-        str(args.max_threads),
-        "--max-executions",
-        str(args.max_executions),
-        "--checker-timeout-ms",
-        str(args.checker_timeout_ms),
-        "--in-process",
-    ]
-    for root in args.library_root:
-        command.extend(("--library-root", str(root)))
-    for item in args.environment:
-        command.extend(("--environment", item))
-    if args.threads_override is not None:
-        command.extend(("--threads-override", str(args.threads_override)))
-    if args.dbt_revision:
-        command.extend(("--dbt-revision", args.dbt_revision))
-    if args.dbt_root:
-        command.extend(("--dbt-root", str(args.dbt_root)))
-    if args.run_native:
-        command.append("--run-native")
-        command.extend(
-            ("--native-timeout-seconds", str(args.native_timeout_seconds))
-        )
-    return command
-
-
 def _evaluate_isolated(args: argparse.Namespace) -> int:
-    if args.in_process:
-        return _evaluate(args)
-    try:
-        suite = load_evaluation_suite(args.suite)
-    except ValueError as error:
-        raise argparse.ArgumentTypeError(str(error)) from error
-    requested = set(args.benchmark)
-    available = {item.id for item in suite.benchmarks}
-    missing = requested - available
-    if missing:
-        raise argparse.ArgumentTypeError(
-            f"suite has no benchmark IDs: {', '.join(sorted(missing))}"
-        )
-    definitions = tuple(
-        item for item in suite.benchmarks if not requested or item.id in requested
-    )
-    args.output_dir.mkdir(parents=True, exist_ok=True)
-    started = monotonic()
-    measurements: list[BenchmarkMeasurement] = []
-    worker_report = args.output_dir / "evaluation.json"
-    for definition in definitions:
-        worker_report.unlink(missing_ok=True)
-        status = EvaluationStatus.FAILED
-        failure = "evaluation worker did not produce a report"
-        try:
-            completed = subprocess.run(
-                _evaluation_worker_command(args, definition.id),
-                capture_output=True,
-                text=True,
-                timeout=args.analysis_timeout_seconds,
-                check=False,
-            )
-            if completed.returncode == 0 and worker_report.is_file():
-                partial = EvaluationReport.model_validate_json(
-                    worker_report.read_text(encoding="utf-8")
-                )
-                measurements.append(partial.benchmarks[0])
-                continue
-            if completed.returncode < 0 or "MemoryError" in completed.stderr:
-                status = EvaluationStatus.RESOURCE_LIMIT
-                failure = (
-                    f"worker exited {completed.returncode} under the "
-                    f"{args.analysis_memory_limit_mb} MiB memory limit"
-                )
-            else:
-                failure = (
-                    completed.stderr.strip()[-2000:]
-                    or f"worker exited {completed.returncode} without a report"
-                )
-        except subprocess.TimeoutExpired:
-            status = EvaluationStatus.TIMEOUT
-            failure = (
-                f"analysis exceeded {args.analysis_timeout_seconds} seconds"
-            )
+    """保留旧 handler 名称，实际执行交给 evaluation application service。"""
 
-        threads = args.threads_override or definition.threads
-        argv = tuple(item.replace("{threads}", str(threads)) for item in definition.argv)
-        executable = (args.parsec_root / definition.executable).resolve()
-        native = NativeRunMeasurement()
-        if args.run_native:
-            native = run_native_benchmark(
-                definition,
-                args.parsec_root,
-                argv,
-                args.native_timeout_seconds,
-            )
-        measurements.append(
-            BenchmarkMeasurement(
-                benchmark_id=definition.id,
-                executable=str(executable),
-                executable_sha256=(
-                    _file_sha256(executable) if executable.is_file() else None
-                ),
-                argv=argv,
-                threads=threads,
-                status=status,
-                failure=failure,
-                native_run=native,
-            )
-        )
-
-    report = EvaluationReport(
-        suite_name=suite.name,
-        parsec_root=str(args.parsec_root.resolve()),
-        library_roots=tuple(str(path.resolve()) for path in args.library_root),
-        dbt_contract=str(args.dbt_contract.resolve()),
-        dbt_revision=args.dbt_revision or _git_revision(args.dbt_root),
-        benchmarks=tuple(measurements),
-        total_seconds=monotonic() - started,
-    )
-    _write_json(report, worker_report)
-    return 0
+    return _evaluate(args)
 
 
 def _add_input_arguments(parser: argparse.ArgumentParser) -> None:
@@ -839,5 +401,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-    NativeRunMeasurement,
-    PhaseTimings,

@@ -73,6 +73,23 @@ def test_static_and_dynamic_routes_have_no_cross_route_imports() -> None:
         ), path
 
 
+def test_evaluation_service_does_not_import_route_cli() -> None:
+    src = Path(__file__).resolve().parents[2] / "src"
+    forbidden = {
+        "bmo_check_static.cli",
+        "bmo_check_dynamic.cli",
+        "bmo_check_cli",
+    }
+    for path in (src / "bmo_check_evaluation").rglob("*.py"):
+        assert _package_imports(path).isdisjoint(forbidden), path
+
+
+def test_static_cli_does_not_own_parsec_evaluation_policy() -> None:
+    src = Path(__file__).resolve().parents[2] / "src"
+    imports = _package_imports(src / "bmo_check_static" / "cli.py")
+    assert "bmo_check_static.evaluation" not in imports
+
+
 def test_semantic_routes_do_not_branch_on_benchmark_names() -> None:
     src = Path(__file__).resolve().parents[2] / "src"
     offenders: list[Path] = []
