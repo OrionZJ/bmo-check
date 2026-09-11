@@ -9,11 +9,16 @@ from pathlib import Path
 
 import yaml
 
-from bmo_check_dynamic.capture import CaptureError, capture_program
+from bmo_check_dynamic.application import (
+    AnalyzeRequest,
+    CaptureRequest,
+    analyze as analyze_request,
+    capture as capture_request,
+)
+from bmo_check_dynamic.capture import CaptureError
 from bmo_check_dynamic.analysis import locate_instruction_site
 from bmo_check_dynamic.config import DynamicConfig
 from bmo_check_dynamic.model import DynamicCertificate, TraceVerdict
-from bmo_check_dynamic.pipeline import analyze_trace
 from bmo_check_dynamic.report import explain_certificate
 
 
@@ -55,14 +60,16 @@ def _command(values: list[str]) -> tuple[str, ...]:
 
 
 def _capture(args: argparse.Namespace) -> int:
-    manifest = capture_program(
-        _command(args.command),
-        args.output,
-        dynamorio_home=args.dynamorio_home,
-        client_path=args.client,
-        environment=_environment(args.env),
-        working_directory=args.cwd,
-        max_thread_events=args.max_thread_events,
+    manifest = capture_request(
+        CaptureRequest(
+            command=_command(args.command),
+            output_dir=args.output,
+            dynamorio_home=args.dynamorio_home,
+            client_path=args.client,
+            environment=tuple(sorted(_environment(args.env).items())),
+            working_directory=args.cwd,
+            max_thread_events=args.max_thread_events,
+        )
     )
     print(manifest.model_dump_json(indent=2))
     return 0 if manifest.complete else 2
@@ -86,10 +93,12 @@ def _analysis_config(args: argparse.Namespace) -> DynamicConfig:
 
 
 def _analyze(args: argparse.Namespace) -> int:
-    certificate = analyze_trace(
-        args.trace,
-        dbt_contract=args.dbt_contract,
-        config=_analysis_config(args),
+    certificate = analyze_request(
+        AnalyzeRequest(
+            trace_dir=args.trace,
+            dbt_contract=args.dbt_contract,
+            config=_analysis_config(args),
+        )
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(certificate.model_dump_json(indent=2), encoding="utf-8")
@@ -98,21 +107,30 @@ def _analyze(args: argparse.Namespace) -> int:
 
 
 def _run(args: argparse.Namespace) -> int:
-    capture_args = argparse.Namespace(**vars(args))
-    manifest = capture_program(
-        _command(args.command),
-        args.trace,
-        dynamorio_home=args.dynamorio_home,
-        client_path=args.client,
-        environment=_environment(args.env),
-        working_directory=args.cwd,
-        max_thread_events=args.max_thread_events,
+    manifest = capture_request(
+        CaptureRequest(
+            command=_command(args.command),
+            output_dir=args.trace,
+            dynamorio_home=args.dynamorio_home,
+            client_path=args.client,
+            environment=tuple(sorted(_environment(args.env).items())),
+            working_directory=args.cwd,
+            max_thread_events=args.max_thread_events,
+        )
     )
     if not manifest.complete:
         print("Trace is incomplete; analysis will return UNKNOWN.", file=sys.stderr)
-    analyze_args = argparse.Namespace(**vars(args))
-    analyze_args.output = args.output
-    return _analyze(analyze_args)
+    certificate = analyze_request(
+        AnalyzeRequest(
+            trace_dir=args.trace,
+            dbt_contract=args.dbt_contract,
+            config=_analysis_config(args),
+        )
+    )
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(certificate.model_dump_json(indent=2), encoding="utf-8")
+    print(explain_certificate(certificate))
+    return EXIT_CODES[certificate.verdict]
 
 
 def _campaign(args: argparse.Namespace) -> int:
@@ -129,23 +147,32 @@ def _campaign(args: argparse.Namespace) -> int:
         for iteration in range(repeat):
             name = str(item.get("name", "run"))
             trace_dir = args.output / f"{name}-{iteration:03d}-{uuid.uuid4().hex[:8]}"
-            capture_program(
-                tuple(str(value) for value in item["command"]),
-                trace_dir,
-                dynamorio_home=args.dynamorio_home,
-                client_path=args.client,
-                environment={str(k): str(v) for k, v in item.get("environment", {}).items()},
-                working_directory=(
-                    Path(item["working_directory"])
-                    if item.get("working_directory")
-                    else None
-                ),
-                max_thread_events=args.max_thread_events,
+            capture_request(
+                CaptureRequest(
+                    command=tuple(str(value) for value in item["command"]),
+                    output_dir=trace_dir,
+                    dynamorio_home=args.dynamorio_home,
+                    client_path=args.client,
+                    environment=tuple(
+                        sorted(
+                            (str(k), str(v))
+                            for k, v in item.get("environment", {}).items()
+                        )
+                    ),
+                    working_directory=(
+                        Path(item["working_directory"])
+                        if item.get("working_directory")
+                        else None
+                    ),
+                    max_thread_events=args.max_thread_events,
+                )
             )
-            certificate = analyze_trace(
-                trace_dir,
-                dbt_contract=args.dbt_contract,
-                config=_analysis_config(args),
+            certificate = analyze_request(
+                AnalyzeRequest(
+                    trace_dir=trace_dir,
+                    dbt_contract=args.dbt_contract,
+                    config=_analysis_config(args),
+                )
             )
             certificate_path = trace_dir / "certificate.json"
             certificate_path.write_text(

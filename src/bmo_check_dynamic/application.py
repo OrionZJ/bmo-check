@@ -1,0 +1,100 @@
+"""dynamic capture/analyze 的应用服务边界。
+
+CLI 负责解析参数和渲染 certificate；进程控制、trace 目录写入和离线分析
+由这里调用既有 route service。这样后续 diagnose 可以消费只读 snapshot，
+而不需要反向调用 CLI 或读取其 argparse 状态。
+"""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+from dataclasses import dataclass
+from pathlib import Path
+
+from bmo_check_dynamic.capture import capture_program
+from bmo_check_dynamic.config import DynamicConfig
+from bmo_check_dynamic.model import DynamicCertificate, TraceManifest
+from bmo_check_dynamic.pipeline import analyze_trace
+
+
+class DynamicApplicationError(ValueError):
+    """dynamic service 请求字段不满足边界时抛出。"""
+
+
+@dataclass(frozen=True, slots=True)
+class CaptureRequest:
+    command: tuple[str, ...]
+    output_dir: Path
+    dynamorio_home: Path
+    client_path: Path
+    environment: tuple[tuple[str, str], ...] = ()
+    working_directory: Path | None = None
+    max_thread_events: int | None = None
+
+    def __post_init__(self) -> None:
+        if not self.command:
+            raise DynamicApplicationError("capture command cannot be empty")
+        for name in ("output_dir", "dynamorio_home", "client_path"):
+            if not isinstance(getattr(self, name), Path):
+                raise DynamicApplicationError(f"{name} must be a Path")
+        if self.working_directory is not None and not isinstance(
+            self.working_directory, Path
+        ):
+            raise DynamicApplicationError("working_directory must be a Path")
+        if self.max_thread_events is not None and self.max_thread_events < 1:
+            raise DynamicApplicationError("max_thread_events must be positive")
+        for key, value in self.environment:
+            if not isinstance(key, str) or not key or "\x00" in key:
+                raise DynamicApplicationError("environment keys must be non-empty")
+            if not isinstance(value, str) or "\x00" in value:
+                raise DynamicApplicationError("environment values cannot contain NUL")
+
+
+@dataclass(frozen=True, slots=True)
+class AnalyzeRequest:
+    trace_dir: Path
+    dbt_contract: Path
+    config: DynamicConfig
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.trace_dir, Path) or not isinstance(self.dbt_contract, Path):
+            raise DynamicApplicationError("trace_dir and dbt_contract must be Paths")
+        if not isinstance(self.config, DynamicConfig):
+            raise DynamicApplicationError("config must be DynamicConfig")
+
+
+def _environment(request: CaptureRequest) -> Mapping[str, str]:
+    return dict(request.environment)
+
+
+def capture(request: CaptureRequest) -> TraceManifest:
+    """启动一次原生采集并返回 manifest；不在 service 中渲染 JSON。"""
+
+    return capture_program(
+        request.command,
+        request.output_dir,
+        dynamorio_home=request.dynamorio_home,
+        client_path=request.client_path,
+        environment=dict(_environment(request)),
+        working_directory=request.working_directory,
+        max_thread_events=request.max_thread_events,
+    )
+
+
+def analyze(request: AnalyzeRequest) -> DynamicCertificate:
+    """读取一条 trace 并返回既有动态 certificate。"""
+
+    return analyze_trace(
+        request.trace_dir,
+        dbt_contract=request.dbt_contract,
+        config=request.config,
+    )
+
+
+__all__ = [
+    "AnalyzeRequest",
+    "CaptureRequest",
+    "DynamicApplicationError",
+    "analyze",
+    "capture",
+]

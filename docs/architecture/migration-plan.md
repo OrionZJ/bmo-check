@@ -235,6 +235,13 @@ Commit intent for this slice: `Bridge static verdicts to canonical certificates`
 Extract one static and one dynamic orchestration service. Move PARSEC orchestration to
 `bmo_check_evaluation`. CLIs parse inputs and render outputs only.
 
+The first C8 slice adds `bmo_check_static.application.StaticRequest` and
+`bmo_check_dynamic.application.{CaptureRequest,AnalyzeRequest}`. Fingerprint,
+recover, slice and analyze command paths now pass typed requests through these
+services, while the old report/certificate JSON remains unchanged. The static
+PARSEC evaluation loop is intentionally still a compatibility path; it must move
+to `bmo_check_evaluation` in a separate atomic change before C8 is fully closed.
+
 Commit intent: `Separate application services from CLI and evaluation`.
 
 ### Phase C exit criteria

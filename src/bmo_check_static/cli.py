@@ -8,6 +8,14 @@ import sys
 from pathlib import Path
 from time import monotonic
 
+from bmo_check_static.application import (
+    StaticRequest,
+    analyze as analyze_request,
+    build_manifest as application_manifest,
+    recover as application_recover,
+    slice_report as application_slice_report,
+)
+
 
 def _default_static_spec(name: str) -> Path:
     repository_spec = Path(__file__).resolve().parents[2] / "specs" / "static" / name
@@ -140,46 +148,29 @@ def _write_json(report: StrictModel, output: Path | None) -> None:
 
 
 def _build_manifest(args: argparse.Namespace) -> ProgramManifest:
-    contract = load_contract_version(args.dbt_contract)
-    effect_contract = load_function_effect_contract(args.function_effects)
-    thread_min: int | None = None
-    thread_max: int | None = None
-    if args.threads is not None:
-        thread_min, thread_max = args.threads
+    return application_manifest(_request_from_args(args))
 
-    execution = ExecutionScope(
-        argv=args.argv_json,
-        thread_count_min=thread_min,
-        thread_count_max=thread_max,
-        environment=_environment(args.environment),
-    )
-    revision = args.dbt_revision or _git_revision(args.dbt_root)
-    manifest = build_program_manifest(
-        executable_path=args.executable,
+
+def _request_from_args(args: argparse.Namespace) -> StaticRequest:
+    """把 argparse 的临时 namespace 收口为静态 service 的 typed request。"""
+
+    return StaticRequest(
+        executable=args.executable,
+        dbt_contract=args.dbt_contract,
+        pthread_spec=getattr(
+            args, "pthread_spec", _default_static_spec("pthread-api.yaml")
+        ),
+        function_effects=getattr(
+            args, "function_effects", _default_static_spec("library-effects.yaml")
+        ),
         library_roots=tuple(args.library_root),
-        execution=execution,
-        dbt_contract_version=contract.version,
-        dbt_revision=revision,
+        argv=tuple(args.argv_json),
+        threads=getattr(args, "threads", None),
+        environment=tuple(sorted(_environment(args.environment).items())),
+        dbt_revision=getattr(args, "dbt_revision", None),
+        dbt_root=getattr(args, "dbt_root", None),
+        scope=getattr(args, "scope", "full"),
     )
-    manifest = manifest.model_copy(
-        update={
-            "function_effect_contract_version": effect_contract.version,
-            "function_effect_contract_sha256": effect_contract.sha256 or None,
-        }
-    )
-    contract_unknowns = tuple(
-        item
-        for item in (contract.unknown, effect_contract.unknown)
-        if item is not None
-    )
-    if contract_unknowns:
-        manifest = manifest.model_copy(
-            update={
-                "closure_complete": False,
-                "unknowns": manifest.unknowns + contract_unknowns,
-            }
-        )
-    return manifest
 
 
 def _fingerprint(args: argparse.Namespace) -> int:
@@ -189,62 +180,8 @@ def _fingerprint(args: argparse.Namespace) -> int:
 
 
 def _build_recovery(args: argparse.Namespace) -> ProgramRecoveryReport:
-    manifest = _build_manifest(args)
-    if manifest.executable is None:
-        return ProgramRecoveryReport(manifest=manifest)
-
-    control_flow = recover_control_flow(manifest.executable, manifest)
-    threads = discover_pthread_threads(
-        manifest.executable, manifest, control_flow
-    )
-    synchronization = []
-    recovery_unknowns: list[UnknownFact] = []
-    called_pthread_apis = {
-        call.target_symbol
-        for call in control_flow.call_sites
-        if call.target_symbol is not None and call.target_symbol.startswith("pthread_")
-    }
-    for library in manifest.libraries:
-        try:
-            names = {symbol.name for symbol in function_symbols(library)}
-        except Exception as error:
-            recovery_unknowns.append(
-                UnknownFact(
-                    kind=UnknownKind.ELF_BACKEND_FAILURE,
-                    reason=str(error),
-                    impact="synchronization implementations in this library were not discovered",
-                    module=library.path,
-                )
-            )
-            continue
-        implemented_apis = names.intersection(called_pthread_apis)
-        if not implemented_apis:
-            continue
-        try:
-            synchronization.append(
-                analyze_pthread_synchronization(
-                    library,
-                    args.pthread_spec,
-                    args.dbt_contract,
-                    requested_apis=implemented_apis,
-                )
-            )
-        except Exception as error:
-            # 配置或分析失败不能表现成“这个库没有同步 effect”。
-            recovery_unknowns.append(
-                UnknownFact(
-                    kind=UnknownKind.UNKNOWN_SYNCHRONIZATION,
-                    reason=str(error),
-                    impact="the concrete pthread synchronization summary is unavailable",
-                    module=library.path,
-                )
-            )
-    return ProgramRecoveryReport(
-        manifest=manifest,
-        control_flow=control_flow,
-        thread_roles=threads,
-        synchronization=tuple(synchronization),
-        unknowns=tuple(recovery_unknowns),
+    return application_recover(
+        _request_from_args(args), symbol_provider=function_symbols
     )
 
 
@@ -255,49 +192,8 @@ def _recover(args: argparse.Namespace) -> int:
 
 
 def _build_slice_report(args: argparse.Namespace) -> ProgramSliceReport:
-    recovery = _build_recovery(args)
-    module = recovery.manifest.executable
-    if (
-        module is None
-        or recovery.control_flow is None
-        or recovery.thread_roles is None
-    ):
-        return ProgramSliceReport(
-            recovery=recovery,
-            unknowns=recovery.manifest.unknowns + recovery.unknowns,
-        )
-
-    effect_contract = load_function_effect_contract(args.function_effects)
-    events = extract_memory_events(
-        module,
-        recovery.control_flow,
-        recovery.thread_roles,
-        recovery.synchronization,
-        function_effects=effect_contract.effects,
-        function_integer_arguments=effect_contract.integer_arguments,
-        function_memory_arguments=effect_contract.memory_arguments,
-        function_internal_objects=effect_contract.internal_objects,
-    )
-    shared_state = analyze_shared_state(
-        module,
-        recovery.control_flow,
-        recovery.thread_roles,
-        events,
-    )
-    shared_slice = build_shared_memory_slice(
-        events, shared_state, recovery.thread_roles
-    )
-    if args.scope == "application":
-        shared_slice = restrict_to_application_scope(
-            shared_slice,
-            executable_sha256=module.sha256,
-        )
-    return ProgramSliceReport(
-        recovery=recovery,
-        memory_events=events,
-        shared_state=shared_state,
-        shared_slice=shared_slice,
-        unknowns=recovery.unknowns,
+    return application_slice_report(
+        _request_from_args(args), symbol_provider=function_symbols
     )
 
 
@@ -317,16 +213,10 @@ def _checker_limits(args: argparse.Namespace) -> CheckerLimits:
 
 
 def _analyze(args: argparse.Namespace) -> int:
-    report = _build_slice_report(args)
-    certificate = verify_portability(
-        report,
+    certificate = analyze_request(
+        _request_from_args(args),
         _checker_limits(args),
-        analysis_options={
-            "scope": args.scope,
-            # pthread 规格决定 syscall 慢路径能否被具体 LOCK/XCHG 边界覆盖。
-            # 绑定完整文件哈希，防止改规格后误复用旧 certificate。
-            "pthread_spec_sha256": _file_sha256(args.pthread_spec),
-        },
+        symbol_provider=function_symbols,
     )
     _write_json(certificate, args.output)
     if certificate.verdict.value == "SAFE":
