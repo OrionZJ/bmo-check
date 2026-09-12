@@ -23,6 +23,7 @@ from .model import (
 )
 from .differential import (
     DifferentialComparison,
+    DifferentialClassification,
     DifferentialStatus,
     compare_fixed_execution,
 )
@@ -36,6 +37,14 @@ from .herd import (
     parse_herd_outcome,
     replay_herd_oracle,
     run_herd_oracle,
+)
+from .oracle import (
+    ORACLE_REPORT_SCHEMA,
+    OracleToolError,
+    oracle_record_from_run,
+    replay_report,
+    report_payload,
+    write_report,
 )
 from .projection import CriticalProjectionError, project_critical_slice
 
@@ -56,6 +65,7 @@ __all__ = [
     "RelationKind",
     "load_manifest",
     "DifferentialComparison",
+    "DifferentialClassification",
     "DifferentialStatus",
     "compare_fixed_execution",
     "HerdInvocation",
@@ -67,6 +77,12 @@ __all__ = [
     "parse_herd_outcome",
     "replay_herd_oracle",
     "run_herd_oracle",
+    "ORACLE_REPORT_SCHEMA",
+    "OracleToolError",
+    "oracle_record_from_run",
+    "replay_report",
+    "report_payload",
+    "write_report",
     "CriticalProjectionError",
     "project_critical_slice",
 ]

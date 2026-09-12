@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 
 from bmo_check_evaluation.litmus import (
@@ -12,6 +14,13 @@ from bmo_check_evaluation.litmus import (
     parse_herd_outcome,
     replay_herd_oracle,
     run_herd_oracle,
+)
+from bmo_check_evaluation.litmus.oracle import (
+    ORACLE_REPORT_SCHEMA,
+    oracle_record_from_run,
+    replay_report,
+    report_payload,
+    write_report,
 )
 
 
@@ -118,3 +127,62 @@ def test_replay_rejects_changed_contract_or_outcome_without_proof_effect(
     assert replay.status is HerdReplayStatus.MISMATCH
     assert "target herd outcome changed" in replay.differences
     assert "herd raw output hash changed" in replay.differences
+
+
+def test_oracle_report_round_trip_keeps_contract_and_run_provenance(
+    tmp_path: Path, monkeypatch
+) -> None:
+    request = _request(tmp_path)
+    request = replace(request, herd_version="herd7-test")
+    outputs = iter(
+        (
+            subprocess.CompletedProcess(args=(), returncode=0, stdout="Test source Allowed\n", stderr=""),
+            subprocess.CompletedProcess(args=(), returncode=0, stdout="Test target Allowed\n", stderr=""),
+        )
+    )
+    monkeypatch.setattr("subprocess.run", lambda *args, **kwargs: next(outputs))
+    run = run_herd_oracle(request)
+
+    payload = report_payload(run, herd_version="herd7-test")
+    assert payload["schema"] == ORACLE_REPORT_SCHEMA
+    assert payload["request"]["contract_version"] == request.contract_version
+    assert payload["oracle"]["source_outcome"] == "Allowed"
+    assert payload["oracle"]["target_outcome"] == "Allowed"
+    record = oracle_record_from_run(run, herd_version="herd7-test")
+    assert record.contract_sha256 == request.contract_sha256
+
+    output = tmp_path / "oracle.json"
+    write_report(run, herd_version="herd7-test", output=output)
+    loaded = output.read_text(encoding="utf-8")
+    assert '"schema": "e2.5-herd-oracle-run-v1"' in loaded
+
+
+def test_oracle_replay_detects_herd_version_drift(tmp_path: Path, monkeypatch) -> None:
+    request = _request(tmp_path)
+    request = replace(request, herd_version="herd7-recorded")
+    outputs = iter(
+        (
+            subprocess.CompletedProcess(args=(), returncode=0, stdout="Test source Allowed\n", stderr=""),
+            subprocess.CompletedProcess(args=(), returncode=0, stdout="Test target Allowed\n", stderr=""),
+        )
+    )
+    monkeypatch.setattr("subprocess.run", lambda *args, **kwargs: next(outputs))
+    run = run_herd_oracle(request)
+    output = tmp_path / "oracle.json"
+    write_report(run, herd_version="herd7-recorded", output=output)
+
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    payload["request"]["herd_version"] = "herd7-current"
+    output.write_text(json.dumps(payload), encoding="utf-8")
+
+    replay_outputs = iter(
+        (
+            subprocess.CompletedProcess(args=(), returncode=0, stdout="Test source Allowed\n", stderr=""),
+            subprocess.CompletedProcess(args=(), returncode=0, stdout="Test target Allowed\n", stderr=""),
+        )
+    )
+    monkeypatch.setattr("subprocess.run", lambda *args, **kwargs: next(replay_outputs))
+    status, differences = replay_report(output)
+
+    assert status is HerdReplayStatus.UNKNOWN
+    assert "herd version does not match the oracle record" in differences

@@ -66,6 +66,9 @@ class HerdOracleRequest:
     herd_executable: str = "herd7"
     timeout_seconds: float = 30.0
     extra_args: tuple[str, ...] = ()
+    # 重放时调用者可以显式绑定 herd 版本；None 表示版本由外部运行环境
+    # 管理，不能据此宣称记录与当前工具版本相同。
+    herd_version: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.source_input, Path) or not isinstance(self.target_input, Path):
@@ -74,6 +77,12 @@ class HerdOracleRequest:
             value = getattr(self, field)
             if not isinstance(value, str) or not value or "\x00" in value:
                 raise ValueError(f"{field} must be a non-empty string")
+        if self.herd_version is not None and (
+            not isinstance(self.herd_version, str)
+            or not self.herd_version
+            or "\x00" in self.herd_version
+        ):
+            raise ValueError("herd_version must be non-empty when provided")
         for field in ("contract_sha256", "elf_sha256"):
             value = getattr(self, field)
             if (
@@ -297,6 +306,8 @@ def replay_herd_oracle(
         differences.append("source herd model does not match the oracle record")
     if record.target_model != request.target_model:
         differences.append("target herd model does not match the oracle record")
+    if request.herd_version is not None and record.herd_version != request.herd_version:
+        differences.append("herd version does not match the oracle record")
     if record.contract_version != request.contract_version:
         differences.append("DBT contract version does not match the oracle record")
     if record.contract_sha256 != request.contract_sha256:
