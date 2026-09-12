@@ -48,18 +48,28 @@ def _semantic_roots(root: Path) -> tuple[Path, ...]:
     )
 
 
+def _semantic_python_files(root: Path) -> tuple[Path, ...]:
+    """Return reusable route modules without the legacy CLI adapter."""
+
+    return tuple(path for path in root.rglob("*.py") if path.name != "cli.py")
+
+
 def test_static_and_dynamic_routes_have_no_cross_route_imports() -> None:
     src = Path(__file__).resolve().parents[2] / "src"
-    for path in (src / "bmo_check_static").rglob("*.py"):
+    # CLI 目前仍是历史入口，负责调用 evaluation service；这里先约束
+    # 可复用的静态/动态语义模块，避免 fixture schema 反向进入证明实现。
+    for path in _semantic_python_files(src / "bmo_check_static"):
         assert all(
             not imported.startswith("bmo_check_dynamic")
             and not imported.startswith("bmo_check_diagnostics")
+            and not imported.startswith("bmo_check_evaluation")
             for imported in _package_imports(path)
         ), path
-    for path in (src / "bmo_check_dynamic").rglob("*.py"):
+    for path in _semantic_python_files(src / "bmo_check_dynamic"):
         assert all(
             not imported.startswith("bmo_check_static")
             and not imported.startswith("bmo_check_diagnostics")
+            and not imported.startswith("bmo_check_evaluation")
             for imported in _package_imports(path)
         ), path
     for path in (src / "bmo_check_core").rglob("*.py"):
