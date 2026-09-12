@@ -57,6 +57,7 @@ def check_fixed_execution(
     *,
     read_from: Mapping[str, str | None],
     coherence: tuple[tuple[str, str, str], ...] = (),
+    from_read: tuple[tuple[str, str, str], ...] = (),
     object_locations: Mapping[str, tuple[int, int]] | None = None,
 ) -> FixedExecutionResult:
     """在既定 trace window 上检查固定 ``rf/co``，不枚举其它关系。"""
@@ -161,6 +162,29 @@ def check_fixed_execution(
     ):
         reason = "fixed coherence does not make an atomic read-from adjacent"
         return FixedExecutionResult(_unknown("x86-tso", reason), _unknown("rvwmo", reason))
+
+    if from_read:
+        expected_from_read: set[tuple[str, str, str]] = set()
+        order_by_location = {
+            (order[0].address, order[0].size): order
+            for order in selected_orders
+            if order
+        }
+        for read, write in rf:
+            location = location_by_event[read.event_id]
+            order = order_by_location.get(location, tuple(writes_by_location[location]))
+            later = (
+                order[order.index(write) + 1 :]
+                if write is not None
+                else order
+            )
+            expected_from_read.update(
+                (location_labels[location], read.event_id, later_write.event_id)
+                for later_write in later
+            )
+        if set(from_read) != expected_from_read:
+            reason = "explicit from-read relation does not match the rf/co assignment"
+            return FixedExecutionResult(_unknown("x86-tso", reason), _unknown("rvwmo", reason))
 
     source = source_preserved_order(window.events)
     target = target_preserved_order(window.events)

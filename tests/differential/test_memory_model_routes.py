@@ -164,6 +164,30 @@ def test_message_passing_target_only_execution_matches_both_routes() -> None:
     assert (comparison.source_static, comparison.target_static) == ("forbidden", "allowed")
 
 
+def test_dynamic_facade_accepts_explicit_from_read_for_the_same_execution() -> None:
+    window = _dynamic_window(
+        (
+            ((DynamicEventKind.STORE, 0x1000), (DynamicEventKind.STORE, 0x2000)),
+            ((DynamicEventKind.LOAD, 0x2000), (DynamicEventKind.LOAD, 0x1000)),
+        )
+    )
+    result = check_dynamic(
+        window,
+        read_from={"t2:e1": "t1:e2", "t2:e2": None},
+        from_read=(("data", "t2:e2", "t1:e1"),),
+        object_locations={"data": (0x1000, 4), "flag": (0x2000, 4)},
+    )
+    assert (result.source.status, result.target.status) == ("forbidden", "allowed")
+
+    invalid = check_dynamic(
+        window,
+        read_from={"t2:e1": "t1:e2", "t2:e2": None},
+        from_read=(("data", "t2:e2", "t1:e2"),),
+        object_locations={"data": (0x1000, 4), "flag": (0x2000, 4)},
+    )
+    assert invalid.source.status == invalid.target.status == "unknown"
+
+
 def test_unknown_route_is_incomplete_and_not_equivalent() -> None:
     static = _static_slice(((_static_event("load", "t0", 0x10, StaticEventKind.LOAD, "x"),),))
     dynamic = _dynamic_window((((DynamicEventKind.LOAD, 0x1000),),))

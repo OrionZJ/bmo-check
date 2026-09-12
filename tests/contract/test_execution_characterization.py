@@ -22,6 +22,7 @@ from bmo_check_static.model import (
 from bmo_check_static.proof.characterization import (
     check_fixed_execution as check_static,
 )
+from bmo_check_static.proof.encoding import _object_id
 
 
 HASH = "a" * 64
@@ -196,3 +197,32 @@ def test_incomplete_fixed_relations_are_unknown_not_an_allowed_execution() -> No
 
     assert static_result.source.status == static_result.target.status == "unknown"
     assert dynamic_result.source.status == dynamic_result.target.status == "unknown"
+
+
+def test_explicit_from_read_is_checked_against_the_fixed_rf_co_assignment() -> None:
+    static = _static_slice(
+        (
+            (
+                _static_event("w-data", "t0", 0x10, StaticEventKind.STORE, "data"),
+                _static_event("w-flag", "t0", 0x14, StaticEventKind.STORE, "flag"),
+            ),
+            (
+                _static_event("r-flag", "t1", 0x20, StaticEventKind.LOAD, "flag"),
+                _static_event("r-data", "t1", 0x24, StaticEventKind.LOAD, "data"),
+            ),
+        )
+    )
+    data_object = _object_id(static.events[0])
+    source = check_static(
+        static,
+        read_from={"r-flag": "w-flag", "r-data": None},
+        from_read=((data_object, "r-data", "w-data"),),
+    )
+    assert (source.source.status, source.target.status) == ("forbidden", "allowed")
+
+    invalid = check_static(
+        static,
+        read_from={"r-flag": "w-flag", "r-data": None},
+        from_read=((data_object, "r-data", "w-flag"),),
+    )
+    assert invalid.source.status == invalid.target.status == "unknown"

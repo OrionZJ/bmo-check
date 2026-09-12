@@ -77,6 +77,7 @@ def check_fixed_execution(
     *,
     read_from: Mapping[str, str | None],
     coherence: tuple[tuple[str, str, str], ...] = (),
+    from_read: tuple[tuple[str, str, str], ...] = (),
     timeout_ms: int = 10_000,
 ) -> FixedExecutionResult:
     """检查一组已给定的 ``rf/co``，不搜索其它关系赋值。
@@ -143,6 +144,45 @@ def check_fixed_execution(
         actual = sum(1 for label, _before, _after in fixed_co if label == object_label)
         if actual != expected:
             reason = f"coherence assignment is incomplete for object {object_label!r}"
+            return FixedExecutionResult(_unknown("x86-tso", reason), _unknown("rvwmo", reason))
+
+    if from_read:
+        expected_from_read: set[tuple[str, str, str]] = set()
+        order_by_object: dict[str, tuple[str, ...]] = {}
+        for object_id, object_store_ids in stores_by_object.items():
+            store_ids = tuple(sorted(object_store_ids))
+            predecessors = {store_id: 0 for store_id in store_ids}
+            successors = {store_id: set() for store_id in store_ids}
+            for _label, before_id, after_id in fixed_co:
+                if _label == object_id:
+                    successors[before_id].add(after_id)
+                    predecessors[after_id] += 1
+            ready = sorted(
+                store_id for store_id, degree in predecessors.items() if degree == 0
+            )
+            order: list[str] = []
+            while ready:
+                store_id = ready.pop(0)
+                order.append(store_id)
+                for successor in sorted(successors[store_id]):
+                    predecessors[successor] -= 1
+                    if predecessors[successor] == 0:
+                        ready.append(successor)
+                        ready.sort()
+            order_by_object[object_id] = tuple(order)
+        for load_id, source_id in read_from.items():
+            object_id = object_by_event[load_id]
+            order = order_by_object[object_id]
+            later = (
+                order[order.index(source_id) + 1 :]
+                if source_id is not None
+                else order
+            )
+            expected_from_read.update(
+                (object_id, load_id, store_id) for store_id in later
+            )
+        if set(from_read) != expected_from_read:
+            reason = "explicit from-read relation does not match the rf/co assignment"
             return FixedExecutionResult(_unknown("x86-tso", reason), _unknown("rvwmo", reason))
 
     assignment = _RelationAssignment(

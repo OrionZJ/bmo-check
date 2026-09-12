@@ -197,10 +197,32 @@ def _execution_record(
         coherence.append(
             (object_ids[pair.object_label], matches[pair.before], matches[pair.after])
         )
+    from_read: list[tuple[str, str, str]] = []
+    for edge in assignment.from_read:
+        if (
+            edge.object_label not in object_ids
+            or edge.source not in matches
+            or edge.target not in matches
+        ):
+            return ExecutionLegalityRecord(
+                assignment_id=assignment.assignment_id,
+                source_status="unknown",
+                target_status="unknown",
+                source_reason="from-read relation references an unmatched object or event",
+                target_reason="from-read relation references an unmatched object or event",
+            )
+        from_read.append(
+            (
+                object_ids[edge.object_label],
+                matches[edge.source],
+                matches[edge.target],
+            )
+        )
     result: StaticExecutionResult = check_fixed_execution(
         shared_slice,
         read_from=read_from,
         coherence=tuple(coherence),
+        from_read=tuple(from_read),
     )
     return ExecutionLegalityRecord(
         assignment_id=assignment.assignment_id,
