@@ -5,6 +5,10 @@ from bmo_check_dynamic.model import EventKind as DynamicEventKind, TraceEvent
 from bmo_check_dynamic.proof.characterization import (
     check_fixed_execution as check_dynamic,
 )
+from bmo_check_evaluation.litmus import (
+    DifferentialStatus,
+    compare_fixed_execution,
+)
 from bmo_check_static.model import (
     AbstractAddress,
     AddressKind,
@@ -132,6 +136,8 @@ def test_fixed_message_passing_is_target_only_in_both_routes() -> None:
         "forbidden",
         "allowed",
     )
+    comparison = compare_fixed_execution(static_result, dynamic_result)
+    assert comparison.status is DifferentialStatus.MATCH
 
 
 def test_fixed_full_fence_blocks_message_passing_in_both_routes() -> None:
@@ -176,6 +182,8 @@ def test_fixed_full_fence_blocks_message_passing_in_both_routes() -> None:
 
     assert static_result.source.status == static_result.target.status == "forbidden"
     assert dynamic_result.source.status == dynamic_result.target.status == "forbidden"
+    comparison = compare_fixed_execution(static_result, dynamic_result)
+    assert comparison.status is DifferentialStatus.MATCH
 
 
 def test_incomplete_fixed_relations_are_unknown_not_an_allowed_execution() -> None:

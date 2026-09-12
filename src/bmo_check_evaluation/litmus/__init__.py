@@ -21,6 +21,11 @@ from .model import (
     RelationKind,
     load_manifest,
 )
+from .differential import (
+    DifferentialComparison,
+    DifferentialStatus,
+    compare_fixed_execution,
+)
 
 __all__ = [
     "BinaryBinding",
@@ -38,4 +43,7 @@ __all__ = [
     "ReadFromChoice",
     "RelationKind",
     "load_manifest",
+    "DifferentialComparison",
+    "DifferentialStatus",
+    "compare_fixed_execution",
 ]
