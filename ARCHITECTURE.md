@@ -18,14 +18,14 @@ src/bmo_check_static/        binary-only static SAFE research
 
 They do not import each other. This remains required during the migration.
 
-The current split is not yet a complete evidence boundary. The shared package now
-contains stable identities, a typed evidence ledger, migrated static recovery,
-memory, sharing, slicing and portability sidecars, and a canonical certificate
-closure verifier. A static certificate bridge now replays those sidecars, while the
-legacy JSON certificate remains the compatibility output. The core also owns the
-typed DBT memory-order contract used by the dynamic input adapter. Dynamic-assisted static
-diagnosis must not be added directly to legacy verdict paths; dynamic observations
-still need a separate diagnostic service and can never enter static proof closure.
+The Phase C evidence boundary is closed. The shared package contains stable
+identities, a typed evidence ledger, static recovery/memory/sharing/slicing and
+portability sidecars, and a canonical certificate closure verifier. The static
+application service translates its complete legacy report, replays the canonical
+certificate and compares verdicts before returning the legacy JSON compatibility
+payload. The core also owns the typed DBT memory-order contract used by the dynamic
+input adapter. Dynamic-assisted diagnosis remains a separate diagnostic service;
+observations and hints can never enter static proof closure.
 
 ## Accepted direction
 
@@ -68,9 +68,12 @@ static `SAFE`.
 
 ## Migration state
 
-The target architecture is accepted, but implementation is intentionally staged.
-Legacy models remain authoritative until a characterization test and one-way adapter
-exist. Every adapter must list its callers, limitations and deletion condition.
+Phase C (typed evidence, stable identities, static certificate replay and application
+service wiring) is complete on branch `dev`. Legacy models remain as explicitly
+documented adapters until native producers and all serializers migrate; they are no
+longer an unchecked verdict authority. Every adapter lists its callers, limitations
+and deletion condition.
 
-Do not start dynamic/static correlation before the evidence and stable-identity
-foundation in Phase C is complete.
+Future native-producer and relation-vocabulary work must preserve the same replay
+boundary. Dynamic/static correlation may consume immutable snapshots, but it must not
+change either verdict domain.

@@ -13,6 +13,21 @@ from bmo_check_dynamic.application import (
 )
 from bmo_check_dynamic.config import DynamicConfig
 from bmo_check_static.application import StaticApplicationError, StaticRequest
+from bmo_check_static.application import analyze as analyze_static
+from bmo_check_static.application import analyze_with_evidence
+from bmo_check_static.model import (
+    ElfMetadata,
+    ExecutionScope,
+    MemoryEventReport,
+    ModuleFingerprint,
+    ModuleRole,
+    PruningCoverage,
+    ProgramManifest,
+    ProgramRecoveryReport,
+    ProgramSliceReport,
+    SharedMemorySlice,
+    SharedStateReport,
+)
 
 
 def test_static_request_rejects_unscoped_analysis() -> None:
@@ -120,3 +135,81 @@ def test_parsec_evaluation_request_rejects_invalid_resource_limit(
             output_dir=tmp_path / "out",
             max_events=0,
         )
+
+
+def _static_service_report(*, dbt_revision: str | None = "b" * 40) -> ProgramSliceReport:
+    module = ModuleFingerprint(
+        path="/bin/static-service-fixture",
+        role=ModuleRole.EXECUTABLE,
+        size=1,
+        sha256="a" * 64,
+        elf=ElfMetadata(
+            elf_class=64,
+            little_endian=True,
+            machine="EM_X86_64",
+            elf_type="ET_EXEC",
+        ),
+    )
+    manifest = ProgramManifest(
+        executable=module,
+        execution=ExecutionScope(argv=(module.path,), thread_count_min=1),
+        dbt_contract_version="dbt6-mo-off-v1",
+        dbt_revision=dbt_revision,
+        closure_complete=True,
+    )
+    return ProgramSliceReport(
+        recovery=ProgramRecoveryReport(manifest=manifest),
+        memory_events=MemoryEventReport(
+            module_path=module.path,
+            module_sha256=module.sha256,
+        ),
+        shared_state=SharedStateReport(),
+        shared_slice=SharedMemorySlice(
+            coverage=PruningCoverage(total_events=0),
+        ),
+    )
+
+
+def _static_service_request(tmp_path: Path) -> StaticRequest:
+    contract = tmp_path / "contract.yaml"
+    contract.write_text("schema: 1\ncontract_version: test-v1\n", encoding="utf-8")
+    pthread = tmp_path / "pthread.yaml"
+    pthread.write_text("schema: 1\napis: {}\n", encoding="utf-8")
+    effects = tmp_path / "effects.yaml"
+    effects.write_text("schema: 1\nfunctions: {}\n", encoding="utf-8")
+    return StaticRequest(
+        executable=tmp_path / "fixture",
+        dbt_contract=contract,
+        pthread_spec=pthread,
+        function_effects=effects,
+        dbt_revision="b" * 40,
+    )
+
+
+def test_static_analyze_service_replays_canonical_certificate(
+    monkeypatch, tmp_path: Path
+) -> None:
+    request = _static_service_request(tmp_path)
+    report = _static_service_report()
+    monkeypatch.setattr("bmo_check_static.application.slice_report", lambda *args, **kwargs: report)
+
+    result = analyze_with_evidence(request)
+
+    assert result.legacy_certificate.verdict.value == "SAFE"
+    assert result.canonical_certificate is not None
+    assert result.canonical_certificate.verification.certificate.verdict.value == "SAFE"
+    assert analyze_static(request).verdict.value == "SAFE"
+
+
+def test_static_analyze_service_records_unbound_revision_without_fabricating_binding(
+    monkeypatch, tmp_path: Path
+) -> None:
+    request = _static_service_request(tmp_path)
+    report = _static_service_report(dbt_revision=None)
+    monkeypatch.setattr("bmo_check_static.application.slice_report", lambda *args, **kwargs: report)
+
+    result = analyze_with_evidence(request)
+
+    assert result.legacy_certificate.verdict.value == "UNKNOWN"
+    assert result.canonical_certificate is None
+    assert result.canonical_error == "static certificate requires a DBT revision"

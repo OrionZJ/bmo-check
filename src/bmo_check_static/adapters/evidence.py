@@ -5,8 +5,8 @@
     单向桥，先验证新的身份/evidence 边界，同时不改变现有 verdict 和 JSON 契约。
 
 当前调用者：
-    只有 C4 characterization 和 adapter 测试；静态分析与 certificate 生成路径
-    还没有调用这里的代码。
+    静态 application service 在证书边界调用这里的转换；C4 characterization
+    和 adapter 测试同时锁定转换结果。所有 producer 完成原生迁移后才能删除这座桥。
 
 不支持的旧 payload：
     空的旧 ID、格式错误的 module hash/PC、不能规范化为 JSON 的 ``details``，以及
@@ -244,13 +244,28 @@ def _memory_event_id(
         raise StaticAdapterError("memory events require a non-empty legacy id")
     if not isinstance(event.pc, int) or isinstance(event.pc, bool) or event.pc < 0:
         raise StaticAdapterError(f"memory event {event.id!r} has an invalid PC")
-    operand_index = event.operand_index if event.operand_index is not None else 0
-    if not isinstance(operand_index, int) or isinstance(operand_index, bool) or operand_index < 0:
+    operand_index = event.operand_index
+    if operand_index is None:
+        # 没有显式索引同样代表隐式 effect，不能和 operand 0 共用身份。
+        operand_index = 0
+        effect_discriminator = f"{event.kind.value}:implicit"
+    elif not isinstance(operand_index, int) or isinstance(operand_index, bool):
         raise StaticAdapterError(f"memory event {event.id!r} has an invalid operand index")
+    elif operand_index < 0:
+        # 旧 extractor 用负值表示 push/call 等隐式访存；身份仍要区分它和
+        # 显式 operand 0，否则同一条指令的两个 effect 会被错误合并。
+        operand_index = 0
+        effect_discriminator = f"{event.kind.value}:implicit"
+    else:
+        effect_discriminator = event.kind.value
     role_label = event.thread_role or "legacy-unknown-thread-role"
     module_id = _module_for_event(event, refs)
     instruction = InstructionId.from_parts(module_id, event.pc)
-    operand = MemoryOperandId.from_parts(instruction, operand_index, event.kind.value)
+    operand = MemoryOperandId.from_parts(
+        instruction,
+        operand_index,
+        effect_discriminator,
+    )
     return MemoryEventId.from_parts(
         operand,
         ThreadRoleId.from_legacy(role_label),
@@ -352,6 +367,14 @@ def _legacy_unknown_key(fact: LegacyUnknownFact) -> str:
             "reason": fact.reason,
         },
     )
+
+
+def legacy_unknown_key(fact: LegacyUnknownFact) -> str:
+    """返回旧 Unknown 的稳定适配键，供证书边界做逐项对齐。"""
+
+    if not isinstance(fact, LegacyUnknownFact):
+        raise StaticAdapterError("legacy_unknown_key expects a legacy UnknownFact")
+    return _legacy_unknown_key(fact)
 
 
 def _unknown_context(fact: LegacyUnknownFact) -> tuple[str, ...]:
@@ -556,4 +579,5 @@ __all__ = [
     "StaticAdapterError",
     "StaticEvidenceSnapshot",
     "adapt_static_report",
+    "legacy_unknown_key",
 ]

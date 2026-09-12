@@ -28,8 +28,9 @@ the failure instead of allowing an empty event set to look complete.
   module. Silently rebinding such an event would make later diagnostics point at the
   wrong binary.
 - Canonical output contains only static `UnknownFact` nodes. It does not create
-  observations, hints, proofs or removal decisions, and does not alter legacy
-  verdicts.
+  observations, hints, proofs or removal decisions, and does not alter the legacy
+  report. The static certificate bridge consumes the translated event identities and
+  proof/removal sidecar at the final boundary.
 - Unknowns inherited from reachable Capstone instruction facts are mirrored when
   the memory producer consumes them; unreachable decode gaps remain outside this
   producer's report scope, as before.
@@ -41,6 +42,7 @@ reports, checks the canonical recovery kind, and verifies a stable event link fo
 sentinel. Existing shared-state/slicing integration tests continue to use the legacy
 entry point.
 
-The next C6 slice is shared-state/slicing. It must consume these event links without
-turning a legacy string ID into a proof by convention; every removed event will need
-a canonical `RemovalDecision` before certificate consumers move.
+The shared-state/slicing sidecars now consume these event links without turning a
+legacy string ID into a proof by convention; every removed event is checked against a
+canonical `RemovalDecision` before the application exposes a revision-bound result.
+Native memory-event producer migration remains a follow-up cleanup.

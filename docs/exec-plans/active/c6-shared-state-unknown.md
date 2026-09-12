@@ -6,7 +6,8 @@ Status: implemented on branch `dev`
 
 This slice adds an opt-in canonical ledger path to
 `analyze_shared_state(...)`. The legacy `SharedStateReport`, proof objects and
-removed-event lists remain unchanged for current slicing and certificate callers.
+removed-event lists remain unchanged for compatibility callers. The static
+certificate bridge translates the resulting proof/removal information before replay.
 `analyze_shared_state_with_evidence(...)` runs the same classification and returns
 the report beside a ledger containing the Unknowns created by that pass.
 
@@ -20,8 +21,8 @@ observation or an old explanation string into a proof.
 - The sidecar writes only static `UnknownFact` nodes. It does not create
   `ProofFact`, `ObservedFact` or `DiagnosticHint` and does not alter the old verdict.
 - Legacy `ProofObject` and event-removal fields remain on the compatibility report;
-  a later slicing migration must convert each removal to a canonical
-  `RemovalDecision` before certificate consumers move.
+  the certificate bridge converts each removal to a canonical `RemovalDecision` and
+  refuses an unmapped or unproved event.
 - UnknownAffineBounds keeps the full event/address context as explanation data. A
   runtime affine pattern may later produce a diagnostic hint, but cannot discharge
   this Unknown.
@@ -36,6 +37,6 @@ missing bounds and checks that the legacy report still contains
 evidence category. Existing shared-state/slicing integration tests continue to use
 the old entry point.
 
-The next C6 slice is slicing/removal. It must add typed event-to-proof links and
-canonical `RemovalDecision` records without changing which events the legacy report
-keeps or removes.
+The slicing/removal sidecar now adds typed event-to-proof links and canonical
+`RemovalDecision` records without changing which events the legacy report keeps or
+removes. Native shared-state producer migration remains a future cleanup.

@@ -9,6 +9,7 @@ from bmo_check_core.evidence import ProofFact as CanonicalProofFact
 from bmo_check_core.evidence import UnknownFact as CanonicalUnknownFact
 from bmo_check_core.evidence import UnknownKind as CanonicalUnknownKind
 from bmo_check_static.adapters import StaticAdapterError, adapt_static_report
+from bmo_check_static.analysis.evidence import memory_event_identity
 from bmo_check_static.model import (
     AbstractAddress,
     AddressKind,
@@ -191,6 +192,16 @@ def test_adapter_does_not_change_legacy_verdict_or_report_payload() -> None:
     after = verify_portability(report)
     assert after.model_dump_json() == before_payload
     assert report == report.model_validate_json(report.model_dump_json())
+
+
+def test_adapter_uses_the_same_identity_for_implicit_operands() -> None:
+    event = _event("implicit", 0x1010, "worker").model_copy(
+        update={"operand_index": -1}
+    )
+
+    snapshot = adapt_static_report(_report((event,), (), ()))
+
+    assert snapshot.event_ids == (memory_event_identity(_module(), event),)
 
 
 def test_adapter_rejects_proof_that_would_drop_an_event_reference() -> None:

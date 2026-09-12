@@ -7,8 +7,9 @@ Status: implemented on branch `dev`
 `bmo_check_static` still produces Pydantic reports because moving every producer and
 certificate consumer at once would hide whether a verdict changed.  The adapter in
 `src/bmo_check_static/adapters/evidence.py` gives the canonical identity/evidence
-domain a real static input while the old report and certificate paths remain the
-authoritative behavior.
+domain a real static input while the old report remains the compatibility payload.
+The static application service now sends this translated input through canonical
+certificate replay before exposing that payload.
 
 The adapter is intentionally one-way:
 
@@ -23,7 +24,9 @@ It never imports the dynamic route or diagnostics, and it cannot create an
 
 - A legacy `MemoryEvent` receives a `ModuleId`, `InstructionId`, `MemoryOperandId`,
   legacy-thread `ThreadRoleId` and `MemoryEventId`.  The old event ID remains in a
-  typed `LegacyEvidenceLink` for report lookup.
+  typed `LegacyEvidenceLink` for report lookup. `None` and negative legacy operand
+  indices share the explicit `:implicit` discriminator, so they cannot collide with
+  operand zero.
 - A legacy `UnknownFact` becomes a canonical `UnknownFact` with a registered
   `UnknownKind`, a scope and a typed event/instruction subject when the old report
   contains enough module/PC or event-ID information.  `impact` and `details` remain
@@ -44,8 +47,9 @@ make later proof code less conservative than the old report.
 ## Tests and deletion gate
 
 `tests/contract/test_static_adapter.py` checks static-only evidence, order-independent
-IDs, preserved legacy verdict/JSON, link context and refusal of dropped event
-references.  The full suite remains green (`223 passed, 9 skipped` at this step).
+IDs, preserved legacy verdict/JSON, implicit-operand identity, link context and
+refusal of dropped event references. `tests/static/unit/test_certificate_bridge.py`
+also checks report-to-certificate replay and proof-backed Unknown discharge.
 
 Delete this adapter only after all static producers and certificate consumers use
 canonical identities/evidence directly, removal decisions carry canonical proof

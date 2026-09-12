@@ -3,8 +3,8 @@
 Status: complete on branch `dev`
 
 This step introduces only the identity value objects in `bmo_check_core.identity`.
-Existing static and dynamic models still produce their own IDs; no producer or
-certificate consumer has been migrated yet.
+Existing static and dynamic models still produce route-local IDs; the static
+certificate consumer now reaches these identities through the C4/C7 adapter.
 
 ## Identity rules
 
@@ -24,11 +24,11 @@ certificate consumer has been migrated yet.
 `tests/unit/test_identity.py` checks deterministic construction, order-independent
 collections, parent propagation, JSON/string round trips, cross-process stability,
 semantic changes and invalid material. It intentionally does not claim that legacy
-static or dynamic facts have been converted to these IDs.
+static or dynamic facts have been converted natively to these IDs.
 
 ## Migration boundary
 
-The package exports no analyzer, database, benchmark or CLI imports. C3 will use these
-IDs in the typed evidence ledger. Until then, existing route models remain the source
-of runtime behavior and this package is a one-way foundation, not a second business
-model.
+The package exports no analyzer, database, benchmark or CLI imports. C3 uses these IDs
+in the typed evidence ledger, and the static certificate bridge replays the translated
+IDs. Native producer conversion remains a one-way migration task; this package is not
+a second business model.

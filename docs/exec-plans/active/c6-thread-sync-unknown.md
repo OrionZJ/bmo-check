@@ -7,8 +7,8 @@ Status: implemented on branch `dev`
 This slice adds an opt-in canonical evidence path to the static thread-role and
 pthread/OpenMP synchronization producers. The existing
 `discover_pthread_threads(...)` and `analyze_pthread_synchronization(...)` calls
-still return the same legacy Pydantic reports; current CLI and proof consumers do
-not change behavior.
+still return the same legacy Pydantic reports; the application certificate bridge
+consumes their translated Unknowns without changing the compatibility payload.
 
 The new `*_with_evidence(...)` wrappers allocate an `EvidenceLedger`, pass it to the
 same producer, and return the old report beside the ledger. Unknowns are emitted at
@@ -36,6 +36,6 @@ checks canonical CFG, disassembly and missing-symbol kinds, and verifies that ev
 sidecar node is a static Unknown. Existing pthread/OpenMP recovery and synchronization
 integration tests continue to exercise the legacy API.
 
-The next C6 slice is memory-event recovery. It must retain all instruction/event
-origins while adding canonical IDs; no slicing or certificate consumer should be
-migrated until that coverage is available.
+Memory-event recovery and the certificate bridge now retain all available
+instruction/event origins while adding canonical IDs. Native synchronization producer
+migration remains a cleanup item; no new verdict path may bypass the typed ledger.

@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 
 from bmo_check_core import (
@@ -15,17 +16,30 @@ from bmo_check_core import (
     CertificateError,
     CertificateVerdict,
     EvidenceLedger,
+    EvidenceId,
+    MemoryEventId,
     ObservedFact,
     DiagnosticHint,
     StaticCertificate,
     StaticVerification,
     UnknownFact as CanonicalUnknownFact,
     ProofFact,
+    RemovalDecision,
+    UnknownDischarge,
     verify_static_certificate,
 )
-from bmo_check_static.model import ModuleRole, ProgramManifest, Verdict
+from bmo_check_static.binary.evidence import emit_static_unknown
+from bmo_check_static.model import (
+    ModuleRole,
+    PortabilityCertificate,
+    ProgramManifest,
+    ProgramSliceReport,
+    PruningCoverage,
+    ProofObject,
+    SharedMemorySlice,
+)
 
-from ..slicing.evidence import StaticSliceEvidence
+from ..slicing.evidence import SliceProofLink, StaticSliceEvidence
 from .evidence import StaticPortabilityEvidence
 
 
@@ -167,9 +181,198 @@ def build_static_certificate_with_evidence(
     )
 
 
+def build_static_certificate_from_report(
+    report: ProgramSliceReport,
+    portability_certificate: PortabilityCertificate,
+    binding: CertificateBinding,
+    *,
+    schema_version: str = "static-certificate-1",
+) -> StaticCertificateEvidence:
+    """把一次旧静态分析结果接入 canonical replay。
+
+    旧分析器仍负责生成报告和决定哪些 Unknown 与当前 scope 相关；这里把
+    报告中的 proof object 转成 ``ProofFact``，把最终相关 Unknown 重新写入
+    同一个 ledger，然后交给唯一的 canonical verifier。这样旧 JSON 可以
+    继续被调用者读取，但 SAFE 不再绕过 proof-closure 检查。
+
+    报告中的 Unknown 会先全部进入 canonical ledger。只有能由同一 scope
+    下的 ProofFact 覆盖其事件时，才记录显式 ``UnknownDischarge``；旧 verifier
+    额外生成、但报告中没有来源的最终 Unknown 也会被补入 ledger。这样旧的
+    relevance 过滤不会把未证明的 obligation 静默丢掉。
+    """
+
+    if not isinstance(report, ProgramSliceReport):
+        raise CertificateBridgeError("report has an invalid type")
+    if not isinstance(portability_certificate, PortabilityCertificate):
+        raise CertificateBridgeError(
+            "portability_certificate has an invalid type"
+        )
+    if not isinstance(binding, CertificateBinding):
+        raise CertificateBridgeError("binding has an invalid type")
+
+    # 延迟导入避免 adapters.__init__ -> diagnostic_snapshot -> bridge 的循环。
+    from bmo_check_static.adapters.evidence import (
+        adapt_static_report,
+        legacy_unknown_key,
+    )
+
+    snapshot = adapt_static_report(report, scope=binding.scope)
+    proof_nodes = tuple(
+        node
+        for node in snapshot.ledger.nodes()
+        if isinstance(node, (ProofFact, CanonicalUnknownFact))
+    )
+    proof_ledger = EvidenceLedger()
+    for node in proof_nodes:
+        proof_ledger.add(node)
+
+    event_ids = {
+        link.legacy_id: link.canonical_id
+        for link in snapshot.event_links
+        if isinstance(link.canonical_id, MemoryEventId)
+    }
+    proof_ids = {
+        link.legacy_id: link.canonical_id
+        for link in snapshot.proof_links
+        if isinstance(link.canonical_id, EvidenceId)
+    }
+
+    # removal_decisions 必须逐事件绑定到可回放的 ProofFact；不再依赖旧的
+    # 字符串 ID 是否“看起来像”同一事件。
+    decisions: list[RemovalDecision] = []
+    removed_event_ids = (
+        report.shared_state.removed_event_ids
+        if report.shared_state is not None
+        else ()
+    )
+    proof_models: list[ProofObject] = []
+    if report.shared_state is not None:
+        proof_models.extend(report.shared_state.proofs)
+    if report.shared_slice is not None:
+        proof_models.extend(report.shared_slice.proof_objects)
+    for legacy_event_id in removed_event_ids:
+        event_id = event_ids.get(legacy_event_id)
+        if event_id is None:
+            raise CertificateBridgeError(
+                f"removed event {legacy_event_id!r} has no canonical identity"
+            )
+        covering = tuple(
+            proof_ids[proof.id]
+            for proof in proof_models
+            if legacy_event_id in proof.event_ids and proof.id in proof_ids
+        )
+        if not covering:
+            raise CertificateBridgeError(
+                f"removed event {legacy_event_id!r} has no canonical proof"
+            )
+        decisions.append(
+            RemovalDecision(
+                event_id=event_id,
+                proof_id=covering[0],
+                scope=binding.scope,
+            )
+        )
+
+    relevant_unknown_keys = {
+        legacy_unknown_key(unknown)
+        for unknown in portability_certificate.relevant_unknowns
+    }
+    snapshot_unknown_keys = {
+        link.legacy_id for link in snapshot.unknown_links
+    }
+
+    # 报告里的 Unknown 不能因为旧 verifier 的过滤就凭空消失。只有它明确
+    # 指向一个已被 ProofFact 覆盖的事件时，才追加可回放的 discharge；其余
+    # Unknown 会继续作为 canonical certificate 的 unresolved obligation。
+    for link in snapshot.unknown_links:
+        if link.legacy_id in relevant_unknown_keys:
+            continue
+        node = proof_ledger.get(link.canonical_id)
+        if not isinstance(node, CanonicalUnknownFact):
+            continue
+        event_ids_for_unknown: set[MemoryEventId] = set()
+        if isinstance(node.subject, MemoryEventId):
+            event_ids_for_unknown.add(node.subject)
+        for context in link.context:
+            prefix = "legacy.detail."
+            if not context.startswith(prefix):
+                continue
+            key, _, encoded = context[len(prefix) :].partition("=")
+            if key not in {"event_id", "event_ids"}:
+                continue
+            try:
+                value = json.loads(encoded)
+            except json.JSONDecodeError:
+                continue
+            values = [value] if key == "event_id" else value
+            if not isinstance(values, list):
+                continue
+            for legacy_event_id in values:
+                if legacy_event_id in event_ids:
+                    event_ids_for_unknown.add(event_ids[legacy_event_id])
+        if not event_ids_for_unknown:
+            continue
+        covering = next(
+            (
+                proof
+                for proof in proof_nodes
+                if isinstance(proof, ProofFact)
+                and event_ids_for_unknown.issubset(set(proof.covered_events))
+            ),
+            None,
+        )
+        if covering is not None:
+            proof_ledger.add_discharge(
+                UnknownDischarge(node.id, covering.id, binding.scope)
+            )
+
+    portability_ledger = EvidenceLedger()
+    for unknown in portability_certificate.relevant_unknowns:
+        # report adapter 已经保留了同一 legacy Unknown 时复用它的 canonical
+        # 节点；否则补上 checker 在报告之外生成的最终 Unknown。
+        if legacy_unknown_key(unknown) in snapshot_unknown_keys:
+            continue
+        emit_static_unknown(
+            unknown.kind,
+            unknown.reason,
+            unknown.impact,
+            module=unknown.module,
+            pc=unknown.pc,
+            function=unknown.function,
+            details=unknown.details,
+            canonical_ledger=portability_ledger,
+            canonical_scope=binding.scope,
+        )
+
+    slice_evidence = StaticSliceEvidence(
+        report=(
+            report.shared_slice
+            if report.shared_slice is not None
+            else SharedMemorySlice(coverage=PruningCoverage(total_events=0))
+        ),
+        ledger=proof_ledger,
+        proof_links=tuple(
+            SliceProofLink(link.legacy_id, link.canonical_id)
+            for link in snapshot.proof_links
+        ),
+        removal_decisions=tuple(decisions),
+    )
+    portability_evidence = StaticPortabilityEvidence(
+        certificate=portability_certificate,
+        ledger=portability_ledger,
+    )
+    return build_static_certificate_with_evidence(
+        slice_evidence,
+        portability_evidence,
+        binding,
+        schema_version=schema_version,
+    )
+
+
 __all__ = [
     "CertificateBridgeError",
     "StaticCertificateEvidence",
     "binding_from_manifest",
+    "build_static_certificate_from_report",
     "build_static_certificate_with_evidence",
 ]

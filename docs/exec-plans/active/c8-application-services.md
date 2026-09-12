@@ -13,6 +13,9 @@ Status: implemented on branch `dev`
   the static CLI only adapts arguments and renders its report.
 - Existing CLI output, exit codes and legacy Pydantic certificates remain the
   compatibility surface.
+- The static `analyze` service now returns that compatibility certificate only after
+  `analyze_with_evidence` has replayed the canonical static certificate and compared
+  the verdicts. A missing DBT revision remains an explicit unbound `UNKNOWN`.
 
 ## Boundary
 

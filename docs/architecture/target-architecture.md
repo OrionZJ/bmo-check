@@ -1,6 +1,6 @@
 # Target Architecture
 
-Status: accepted design; implementation pending
+Status: accepted design; Phase C evidence/provenance foundation implemented
 
 Applies after: repository baseline `3375b5f`
 
@@ -85,7 +85,7 @@ sidecars and replays a canonical `StaticCertificate`. The old report and JSON
 serializer remain the compatibility surface until differential certificate tests
 cover every verdict. `bmo_check_core.contracts` now owns the typed DBT
 memory-order contract; route-specific YAML/model classes are input adapters. The
-sidecars are not a shortcut to a static `SAFE` verdict. Read-only diagnostic
+ sidecars are not a shortcut to a static `SAFE` verdict. Read-only diagnostic
 snapshots now live in `bmo_check_core.diagnostics`; the static route exposes its
 replayed certificate through a one-way snapshot adapter, and the dynamic route
 streams validated trace files through its matching snapshot adapter. The D4
@@ -95,6 +95,15 @@ correlator. The static and dynamic CLIs' primary capture/recover/analyze paths n
 construct typed application requests. PARSEC orchestration now lives in
 `bmo_check_evaluation`, including its per-benchmark worker and report aggregation;
 the static compatibility CLI only converts arguments and renders the returned report.
+
+Phase C closure is now part of the static application path: when a DBT revision is
+bound, `bmo_check_static.application.analyze_with_evidence` converts the legacy
+report into canonical identities, preserves every report Unknown, records only
+proof-backed discharges, and replays the canonical certificate before the legacy
+JSON is returned. Missing DBT revision remains an explicit unbound `UNKNOWN`; the
+service never invents a placeholder binding. The legacy models and serializers are
+still retained as compatibility adapters, but they no longer provide an unchecked
+SAFE path.
 
 ## 3. Dependency direction
 
@@ -259,13 +268,17 @@ StaticRequest
   -> static certificate builder/verifier
 ```
 
-Each pass receives and returns typed snapshots. It cannot inspect another pass's
-private dictionaries. `RemovalDecision` contains exactly one event ID, proof ID and
-scope; bulk removal is serialized as multiple decisions even if storage is compacted.
+The target pass interface receives and returns typed snapshots. During the Phase C
+migration, legacy passes still produce the compatibility report first; the
+`bmo_check_static` adapter then builds the canonical ledger used by certificate replay.
+`RemovalDecision` contains exactly one event ID, proof ID and scope; bulk removal is
+serialized as multiple decisions even if storage is compacted.
 
-`UnknownFact` relevance is decided before certificate construction by a typed scope
-analysis. A change from relevant to discharged must cite a proof ID. The certificate
-layer does not rediscover relevance from event metadata.
+The legacy verifier supplies the initial relevance set at this seam. The report bridge
+preserves every translated Unknown and records a discharge only when an in-scope
+`ProofFact` covers its event; it never reclassifies an unproved Unknown from metadata.
+The future native pass interface will move this relevance decision into typed scope
+facts and remove the compatibility adapter after differential tests pass.
 
 ## 8. Dynamic application boundary
 

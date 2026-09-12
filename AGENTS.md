@@ -69,10 +69,11 @@ model or a generic `common` dumping ground.
 read-only snapshot types in `bmo_check_core.diagnostics` are the only allowed
 boundary for future static/dynamic correlation; they do not change verdicts.
 
-The dependency-closure producer additionally exposes an opt-in
-`build_program_manifest_with_evidence` sidecar. It is a migration seam, not a second
-verdict path; keep the legacy manifest output and canonical ledger compared until the
-remaining recovery producers migrate.
+The recovery producers expose opt-in canonical ledgers as migration seams. The static
+application service's `analyze_with_evidence` translates the complete legacy report,
+replays a canonical certificate and compares its verdict before `analyze` returns the
+legacy JSON-compatible result. Keep the report models and sidecars compared until the
+remaining native producer migration is complete; never add a second verdict path.
 
 ## Change discipline
 

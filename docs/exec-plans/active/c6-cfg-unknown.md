@@ -25,13 +25,14 @@ report, so existing thread/memory consumers and verdict JSON are unchanged.
 - The old path remains available so a failed canonical emission cannot silently alter
   the established report; the opt-in path fails closed instead.
 
-## Tests and next gate
+## Tests and migration gate
 
 `tests/static/unit/test_controlflow_evidence.py` injects a backend failure and checks
 that the legacy report is equivalent while the sidecar contains one `CfgBackendFailure`
 Unknown and no observation/hint. Existing CFG integration tests continue to exercise
 indirect-target behavior.
 
-The next C6 slice is thread lifecycle/synchronization. It must use the same emitter
-without importing either dynamic or diagnostics, and it must preserve the old report
-before any certificate consumer is migrated.
+The static report adapter now consumes the legacy CFG report together with the other
+producer layers. A CFG Unknown is preserved in canonical replay unless an explicit
+same-scope proof-backed discharge covers its affected event. Native CFG producer
+migration remains future cleanup and must retain this fail-closed behavior.

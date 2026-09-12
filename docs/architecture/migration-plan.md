@@ -81,9 +81,10 @@ Property tests must show:
 
 Commit intent: `Add stable analysis identities`.
 
-Implementation record: `docs/exec-plans/active/c2-identities.md`. The first cut adds
-only `bmo_check_core.identity` and property-style tests; route producers and
-certificate consumers remain on legacy models until C3/C4 adapters exist.
+Implementation record: `docs/exec-plans/active/c2-identities.md`. The first cut added
+only `bmo_check_core.identity` and property-style tests. Route producers still expose
+legacy reports, while the C4/C7 adapter now lets the static certificate consumer use
+these identities without moving every producer at once.
 
 ### C3 — Typed evidence domain and ledger
 
@@ -103,8 +104,9 @@ different payloads and invalid category edges.
 Commit intent: `Introduce typed evidence domain`.
 
 Implementation record: `docs/exec-plans/active/c3-evidence.md`. The canonical ledger
-is now available, but legacy route models remain authoritative until C4 adapters and
-differential tests are in place.
+is now available and is consumed by the static certificate replay path; legacy route
+models remain only as compatibility inputs until the native producer migration is
+complete.
 
 ### C4 — Legacy static adapter
 
@@ -126,9 +128,9 @@ Commit intent: `Adapt static facts to canonical evidence`.
 
 Implementation record: `docs/exec-plans/active/c4-static-adapter.md`. The adapter
 maps legacy events, proof objects and Unknowns into stable IDs and an append-only
-ledger through typed links. It is not used by current verdict construction, cannot
-create observations or hints, and rejects payloads whose event/proof references
-would otherwise be dropped.
+ledger through typed links. The static application service now uses it at the
+certificate boundary; it cannot create observations or hints and rejects payloads
+whose event/proof references would otherwise be dropped.
 
 ### C5 — Proof-closure certificate verifier
 
@@ -145,9 +147,9 @@ Required negative tests:
 - mismatched binary/library/DBT binding is rejected.
 
 Implementation record: `docs/exec-plans/active/c5-certificate-closure.md`. The core
-certificate package now provides separate static/trace certificate types, typed
-bindings and replay verifiers. The existing legacy certificate builder is still not
-wired to this API; C6 must migrate a producer and compare both outputs first.
+certificate package provides separate static/trace certificate types, typed bindings
+and replay verifiers. The static application service now translates the legacy report
+and compares the canonical replay verdict before returning the compatibility result.
 
 Commit intent: `Validate static proof closure in certificates`.
 
@@ -168,37 +170,43 @@ premise references. Unknown relevance and discharge move out of
 
 Implementation record: `docs/exec-plans/active/c6-recovery-unknown.md`. The first
 slice adds an opt-in canonical ledger path to dependency-closure recovery while
-keeping the legacy manifest API and verdict consumer unchanged. CFG and later
-producers remain to be migrated.
+keeping the legacy manifest API as an input adapter. The final static report bridge
+now preserves these Unknowns for certificate replay.
 
 Implementation record: `docs/exec-plans/active/c6-cfg-unknown.md`. The second slice
 adds the same opt-in path to CFG/indirect-target recovery; backend and incomplete
 target Unknowns are emitted canonically while the legacy `ControlFlowReport` remains
-unchanged.
+the compatibility input.
 
 Implementation record: `docs/exec-plans/active/c6-thread-sync-unknown.md`. The third
 slice adds the opt-in path to thread lifecycle and synchronization recovery. Callback,
 role, join, symbol, disassembly and return-path Unknowns are emitted canonically while
-legacy reports remain unchanged.
+legacy reports remain compatibility inputs.
 
 Implementation record: `docs/exec-plans/active/c6-memory-events-unknown.md`. The fourth
 slice adds the opt-in path to memory-event recovery, stable legacy-event links and
 canonical Unknown emission for address, syscall, opaque-call and extraction gaps.
+Implicit legacy operands use the same canonical discriminator in both adapters.
 
 Implementation record: `docs/exec-plans/active/c6-shared-state-unknown.md`. The fifth
 slice adds the opt-in path to shared-state/escape classification for TLS, stack and
-affine Unknowns; legacy proof objects and removal lists remain compatibility data.
+affine Unknowns; legacy proof objects and removal lists remain compatibility data until
+the native proof producer migration.
 
 Implementation record: `docs/exec-plans/active/c6-slicing-removal.md`. The sixth slice
 adds typed `ProofFact` and `RemovalDecision` sidecars for shared-memory pruning and
-refuses unmapped or unproved removals.
+refuses unmapped or unproved removals. The report bridge replays those decisions on
+the real static analyze path.
 
 Implementation record: `docs/exec-plans/active/c6-portability-unknown.md`. The seventh
 slice mirrors relevant portability Unknowns into the canonical ledger while keeping
-the legacy certificate verdict and serialization unchanged.
+the legacy certificate verdict and serialization unchanged. The application service
+now compares that canonical verdict before exposing the compatibility payload.
 
-`SharedStateReport` keeps its current validator until every removal has a canonical
-`RemovalDecision`.
+`SharedStateReport` keeps its current validator as a compatibility check. The
+certificate bridge now independently requires a canonical `RemovalDecision` for each
+removed event; native `SharedStateReport` replacement is deferred to the cleanup
+phase.
 
 Commit intents are subsystem-specific, for example
 `Migrate recovery Unknowns to canonical provenance`.
@@ -213,10 +221,13 @@ rejects dynamic evidence and mixed scopes; it does not rewrite or infer missing
 proofs. `binding_from_manifest` gives the bridge one stable binary/DBT binding path.
 
 The legacy `PortabilityCertificate` and JSON serializer remain the compatibility
-surface until differential certificate tests cover all static verdicts. The remaining
-C7 work is to move shared memory identities, relation vocabulary and DBT contract
-interpretation to `bmo_check_core`, then compare both route-specific checkers over the
-full relation matrix before deleting either implementation.
+surface. `analyze_with_evidence` now calls the bridge for every revision-bound static
+analysis, compares legacy and canonical verdicts, and fails closed on replay or
+identity mismatches. Missing DBT revision stays an explicit legacy `UNKNOWN` without
+fabricating a binding. The remaining cleanup is to move shared memory identities,
+relation vocabulary and DBT contract interpretation to `bmo_check_core`, then compare
+both route-specific checkers over the full relation matrix before deleting either
+legacy representation.
 
 Implementation record: `docs/exec-plans/active/c7-canonical-static-certificate.md`.
 
@@ -241,7 +252,9 @@ The C8 migration adds `bmo_check_static.application.StaticRequest`,
 and evaluate command paths now pass typed requests through services, while the old
 report/certificate JSON remains unchanged. PARSEC ablations, native-run policy and
 per-benchmark worker isolation are owned by the evaluation service; the static
-compatibility CLI has no evaluation loop.
+compatibility CLI has no evaluation loop. Its static `analyze` command now invokes
+the canonical certificate replay through the application service while preserving
+the legacy JSON envelope.
 
 Commit intent: `Move PARSEC evaluation to application service`.
 
@@ -254,6 +267,16 @@ Commit intent: `Move PARSEC evaluation to application service`.
 - package dependency tests run in the default suite;
 - compatibility adapters have explicit deletion checklists;
 - no dynamic-assisted feature has changed static verdicts.
+
+### Phase C closure record
+
+Phase C is closed on branch `dev` after the static application replay was wired and
+the full evidence path was tested. The report adapter preserves all static Unknowns;
+only an event-covering, same-scope `ProofFact` may discharge one. Every removed event
+is converted to a canonical `RemovalDecision`, and the core verifier rejects observed
+or diagnostic evidence before a static `SAFE` can be returned. The old Pydantic
+certificate remains a serialization adapter, while native report/proof producers are
+documented follow-up work rather than an unchecked parallel verdict path.
 
 ## 4. Phase D: dynamic-assisted static diagnostics
 

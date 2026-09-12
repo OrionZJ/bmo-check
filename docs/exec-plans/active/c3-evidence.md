@@ -1,10 +1,10 @@
 # C3 — Typed evidence domain and ledger
 
-Status: implementation in progress on branch `dev`
+Status: complete on branch `dev`
 
-This step establishes the canonical in-memory evidence boundary without migrating
-legacy route models. Static and dynamic producers still remain on their original
-types until C4 introduces one-way adapters.
+This step establishes the canonical in-memory evidence boundary. Legacy route models
+remain as compatibility representations, but the static certificate path now consumes
+the canonical ledger through the C4/C7 adapter and replay bridge.
 
 ## Canonical variants
 
@@ -42,9 +42,10 @@ provenance, parent, identity and discharge cases. These tests are intentionally
 independent of static/dynamic route internals and do not allow observations to enter a
 static proof closure.
 
-## Remaining boundary
+## Closure
 
-This is a foundation, not a verdict migration. No current static certificate or
-dynamic certificate consumes these variants yet. C4 must first translate legacy facts
-through an explicit, one-way adapter and compare serialized output before any producer
-is moved.
+`verify_static_certificate` and `verify_trace_certificate` consume the typed ledger;
+the static application service uses the report adapter before returning its legacy
+certificate. Native producer migration remains a separate cleanup: it may replace the
+adapter only after differential output tests pass, but it cannot introduce a second
+evidence model or bypass replay.

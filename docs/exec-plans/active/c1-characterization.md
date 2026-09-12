@@ -40,6 +40,7 @@ outside this scan because it owns benchmark selection and aggregation.
 - `tests/invariant/test_current_verdict_baseline.py`
 - `tests/contract/test_repository_boundaries.py`
 
-These tests are characterization guards, not proof that the current open-dictionary
-models already satisfy the target evidence design. C2 and C3 must add stable identities
-and typed evidence without weakening the assertions above.
+These tests remain characterization guards, not proof that legacy open-dictionary
+models are themselves canonical. C2 and C3 have since added stable identities and
+typed evidence, and C7/C8 now replay that evidence on the static application path
+without weakening the assertions above.

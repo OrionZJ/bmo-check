@@ -96,6 +96,12 @@ bmo-check diagnose static-snapshot.json --trace trace/run-1 \
 bmo-check-static analyze ...
 ```
 
+静态 `analyze` 仍输出旧版 JSON，便于已有脚本继续使用；在返回这个兼容结果前，
+应用服务会把同一次报告转换成 canonical `ProofFact`/`UnknownFact` ledger，检查
+每个删除事件的 `RemovalDecision`，并调用静态证书 replay。缺少 DBT revision 或
+canonical replay 失败不会被占位值掩盖，结果保持 `UNKNOWN` 或 fail closed。
+动态观察和诊断提示始终不能进入静态 `SAFE`。
+
 ## 开发
 
 ```bash

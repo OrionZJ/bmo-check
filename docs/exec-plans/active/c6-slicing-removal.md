@@ -22,8 +22,8 @@ canonical proof boundary:
   traversal order.
 - The sidecar does not infer a proof from `PruningCoverage` counters or string
   supporting facts.
-- Legacy `SharedMemorySlice` remains authoritative for current callers; no static
-  certificate consumes this sidecar yet.
+- Legacy `SharedMemorySlice` remains the compatibility payload for current callers;
+  the static application certificate bridge now consumes this sidecar before replay.
 
 ## Tests and migration gate
 
@@ -31,6 +31,6 @@ canonical proof boundary:
 proof and decision, and that an unmapped event fails closed. The full slicing and
 shared-state integration suite continues to exercise the original entry point.
 
-The next gate is to migrate the static certificate builder to consume this ledger and
-replay its `RemovalDecision` records. Until then, the new sidecar is diagnostic and
-characterization infrastructure, not a new `SAFE` path.
+The static certificate builder now consumes this ledger and replays its
+`RemovalDecision` records on the application path. The sidecar remains until native
+slice producers emit canonical identities directly; it is not a second `SAFE` path.

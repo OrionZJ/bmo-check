@@ -14,21 +14,32 @@ from bmo_check_core import (
 from bmo_check_static.analysis.evidence import StaticMemoryEventEvidence
 from bmo_check_static.analysis.shared_state_evidence import StaticSharedStateEvidence
 from bmo_check_static.model import (
+    AbstractAddress,
+    AddressKind,
     ElfMetadata,
     ExecutionScope,
+    EventKind,
+    MemoryEvent,
     MemoryEventReport,
     ModuleFingerprint,
     ModuleRole,
+    ProofObject,
+    ProofReason,
     ProgramManifest,
     ProgramRecoveryReport,
+    PruningCoverage,
     SharedStateReport,
+    SharedMemorySlice,
     ThreadDiscoveryReport,
+    UnknownFact,
+    UnknownKind,
     Verdict,
 )
 from bmo_check_static.proof import (
     CertificateBridgeError,
     StaticPortabilityEvidence,
     binding_from_manifest,
+    build_static_certificate_from_report,
     build_static_certificate_with_evidence,
     verify_portability,
 )
@@ -116,6 +127,28 @@ def _portability(scope: str):
     return StaticPortabilityEvidence(legacy, EvidenceLedger())
 
 
+def _empty_report(*, dbt_revision: str | None = REVISION):
+    from bmo_check_static.model import (
+        MemoryEventReport,
+        PruningCoverage,
+        ProgramSliceReport,
+        SharedMemorySlice,
+    )
+
+    manifest = _manifest().model_copy(update={"dbt_revision": dbt_revision})
+    return ProgramSliceReport(
+        recovery=ProgramRecoveryReport(manifest=manifest),
+        memory_events=MemoryEventReport(
+            module_path="/bin/litmus",
+            module_sha256=HASH,
+        ),
+        shared_state=SharedStateReport(),
+        shared_slice=SharedMemorySlice(
+            coverage=PruningCoverage(total_events=0),
+        ),
+    )
+
+
 def test_bridge_replays_legacy_safe_with_typed_slice() -> None:
     scope = "static.test"
     binding = binding_from_manifest(_manifest(), scope=scope)
@@ -133,6 +166,118 @@ def test_bridge_replays_legacy_safe_with_typed_slice() -> None:
     assert snapshot.binary_closure == binding.binary_closure
     assert snapshot.unknown_ids == ()
     assert snapshot.ledger().nodes() == ()
+
+
+def test_report_bridge_is_used_for_a_legacy_static_result() -> None:
+    scope = "static.test"
+    report = _empty_report()
+    legacy = verify_portability(report)
+
+    result = build_static_certificate_from_report(
+        report,
+        legacy,
+        binding_from_manifest(report.recovery.manifest, scope=scope),
+    )
+
+    assert legacy.verdict == Verdict.SAFE
+    assert result.certificate.verdict == CertificateVerdict.SAFE
+    assert result.verification.certificate == result.certificate
+
+
+def test_report_bridge_preserves_relevant_unknowns() -> None:
+    unknown = UnknownFact(
+        kind=UnknownKind.UNKNOWN_MEMORY_EFFECT,
+        reason="opaque helper has no static effect summary",
+        impact="the helper may communicate through shared memory",
+        module="/bin/litmus",
+        pc=0x1000,
+    )
+    report = _empty_report().model_copy(
+        update={
+            "unknowns": (unknown,),
+            "memory_events": _empty_report().memory_events.model_copy(
+                update={"unknowns": (unknown,)}
+            ),
+        }
+    )
+    legacy = verify_portability(report)
+    scope = "static.test"
+
+    result = build_static_certificate_from_report(
+        report,
+        legacy,
+        binding_from_manifest(report.recovery.manifest, scope=scope),
+    )
+
+    assert legacy.verdict == Verdict.UNKNOWN
+    assert result.certificate.verdict == CertificateVerdict.UNKNOWN
+    assert len(result.certificate.relevant_unknowns) == 1
+    assert len(result.ledger.unresolved_unknowns(scope)) == 1
+
+
+def test_report_bridge_records_proof_backed_unknown_discharge() -> None:
+    event = MemoryEvent(
+        id="event-1",
+        module="/bin/litmus",
+        module_sha256=HASH,
+        pc=0x1000,
+        kind=EventKind.STORE,
+        address=AbstractAddress(
+            kind=AddressKind.STACK,
+            base="frame",
+            offset=0,
+        ),
+        size=4,
+        thread_role="main",
+    )
+    proof = ProofObject(
+        id="proof-sequential",
+        reason=ProofReason.SEQUENTIAL_BEFORE_CREATE,
+        event_ids=(event.id,),
+        supporting_facts=("main executes this store before pthread_create",),
+    )
+    unknown = UnknownFact(
+        kind=UnknownKind.UNKNOWN_AFFINE_BOUNDS,
+        reason="the loop bound is unavailable",
+        impact="the event write set may overlap",
+        module="/bin/litmus",
+        pc=event.pc,
+        details={"event_id": event.id},
+    )
+    report = _empty_report().model_copy(
+        update={
+            "memory_events": MemoryEventReport(
+                module_path="/bin/litmus",
+                module_sha256=HASH,
+                events=(event,),
+                unknowns=(unknown,),
+            ),
+            "shared_state": SharedStateReport(
+                removed_event_ids=(event.id,),
+                proofs=(proof,),
+                unknowns=(unknown,),
+            ),
+            "shared_slice": SharedMemorySlice(
+                events=(event,),
+                proof_objects=(proof,),
+                coverage=PruningCoverage(total_events=1),
+                unknowns=(unknown,),
+            ),
+        }
+    )
+    legacy = verify_portability(report)
+    scope = "static.test"
+
+    result = build_static_certificate_from_report(
+        report,
+        legacy,
+        binding_from_manifest(report.recovery.manifest, scope=scope),
+    )
+
+    assert legacy.verdict == Verdict.SAFE
+    assert result.certificate.verdict == CertificateVerdict.SAFE
+    assert result.ledger.discharges()
+    assert result.ledger.unresolved_unknowns(scope) == ()
 
 
 def test_bridge_rejects_dynamic_observation() -> None:

@@ -4,9 +4,9 @@ Status: implemented on branch `dev`
 
 ## Scope
 
-This step migrates only the dependency-closure/recovery producer. CFG, thread,
-synchronization, memory-event and slicing producers remain on their legacy models.
-The existing `build_program_manifest(...)` API is unchanged for current CLI callers.
+This step adds the dependency-closure/recovery producer's canonical ledger seam.
+The existing `build_program_manifest(...)` API remains unchanged for compatibility;
+the static report adapter later carries its Unknowns into certificate replay.
 
 `build_program_manifest_with_evidence(...)` is an explicit opt-in entry point. It
 passes an `EvidenceLedger` through the same dependency walk, so every Unknown made
@@ -34,6 +34,7 @@ canonical missing-library/DBT-revision emission, deterministic scope-bound IDs a
 the absence of dynamic/diagnostic facts. Existing ELF closure integration tests still
 exercise the original API.
 
-The next C6 slice may migrate CFG/recovery facts only after this opt-in producer has
-been compared on the same fixtures. No certificate or static verdict consumes the
-new ledger yet; C7/C8 must complete that migration before this sidecar is removed.
+The recovery sidecar is now consumed indirectly by the static report-to-certificate
+bridge. Native producer migration is still deferred: this sidecar may be removed
+only after recovery emits canonical facts directly and differential certificate tests
+cover the replacement.

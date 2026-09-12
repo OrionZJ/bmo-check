@@ -2,7 +2,8 @@
 
 CLI 只负责把命令行文本解析成 ``StaticRequest`` 并渲染结果；恢复、访存
 事件提取、共享状态和 portability checker 在这里按固定顺序编排。旧的
-Pydantic report 仍是兼容输出，canonical sidecar 由各 producer 显式提供。
+Pydantic report 仍是兼容输出；`analyze_with_evidence` 在证书边界组装并
+replay canonical ledger。
 """
 
 from __future__ import annotations
@@ -32,7 +33,13 @@ from bmo_check_static.model import (
     UnknownFact,
     UnknownKind,
 )
-from bmo_check_static.proof import verify_portability
+from bmo_check_static.proof import (
+    CertificateBridgeError,
+    StaticCertificateEvidence,
+    binding_from_manifest,
+    build_static_certificate_from_report,
+    verify_portability,
+)
 from bmo_check_static.slicing import build_shared_memory_slice, restrict_to_application_scope
 from bmo_check_static.synchronization import analyze_pthread_synchronization
 from bmo_check_static.threading import discover_pthread_threads
@@ -83,6 +90,33 @@ class StaticRequest:
                 raise StaticApplicationError("environment keys must be non-empty")
             if not isinstance(value, str) or "\x00" in value:
                 raise StaticApplicationError("environment values cannot contain NUL")
+
+
+@dataclass(frozen=True, slots=True)
+class StaticAnalysisResult:
+    """同时保留兼容报告和已 replay 的 canonical 静态证书。
+
+    旧 CLI 仍序列化 ``legacy_certificate``，以免破坏已有实验和脚本；
+    ``canonical_certificate`` 是同一次报告在证书边界的 proof-closure
+    replay 结果。缺少 DBT revision 时旧结果必然是 ``UNKNOWN``，因此不构造
+    一个无法绑定 lowering 实现的 canonical 证书，而把原因显式留在
+    ``canonical_error``。
+    """
+
+    report: ProgramSliceReport
+    legacy_certificate: PortabilityCertificate
+    canonical_certificate: StaticCertificateEvidence | None
+    canonical_error: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.canonical_certificate is None and not self.canonical_error:
+            raise StaticApplicationError(
+                "a missing canonical certificate must include an explicit reason"
+            )
+        if self.canonical_certificate is not None and self.canonical_error:
+            raise StaticApplicationError(
+                "a canonical certificate cannot be accompanied by an error"
+            )
 
 
 def _git_revision(root: Path | None) -> str | None:
@@ -284,10 +318,35 @@ def analyze(
     *,
     symbol_provider: Callable[[object], Iterable[object]] = function_symbols,
 ) -> PortabilityCertificate:
-    """执行 portability checker；checker 仍是唯一 legacy verdict owner。"""
+    """执行静态分析并返回保持兼容的 legacy certificate。
+
+    canonical certificate 会在同一次分析中完成 replay；这里仍返回旧模型，
+    因为现有 CLI、评测和外部脚本依赖它的 JSON schema。需要访问 proof
+    closure 的调用者使用 ``analyze_with_evidence``，不能自行从 JSON 猜测。
+    """
+
+    return analyze_with_evidence(
+        request,
+        limits,
+        symbol_provider=symbol_provider,
+    ).legacy_certificate
+
+
+def analyze_with_evidence(
+    request: StaticRequest,
+    limits: CheckerLimits | None = None,
+    *,
+    symbol_provider: Callable[[object], Iterable[object]] = function_symbols,
+) -> StaticAnalysisResult:
+    """让静态主路径经过 canonical proof-closure replay。
+
+    legacy verifier 仍产生兼容 verdict，但任何可绑定 DBT revision 的结果都
+    必须与 canonical replay 得到相同 verdict；桥接失败或结果分歧会直接失败，
+    防止新证书和旧证书悄悄走两条不同的安全边界。
+    """
 
     report = slice_report(request, symbol_provider=symbol_provider)
-    return verify_portability(
+    legacy_certificate = verify_portability(
         report,
         limits,
         analysis_options={
@@ -296,11 +355,49 @@ def analyze(
         },
     )
 
+    manifest = report.recovery.manifest
+    if not manifest.dbt_revision:
+        # 旧 verifier 已将 MissingDbtRevision 变成 UNKNOWN；拒绝构造一个
+        # 虚假的 binding，比用占位 revision 让证书看似可 replay 更安全。
+        return StaticAnalysisResult(
+            report=report,
+            legacy_certificate=legacy_certificate,
+            canonical_certificate=None,
+            canonical_error="static certificate requires a DBT revision",
+        )
+
+    try:
+        binding = binding_from_manifest(manifest, scope=request.scope)
+        canonical = build_static_certificate_from_report(
+            report,
+            legacy_certificate,
+            binding,
+        )
+    except CertificateBridgeError as error:
+        # SAFE 绝不能在 canonical closure 无法重放时继续从旧 JSON 输出。
+        raise StaticApplicationError(
+            f"canonical static certificate replay failed: {error}"
+        ) from error
+
+    if canonical.certificate.verdict.value != legacy_certificate.verdict.value:
+        raise StaticApplicationError(
+            "legacy and canonical static certificate verdicts diverged: "
+            f"{legacy_certificate.verdict.value} != "
+            f"{canonical.certificate.verdict.value}"
+        )
+    return StaticAnalysisResult(
+        report=report,
+        legacy_certificate=legacy_certificate,
+        canonical_certificate=canonical,
+    )
+
 
 __all__ = [
     "StaticApplicationError",
+    "StaticAnalysisResult",
     "StaticRequest",
     "analyze",
+    "analyze_with_evidence",
     "build_manifest",
     "fingerprint",
     "recover",

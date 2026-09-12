@@ -10,9 +10,12 @@ route producer is migrated.  A static certificate now names proof roots,
 per-event `RemovalDecision`s and relevant Unknown IDs; a trace certificate names
 only trace-bound `ObservedFact` roots.
 
-The new API is deliberately not wired into the old CLI/verifier yet.  Existing
-`PortabilityCertificate` JSON and verdict behavior therefore remain unchanged while
-the closure rules receive independent negative tests.
+The static application service now invokes the canonical replay for every analysis
+whose manifest has a DBT revision. Existing `PortabilityCertificate` JSON and verdict
+behavior remain unchanged as a compatibility surface; the service compares the
+canonical verdict and fails closed on replay failure or divergence. An unbound
+analysis without DBT revision remains an explicit `UNKNOWN` and does not receive a
+fabricated certificate binding.
 
 ## Canonical checks
 
@@ -38,9 +41,11 @@ Neither verifier converts observations into proof facts.
 - `ProofFact.covered_events` retains the event set needed to replay legacy bulk
   removal proofs.
 
-## Deletion/migration gate
+## Closure and deletion/migration gate
 
-The old certificate builder can be migrated only after its report is translated to
-these canonical types, replay checks are run on the same inputs, and serialized
-output remains unchanged.  Until then, the new verifier is an additive contract and
-does not authorize any dynamic observation to affect static `SAFE`.
+The report adapter now translates the same input used by the old certificate builder;
+replay checks run before the compatibility payload is returned, and differential tests
+cover SAFE, UNKNOWN, removal and identity paths. The old builder and serializer can
+only be deleted after native static producers emit canonical identities directly and
+all external consumers have migrated. Until then, the canonical verifier remains the
+only proof-closure authority and never accepts a dynamic observation as static `SAFE`.

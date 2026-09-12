@@ -6,6 +6,7 @@ from .certificate_bridge import (
     CertificateBridgeError,
     StaticCertificateEvidence,
     binding_from_manifest,
+    build_static_certificate_from_report,
     build_static_certificate_with_evidence,
 )
 
@@ -14,6 +15,7 @@ __all__ = [
     "StaticCertificateEvidence",
     "CertificateBridgeError",
     "binding_from_manifest",
+    "build_static_certificate_from_report",
     "build_static_certificate_with_evidence",
     "explain_certificate",
     "verify_certificate_scope",

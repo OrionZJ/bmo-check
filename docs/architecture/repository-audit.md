@@ -14,43 +14,50 @@ BMoCheck already has two useful safety boundaries:
 - static `SAFE` is currently issued only for an unbounded structural proof with no
   relevant `UnknownFact`.
 
-Those boundaries are necessary, but they do not yet make dynamic-assisted diagnosis
-safe to add. The repository has no canonical distinction between `ProofFact`,
-`ObservedFact`, `DiagnosticHint`, and `UnknownFact`. Static provenance is carried in
-open dictionaries and proof text, while dynamic failures are plain strings. A future
-caller could therefore mix observations into a proof without crossing a type or
-package boundary.
+Those boundaries are necessary, and the Phase C closure now adds the missing
+certificate boundary: `bmo_check_core` owns typed evidence, stable identities and
+static/trace replay, while the static application service must replay a canonical
+certificate before returning a revision-bound legacy result. Observations and hints
+are rejected by the static verifier rather than separated only by convention.
+
+The legacy report models, open provenance dictionaries and proof text still exist as
+compatibility inputs. They are translated at the certificate boundary; they are not
+allowed to bypass canonical closure. Dynamic-assisted diagnosis remains a separate
+read-only path and cannot modify the static lattice.
 
 The main architectural risk is concentrated in a few orchestration-heavy files.
 They recover facts, interpret implicit dictionary protocols, remove Unknowns, build
 proofs, select verdicts, and serialize certificates in the same control path. This
 works for the current tests but makes every new analysis add another special branch.
 
-The next implementation phase must first introduce canonical identity and evidence
-types. Dynamic correlation comes only after static Unknowns and dynamic observations
-can meet through stable IDs without either analyzer importing the other's internals.
+The next implementation phase is native producer migration and relation ownership,
+not another evidence-model rewrite. Dynamic correlation can consume immutable
+snapshots through stable IDs without either analyzer importing the other's internals.
 
-## 1.1 Post-C4/C5 implementation delta
+## 1.1 Post-Phase-C implementation delta
 
-On the current `dev` branch, `bmo_check_core` now provides stable identities, typed
+On the current `dev` branch, `bmo_check_core` provides stable identities, typed
 evidence and separate static/trace certificate replay checks. The static adapter at
 `bmo_check_static/adapters/evidence.py` translates legacy events, proof objects and
-Unknowns through typed links, but the old static verifier remains authoritative and
-the dynamic route has not been connected to static evidence. These additions close
-the data-model and replay seams identified below; they do not claim that producer
-provenance or verdict construction has already migrated.
+Unknowns through typed links. `bmo_check_static.application.analyze_with_evidence`
+now uses that adapter and the canonical bridge on the real static analyze path;
+`analyze` keeps the legacy certificate only as a compatibility serialization.
 
-C6 additionally gives dependency-closure recovery an opt-in ledger-emission path.
-The default manifest producer and every later static producer still use legacy
-payloads, so the audit's multi-layer leakage findings remain active.
+C6 additionally gives each recovery and analysis producer an opt-in ledger-emission
+path. The report bridge preserves all producer Unknowns and only discharges one when
+an in-scope ProofFact covers its event. Native producer migration is still a future
+cleanup, but it can no longer create an unchecked static SAFE through the application
+service.
 
 CFG/indirect-target recovery now has a matching opt-in ledger path. Thread lifecycle,
 synchronization recovery now have matching opt-in ledger paths. Memory-event and
 memory-event recovery now has a matching opt-in ledger path and stable event links.
 Shared-state/escape classification now has a matching opt-in Unknown ledger path;
 slicing now has an opt-in ProofFact/RemovalDecision sidecar, and portability has an
-opt-in relevant-Unknown ledger sidecar. Legacy certificate construction still owns
-the final verdict and does not consume the new slice ledger.
+opt-in relevant-Unknown ledger sidecar. The canonical bridge consumes the translated
+proof/removal sidecar, checks scope and evidence categories, and replays the result
+before the legacy verdict is exposed. Legacy JSON remains an adapter, not an
+independent proof boundary.
 
 ## 1.2 Post-C8 implementation delta
 
@@ -219,21 +226,21 @@ transitions whose invariants are not represented by types.
 
 ## 8. Static, dynamic and proof fact isolation
 
-Package isolation exists; fact isolation does not.
+The Phase C boundary now isolates certificate evidence at the type and replay layer:
 
-- Static `ProofObject` has a reason enum, but its premises are strings and its ID may
-  be an enumeration index such as `proof:affine:3`.
-- Static `UnknownFact` has a typed kind, but no stable evidence ID, originating pass,
-  affected operand/object identity or explicit relevance scope.
-- Dynamic events and instruction-site summaries are observations, but there is no
-  `ObservedFact` type or trace-bound evidence store.
-- No `DiagnosticHint` type exists.
-- The dynamic solver proves inclusion for an observed skeleton, yet its result is a
-  string-status `WindowResult`. Nothing in the type name prevents a caller from
-  describing it as a general proof.
+- `bmo_check_core.evidence` owns frozen `ProofFact`, `ObservedFact`,
+  `DiagnosticHint` and `UnknownFact` variants plus the append-only ledger.
+- static report events, proof objects and Unknowns receive stable canonical links in
+  `bmo_check_static.adapters.evidence`;
+- `bmo_check_static.proof.certificate_bridge` rejects observations and hints, checks
+  scope, and replays every static certificate through `verify_static_certificate`;
+- dynamic snapshots remain trace-bound and cannot enter the static ledger.
 
-Therefore the repository currently relies on package convention and comments to keep
-observations out of static `SAFE`.
+The old `ProofObject`, open provenance dictionaries and dynamic `WindowResult` still
+exist as route representations. They are compatibility inputs, not canonical proof
+nodes. Native producer migration and a shared relation vocabulary remain future work,
+but the static application path no longer relies on package convention alone to keep
+observations out of `SAFE`.
 
 ## 9. Unknown production, propagation and elimination
 
@@ -254,10 +261,13 @@ when:
 - an incomplete synchronization edge is considered irrelevant to an empty application
   conflict set.
 
-The surviving set correctly blocks `SAFE`. The gap is that an eliminated Unknown has
-no first-class discharge record linking its ID to the `ProofFact` that made it
-irrelevant. Deduplication also discards differing `details`, which can merge distinct
-origins.
+The surviving set still blocks `SAFE`. At the certificate boundary, report Unknowns
+are preserved in the canonical ledger; an Unknown filtered by the legacy scope rules
+is discharged only when its event set is covered by an in-scope `ProofFact`. If no
+such proof exists, the canonical replay remains unresolved and the application fails
+closed instead of silently accepting the legacy filter. Deduplication in the legacy
+report still discards differing `details`, which is tracked technical debt for the
+future native producer migration.
 
 ### Dynamic path
 
@@ -281,17 +291,18 @@ CLI input and contracts
   -> SharedStateReport with ProofObjects
   -> SharedMemorySlice
   -> optional application-scope removal
-  -> verifier Unknown collection/filtering
-  -> no relevant Unknown
-  -> no remaining cross-thread conflict
-  -> unbounded StructuralSafe checker result
-  -> PortabilityCertificate model validation
-  -> SAFE
+  -> legacy verifier Unknown collection/filtering
+  -> report adapter creates canonical IDs and proof-backed discharges
+  -> canonical static certificate bridge
+  -> verify_static_certificate proof-closure replay
+  -> legacy PortabilityCertificate compatibility serialization
+  -> SAFE only when both verdicts agree
 ```
 
 If conflicts remain, the current finite checker can find a counterexample but cannot
-promote bounded no-counterexample to `SAFE`. That is a sound boundary. The weak link
-is the non-traversable proof/Unknown-discharge path before `StructuralSafe`.
+promote bounded no-counterexample to `SAFE`. That is a sound boundary. The remaining
+weak link is the legacy report's non-traversable provenance, which the adapter keeps
+visible and the canonical bridge refuses to discharge without an event-covering proof.
 
 ## 11. Current `TRACE_SAFE` dependency chain
 
@@ -327,17 +338,17 @@ Current tests already defend useful invariants:
 - every `SharedStateReport.removed_event_ids` entry has some `ProofObject`;
 - incomplete traces, dropped events, resource limits and checker bounds stay Unknown;
 - bounded static no-counterexample stays `UNKNOWN`;
+- static application `analyze` replays the canonical certificate and compares verdicts;
+- report Unknowns remain in the canonical ledger or carry an explicit proof-backed
+  discharge;
+- implicit legacy operands (`None`/negative index) map to one stable canonical identity;
+- static certificate replay rejects observations, hints, missing removal coverage and
+  mismatched scopes;
 - trace litmus and relation tests compare several source/target ordering cases;
 - stale static certificate scope is detected.
 
-The missing tests are more important for the proposed diagnostics work:
+The remaining tests are important for the next native-producer and diagnostics work:
 
-- no proof-closure traversal checks every premise reachable from static `SAFE`;
-- no type or dependency test prevents an observed value from becoming a static proof;
-- no Unknown-ledger conservation test checks creation, propagation and discharge;
-- no stable-ID property test covers order-independent construction and round trips;
-- no architecture test enforces the intended internal dependency DAG;
-- no test forbids core semantic branches on benchmark names;
 - no certificate verifier replays dynamic bindings or rejects foreign evidence kinds;
 - no schema migration matrix checks old, current and unsupported evidence versions;
 - no test checks that ambiguous static/dynamic correlation remains ambiguous;
@@ -384,24 +395,22 @@ not machine-checkable.
 
 ## 15. Handoff readiness
 
-The repository is partly ready for a new maintainer:
+The repository is now ready to hand off the Phase C boundary to a new maintainer:
 
 - README and route-specific documents explain `SAFE` versus `TRACE_SAFE`;
 - tests cover many concrete regressions;
 - static and dynamic packages are visibly separated;
+- the soundness contract names the evidence categories and certificate replay rules;
+- the static application path exposes a typed result with the canonical replay;
 - checkpoint commits make the current behavior recoverable.
 
-It is not yet self-sufficient for someone without the historical conversation:
+The following are deliberately retained technical debt, not open Phase C criteria:
 
-- `AGENTS.md` presents the dynamic route as the only mainline and has no evidence or
-  diagnostics policy;
-- the root architecture document does not map actual ownership or forbidden imports;
-- static and dynamic soundness rules are split across route-specific prose;
-- there is no canonical evidence/provenance specification;
-- active milestones do not describe the diagnostic architecture migration;
-- the current test layout does not reveal invariant, contract, certificate and
-  benchmark test tiers;
-- local experiment artifacts are intentionally untracked but `.experiments/` and
-  `.tmp*` are not covered by repository artifact policy in a canonical document.
+- native static producers still emit legacy reports before the one-way adapter;
+- legacy provenance dictionaries and report-level Unknown deduplication need a
+  future typed migration;
+- dynamic certificate replay and schema migration need broader negative coverage;
+- local experiment artifacts remain intentionally untracked.
 
-The target architecture, soundness contract and migration plan address these gaps.
+The target architecture, soundness contract, migration plan and active phase records
+now describe the completed C boundary and the remaining D/E work.
