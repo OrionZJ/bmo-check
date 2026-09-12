@@ -14,6 +14,16 @@ from .correlation import (
     DiagnosticCorrelationReport,
     correlate_unknowns,
 )
+from .classification import (
+    ClassificationError,
+    ClassificationResult,
+    DiagnosticRootCause,
+    ROOT_CAUSE_REGISTRY,
+    RootCauseDescriptor,
+    classify_unknown,
+    classify_unknowns,
+    validate_root_cause_registry,
+)
 from .report import (
     CertificateIdentity,
     DiagnosticCoverage,
@@ -34,6 +44,14 @@ __all__ = [
     "CorrelationStatus",
     "DiagnosticCorrelationReport",
     "correlate_unknowns",
+    "ClassificationError",
+    "ClassificationResult",
+    "DiagnosticRootCause",
+    "ROOT_CAUSE_REGISTRY",
+    "RootCauseDescriptor",
+    "classify_unknown",
+    "classify_unknowns",
+    "validate_root_cause_registry",
     "CertificateIdentity",
     "DiagnosticCoverage",
     "DiagnosticReport",

@@ -281,10 +281,12 @@ Neither snapshot exposes mutable analyzer state.
 
 Implementation record: `docs/exec-plans/active/d1-diagnostic-snapshots.md`. The first
 slice places the immutable snapshot types in `bmo_check_core.diagnostics` and keeps
-`bmo_check_diagnostics` as a core-only facade. Static and dynamic route adapters are
-now start from explicit one-way boundaries: the static route adapts replayed
-`StaticCertificateEvidence` into a core snapshot and rejects dynamic nodes. The
-dynamic route adapter is still pending; no correlation or verdict change is implied.
+`bmo_check_diagnostics` as a core-only facade. Static and dynamic route adapters now
+start from explicit one-way boundaries: the static route adapts replayed
+`StaticCertificateEvidence` into a core snapshot and rejects dynamic nodes; the
+dynamic route streams a validated trace into bounded `ObservedFact` aggregates and
+trace-scoped Unknowns. No correlation or verdict change is implied by either
+adapter.
 
 Commit intent: `Expose static and dynamic diagnostic snapshots`.
 
@@ -314,7 +316,11 @@ trace sequence and Python object ID are forbidden keys.
 
 Commit intent: `Correlate static Unknowns with runtime observations`.
 
-Implementation record: `docs/exec-plans/active/d3-diagnostic-correlation.md`.
+Implementation record: `docs/exec-plans/active/d3-diagnostic-correlation.md`. The
+correlator first compares stable subjects, then uses a conservative module-relative
+ELF-PC/effect fallback for legacy static Unknowns whose canonical subject is a
+`MemoryEventId` or is not present. Missing operand identity and multiple static
+candidates remain `Ambiguous`; no fallback creates a proof.
 
 ### D4 — Diagnostic report and CLI
 
@@ -334,8 +340,8 @@ Implementation record: `docs/exec-plans/active/d4-diagnostic-report.md`. The
 diagnostics package now builds an immutable, versioned report from typed static and
 dynamic snapshots. JSON is an explicit serialization boundary, and `bmo-check
 diagnose` returns the unchanged static verdict while recording identities, selected
-Unknowns, observations, coverage and conservative hints. Root-cause classification
-remains a D5 task.
+Unknowns, observations, coverage and conservative hints. The report consumes the
+typed D5 root-cause registry without changing the static verdict.
 
 ### D5 — Generic root-cause registry
 
@@ -362,6 +368,10 @@ UnknownRootCause
 Initial classifiers may return `UnknownRootCause`. No classifier changes a verdict.
 
 Commit intent: `Classify static precision gaps without changing verdicts`.
+
+Implementation record: `docs/exec-plans/active/d5-root-cause-registry.md`. The
+typed registry and conservative classifier now feed `DiagnosticHint.root_cause`;
+they never create proof or change a verdict.
 
 ### Phase D exit criteria
 

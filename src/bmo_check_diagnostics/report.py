@@ -23,7 +23,6 @@ from bmo_check_core import (
     StaticDiagnosticSnapshot,
     TraceId,
     UnknownFact,
-    UnknownKind,
 )
 
 from .correlation import (
@@ -33,6 +32,7 @@ from .correlation import (
     DiagnosticCorrelationReport,
     correlate_unknowns,
 )
+from .classification import DiagnosticRootCause, classify_unknown
 
 
 class DiagnosticReportError(ValueError):
@@ -299,6 +299,12 @@ class DiagnosticReport:
         for hint in self.hints:
             if not isinstance(hint, DiagnosticHint):
                 raise DiagnosticReportError("hints must contain DiagnosticHint values")
+            try:
+                DiagnosticRootCause(hint.root_cause)
+            except ValueError as error:
+                raise DiagnosticReportError(
+                    f"hint root cause is not registered: {hint.root_cause}"
+                ) from error
             if hint.scope != self.static_certificate.scope:
                 raise DiagnosticReportError("hint scope differs from static certificate")
             if not set(hint.unknown_ids).issubset(selected_ids):
@@ -396,24 +402,37 @@ def _make_hints(
     static: StaticDiagnosticSnapshot,
     records: tuple[CorrelationRecord, ...],
 ) -> tuple[DiagnosticHint, ...]:
+    unknowns = {
+        node.id: node
+        for node in static.evidence.nodes
+        if isinstance(node, UnknownFact)
+    }
     hints: list[DiagnosticHint] = []
     for record in records:
-        if record.status == CorrelationStatus.EXACT:
-            confidence = 1.0
-        elif record.status == CorrelationStatus.AMBIGUOUS:
-            confidence = 0.5
-        else:
-            confidence = 0.0
+        unknown = unknowns.get(record.unknown_id)
+        if unknown is None:
+            raise DiagnosticReportError(
+                f"correlation references an absent static Unknown: {record.unknown_id.value}"
+            )
+        classification = classify_unknown(unknown, correlation=record)
+        # 相关状态比分类器更严格：没有稳定候选时，提示不能显示为高置信度。
+        status_cap = {
+            CorrelationStatus.EXACT: 1.0,
+            CorrelationStatus.AMBIGUOUS: 0.5,
+            CorrelationStatus.UNMATCHED: 0.0,
+        }[record.status]
+        confidence = min(classification.confidence, status_cap)
         hint = DiagnosticHint.create(
             schema_version=_HINT_SCHEMA,
             producer=_HINT_PRODUCER,
             scope=static.scope,
             unknown_ids=(record.unknown_id,),
             observed_ids=record.observed_ids,
-            root_cause=UnknownKind.UNKNOWN_ROOT_CAUSE.value,
+            root_cause=classification.root_cause.value,
             confidence=confidence,
             explanation=(
-                f"{record.reason}. This diagnostic only locates a static precision gap; "
+                f"{classification.rationale}; {record.reason}. "
+                "This diagnostic only locates a static precision gap; "
                 "it does not discharge the Unknown or change the static verdict."
             ),
         )

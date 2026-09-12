@@ -125,4 +125,6 @@ bmo-check-static fingerprint|recover|slice|analyze|explain|evaluate
 `diagnose` consumes only typed static/dynamic snapshots and writes a versioned
 diagnostic report. It may correlate observations and create hints, but must not attach
 directly to verifier internals, discharge an Unknown, or change a static verdict.
-Root-cause classification beyond `UnknownRootCause` remains a later milestone.
+Root-cause classification uses the typed `DiagnosticRootCause` registry. It remains
+diagnostic-only: a classification or confidence value cannot discharge an Unknown,
+enter static proof closure, or change a verdict.

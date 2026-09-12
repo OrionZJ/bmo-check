@@ -87,10 +87,11 @@ cover every verdict. `bmo_check_core.contracts` now owns the typed DBT
 memory-order contract; route-specific YAML/model classes are input adapters. The
 sidecars are not a shortcut to a static `SAFE` verdict. Read-only diagnostic
 snapshots now live in `bmo_check_core.diagnostics`; the static route exposes its
-replayed certificate through a one-way snapshot adapter, while the dynamic route
-adapter is still pending. The D4 serialization boundary can read snapshots produced
-by either adapter without exposing route internals. These snapshots are the only
-planned input to a correlator. The static and dynamic CLIs' primary capture/recover/analyze paths now
+replayed certificate through a one-way snapshot adapter, and the dynamic route
+streams validated trace files through its matching snapshot adapter. The D4
+serialization boundary can read snapshots produced by either adapter without
+exposing route internals. These snapshots are the only planned input to a
+correlator. The static and dynamic CLIs' primary capture/recover/analyze paths now
 construct typed application requests. PARSEC orchestration now lives in
 `bmo_check_evaluation`, including its per-benchmark worker and report aggregation;
 the static compatibility CLI only converts arguments and renders the returned report.

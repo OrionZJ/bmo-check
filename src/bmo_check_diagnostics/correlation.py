@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import Final
 
 from bmo_check_core import (
     BinaryClosureId,
@@ -13,6 +15,7 @@ from bmo_check_core import (
     ObservedFact,
     StaticDiagnosticSnapshot,
     TraceId,
+    UnknownFact,
 )
 
 
@@ -32,6 +35,8 @@ class CorrelationStatus(StrEnum):
 class CorrelationKey(StrEnum):
     # SUBJECT 是 Instruction/MemoryOperand/Object 等 StableId 的精确相等。
     SUBJECT = "stable_subject"
+    # INSTRUCTION 使用闭包、模块路径、ELF PC 和 effect 类型回查旧适配器事实。
+    INSTRUCTION = "module_relative_instruction"
     # BINARY_CLOSURE 记录闭包不一致导致的拒绝。
     BINARY_CLOSURE = "binary_closure"
     # NONE 表示静态 Unknown 没有任何稳定 subject。
@@ -100,6 +105,140 @@ class DiagnosticCorrelationReport:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class _StaticLocation:
+    """从静态 Unknown 的 provenance 文本中提取的可审计位置。"""
+
+    module: str | None
+    pc: int | None
+    kind: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class _ObservedLocation:
+    """动态观察适配器写入的稳定位置属性。"""
+
+    subject: object
+    module: str | None
+    pc: int | None
+    kind: str | None
+    operand: str | None
+
+
+_LOCATION_PREFIX: Final[str] = "legacy."
+_PC_RE: Final[re.Pattern[str]] = re.compile(r"^(?:0x)?[0-9a-fA-F]+$")
+
+
+def _attributes(observed: ObservedFact) -> dict[str, str]:
+    return {item.name: item.value for item in observed.attributes}
+
+
+def _parse_pc(value: str) -> int | None:
+    value = value.strip()
+    if not _PC_RE.fullmatch(value):
+        return None
+    try:
+        return int(value, 16 if value.lower().startswith("0x") else 10)
+    except ValueError:
+        return None
+
+
+def _static_location(unknown: UnknownFact) -> _StaticLocation:
+    values: dict[str, str] = {}
+    for context in unknown.supporting_context:
+        name, separator, value = context.partition("=")
+        if separator and name.startswith(_LOCATION_PREFIX):
+            values[name[len(_LOCATION_PREFIX) :]] = value
+    return _StaticLocation(
+        module=values.get("module"),
+        pc=_parse_pc(values["pc"]) if "pc" in values else None,
+        kind=values.get("kind"),
+    )
+
+
+def _observed_location(observed: ObservedFact) -> _ObservedLocation:
+    values = _attributes(observed)
+    pc_value = values.get("elf_pc") or values.get("instruction_offset")
+    return _ObservedLocation(
+        subject=observed.subject,
+        module=values.get("module_path"),
+        pc=_parse_pc(pc_value) if pc_value is not None else None,
+        kind=values.get("event_kind"),
+        operand=values.get("operand_index") or values.get("operand_identity"),
+    )
+
+
+def _same_location(
+    static: _StaticLocation,
+    observed: _ObservedLocation,
+) -> bool:
+    # 缺少 PC 或 effect 类型时不进行模糊猜测；这类 Unknown 仍保留 Unmatched。
+    if static.pc is None or observed.pc is None:
+        return False
+    if static.pc != observed.pc:
+        return False
+    if static.module is not None and observed.module is not None:
+        if static.module != observed.module:
+            return False
+    elif static.module != observed.module:
+        # 两条路径都缺 module 时，PC 不能唯一绑定到一个 ELF。
+        return False
+    if static.kind is None:
+        # 一些 CFG Unknown 只有 call-site PC；该位置仍可由实际间接目标回查。
+        # 如果同一 PC 同时出现多个 effect，后面的 ambiguity 检查会保守降级。
+        return True
+    if observed.kind is None:
+        return False
+    return static.kind.casefold() == observed.kind.casefold()
+
+
+def _fallback_candidates(
+    unknown: UnknownFact,
+    observed: tuple[ObservedFact, ...],
+) -> tuple[ObservedFact, ...]:
+    location = _static_location(unknown)
+    if location.pc is None:
+        return ()
+    candidates = tuple(
+        item
+        for item in observed
+        if _same_location(location, _observed_location(item))
+    )
+    if not candidates:
+        return ()
+    return candidates
+
+
+def _fallback_is_ambiguous(
+    unknown: UnknownFact,
+    candidates: tuple[ObservedFact, ...],
+    static_site_counts: dict[tuple[str | None, int | None, str | None], int],
+) -> bool:
+    """判断位置匹配是否缺少 operand 级别的唯一性。"""
+
+    location = _static_location(unknown)
+    site = (
+        location.module,
+        location.pc,
+        location.kind.casefold() if location.kind else None,
+    )
+    operands = {
+        _observed_location(item).operand
+        for item in candidates
+        if _observed_location(item).operand is not None
+    }
+    kinds = {
+        _observed_location(item).kind.casefold()
+        for item in candidates
+        if _observed_location(item).kind is not None
+    }
+    if _static_location(unknown).kind is None and len(kinds) > 1:
+        return True
+    if len(operands) > 1:
+        return True
+    return "missing" in operands and static_site_counts.get(site, 0) > 1
+
+
 def _closure_status(
     static: StaticDiagnosticSnapshot,
     dynamic: DynamicDiagnosticSnapshot,
@@ -114,7 +253,7 @@ def correlate_unknowns(
     static: StaticDiagnosticSnapshot,
     dynamic: DynamicDiagnosticSnapshot,
 ) -> DiagnosticCorrelationReport:
-    """按 stable subject 做一对多保守匹配，绝不猜测缺失的 operand。"""
+    """按 stable subject 和位置回退做保守匹配，绝不猜测缺失的 operand。"""
 
     if not isinstance(static, StaticDiagnosticSnapshot):
         raise CorrelationError("static snapshot has an invalid type")
@@ -131,12 +270,24 @@ def correlate_unknowns(
         if node.subject is not None:
             by_subject.setdefault(node.subject, []).append(node)
 
+    static_unknowns = tuple(
+        node
+        for node in static.evidence.nodes
+        if isinstance(node, UnknownFact)
+    )
+    static_site_counts: dict[tuple[str | None, int | None, str | None], int] = {}
+    for node in static_unknowns:
+        location = _static_location(node)
+        site = (
+            location.module,
+            location.pc,
+            location.kind.casefold() if location.kind else None,
+        )
+        if location.pc is not None:
+            static_site_counts[site] = static_site_counts.get(site, 0) + 1
+
     records: list[CorrelationRecord] = []
-    for node in static.evidence.nodes:
-        # UnknownFact is imported indirectly through snapshot. Avoid exposing a
-        # second evidence representation in the diagnostics package itself.
-        if node.id not in static.unknown_ids:
-            continue
+    for node in static_unknowns:
         subject = getattr(node, "subject", None)
         if not closure_matches and closure_known:
             records.append(
@@ -149,6 +300,52 @@ def correlate_unknowns(
                 )
             )
             continue
+        candidates = tuple(by_subject.get(subject, ())) if subject is not None else ()
+        if candidates:
+            records.append(
+                CorrelationRecord(
+                    unknown_id=node.id,
+                    observed_ids=tuple(item.id for item in candidates),
+                    status=(
+                        CorrelationStatus.EXACT
+                        if closure_known
+                        else CorrelationStatus.AMBIGUOUS
+                    ),
+                    key=CorrelationKey.SUBJECT,
+                    reason=(
+                        "stable subject and binary closure identify the observed site"
+                        if closure_known
+                        else "stable subject matched, but binary closure is missing"
+                    ),
+                )
+            )
+            continue
+
+        fallback = _fallback_candidates(node, observed)
+        if fallback:
+            ambiguous = _fallback_is_ambiguous(node, fallback, static_site_counts)
+            if not closure_known:
+                ambiguous = True
+            records.append(
+                CorrelationRecord(
+                    unknown_id=node.id,
+                    observed_ids=tuple(item.id for item in fallback),
+                    status=(
+                        CorrelationStatus.AMBIGUOUS
+                        if ambiguous
+                        else CorrelationStatus.EXACT
+                    ),
+                    key=CorrelationKey.INSTRUCTION,
+                    reason=(
+                        "module-relative ELF PC and effect identify the site, "
+                        "but operand identity is not unique"
+                        if ambiguous
+                        else "module-relative ELF PC and effect identify the observed site"
+                    ),
+                )
+            )
+            continue
+
         if subject is None:
             records.append(
                 CorrelationRecord(
@@ -156,45 +353,25 @@ def correlate_unknowns(
                     observed_ids=(),
                     status=CorrelationStatus.UNMATCHED,
                     key=CorrelationKey.NONE,
-                    reason="static Unknown has no stable subject",
+                    reason="static Unknown has no stable subject or location",
                 )
             )
             continue
-        candidates = tuple(by_subject.get(subject, ()))
-        if not candidates:
-            records.append(
-                CorrelationRecord(
-                    unknown_id=node.id,
-                    observed_ids=(),
-                    status=CorrelationStatus.UNMATCHED,
-                    key=CorrelationKey.SUBJECT,
-                    reason=(
-                        "no observed fact has the same stable subject"
-                        if closure_known
-                        else "stable subject matched no event and binary closure is absent"
-                    ),
-                )
-            )
-            continue
-        status = (
-            CorrelationStatus.EXACT
-            if closure_known
-            else CorrelationStatus.AMBIGUOUS
-        )
-        reason = (
-            "stable subject and binary closure identify the observed site"
-            if closure_known
-            else "stable subject matched, but binary closure is missing"
-        )
+
         records.append(
             CorrelationRecord(
                 unknown_id=node.id,
-                observed_ids=tuple(item.id for item in candidates),
-                status=status,
+                observed_ids=(),
+                status=CorrelationStatus.UNMATCHED,
                 key=CorrelationKey.SUBJECT,
-                reason=reason,
+                reason=(
+                    "no observed fact has the same stable subject or location"
+                    if closure_known
+                    else "stable subject/location matched no event and binary closure is absent"
+                ),
             )
         )
+        continue
     return DiagnosticCorrelationReport(
         schema_version="diagnostic-correlation-v1",
         static_verdict=static.verdict,

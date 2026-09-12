@@ -61,6 +61,19 @@ keeps only argument adaptation and report rendering. This removes the former
 evaluation loop from the CLI, but the route-specific evaluation models remain a
 compatibility representation until they are migrated to the evaluation package.
 
+## 1.3 Post-Phase-D implementation delta
+
+The diagnostics boundary is now usable without importing route internals. The
+static certificate adapter and the streaming dynamic trace adapter both produce
+immutable snapshots; the latter binds module hashes, ELF-relative PCs, operand
+identity, indirect targets and trace completeness while retaining bounded
+trace-scoped Unknowns. The correlator first uses stable subjects and then a
+provenance-location fallback for legacy static Unknowns. D4 reports and D5 root-cause
+classifications remain diagnostic-only: they preserve the static verdict and cannot
+enter the static proof ledger. Function/block and object/thread-role correlation
+remain explicit future extensions because the current snapshots do not carry enough
+canonical material to infer them safely.
+
 ## 2. Current subsystems
 
 | Subsystem | Current owner | Actual responsibility |

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import json
 from pathlib import Path
 
 from bmo_check_core import (
     BinaryClosureId,
     CertificateVerdict,
+    DiagnosticHint,
     DynamicDiagnosticSnapshot,
     EvidenceSnapshot,
     InstructionId,
@@ -19,8 +21,11 @@ from bmo_check_core import (
     UnknownFact,
     UnknownKind,
 )
-from bmo_check_diagnostics import build_diagnostic_report
-from bmo_check_diagnostics import DiagnosticReportError
+from bmo_check_diagnostics import (
+    DiagnosticReportError,
+    DiagnosticRootCause,
+    build_diagnostic_report,
+)
 from bmo_check_diagnostics.serialization import (
     load_snapshot,
     report_to_dict,
@@ -98,7 +103,7 @@ def test_report_keeps_static_verdict_and_typed_evidence() -> None:
     assert report.coverage.unmatched_count == 0
     assert report.hints[0].unknown_ids == (unknown.id,)
     assert report.hints[0].observed_ids == (observed.id,)
-    assert report.hints[0].root_cause == UnknownKind.UNKNOWN_ROOT_CAUSE.value
+    assert report.hints[0].root_cause == DiagnosticRootCause.MISSING_LOOP_BOUND.value
 
 
 def test_snapshot_json_round_trip_rebuilds_typed_identity(tmp_path: Path) -> None:
@@ -214,3 +219,25 @@ def test_changing_dynamic_observations_cannot_change_static_result() -> None:
     assert with_observation.selected_unknowns == without.selected_unknowns == (unknown,)
     assert with_observation.records[0].status.value == "Exact"
     assert without.records[0].status.value == "Unmatched"
+
+
+def test_report_rejects_unregistered_root_cause() -> None:
+    static, dynamic, unknown, observed = _snapshots()
+    report = build_diagnostic_report(static, dynamic)
+    invalid_hint = DiagnosticHint.create(
+        schema_version="diagnostic-hint-v1",
+        producer=ProducerId("test", "1"),
+        scope=static.scope,
+        unknown_ids=(unknown.id,),
+        observed_ids=(observed.id,),
+        root_cause="invented-root-cause",
+        confidence=0.0,
+        explanation="not a registry value",
+    )
+
+    try:
+        replace(report, hints=(invalid_hint,))
+    except DiagnosticReportError as error:
+        assert "not registered" in str(error)
+    else:
+        raise AssertionError("unregistered root cause must fail closed")

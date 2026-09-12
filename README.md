@@ -59,6 +59,8 @@ bmo-check explain trace/run-1/certificate.json
 bmo-check locate trace/run-1 --module /path/to/module --offset 0x1234
 bmo-check diagnose static-snapshot.json dynamic-snapshot.json \
   --output diagnostic-report.json
+bmo-check diagnose static-snapshot.json --trace trace/run-1 \
+  --output diagnostic-report.json
 ```
 
 大型程序可在 capture/run/campaign 中使用 `--max-thread-events N`
@@ -72,11 +74,12 @@ bmo-check diagnose static-snapshot.json dynamic-snapshot.json \
 `locate` 按模块内偏移汇总某条指令的实际事件、线程、宽度和 flags。它用于复核
 发布点或原子分类，不参与 verdict，也不能单独证明 `TRACE_SAFE`。
 
-`diagnose` 读取由 canonical snapshot API 生成的静态/动态 JSON，输出
-`diagnostic-report-v1`。报告只定位静态 Unknown：它保留原始静态 verdict、
-Exact/Ambiguous/Unmatched 结果、观察覆盖和 `DiagnosticHint`，绝不会把动态事实
-写入静态 proof 或把 `UNKNOWN` 升级为 `SAFE`。当前 D4 尚未解析旧的无类型字典；
-请使用 `bmo_check_diagnostics.serialization.save_snapshot` 生成输入。
+`diagnose` 读取由 canonical snapshot API 生成的静态 JSON 和动态 JSON，或直接用
+`--trace` 流式适配一个已验证的动态轨迹，输出 `diagnostic-report-v1`。报告只
+定位静态 Unknown：它保留原始静态 verdict、Exact/Ambiguous/Unmatched 结果、
+观察覆盖和 D5 `DiagnosticRootCause`，绝不会把动态事实写入静态 proof 或把
+`UNKNOWN` 升级为 `SAFE`。它不解析旧的无类型字典；静态快照请使用
+`bmo_check_diagnostics.serialization.save_snapshot` 生成。
 
 多轮实验使用 `bmo-check campaign manifest.yaml --output results`。总体 `TRACE_SAFE` 只表示清单中的每条轨迹都为 `TRACE_SAFE`。
 
@@ -103,3 +106,4 @@ D1/D2 首个严格闭环的逐项证据位于
 `docs/exec-plans/active/d1-d2-acceptance.md`。
 PARSEC 3.0 全程序实验位于 `docs/dynamic/08-parsec-all-programs.md`。
 syscall 参数/effect 的严格闭合规则位于 `docs/dynamic/09-syscall-effects.md`。
+动态诊断快照和静态缺口回查规则位于 `docs/dynamic/11-diagnostic-snapshots.md`。

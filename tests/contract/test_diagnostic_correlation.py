@@ -4,6 +4,7 @@ from bmo_check_core import (
     BinaryClosureId,
     CertificateVerdict,
     DynamicDiagnosticSnapshot,
+    EvidenceAttribute,
     EvidenceSnapshot,
     InstructionId,
     MemoryOperandId,
@@ -116,3 +117,168 @@ def test_missing_subject_is_not_guessed() -> None:
 
     assert record.status == CorrelationStatus.UNMATCHED
     assert record.key == CorrelationKey.NONE
+
+
+def test_legacy_location_fallback_correlates_static_unknown_without_subject() -> None:
+    _operand, closure, trace = _ids()
+    module_path = "/bin/fixture"
+    unknown = UnknownFact.create(
+        schema_version="unknown-v1",
+        producer=ProducerId("static-test", "1"),
+        kind=UnknownKind.UNKNOWN_AFFINE_BOUNDS,
+        reason="loop upper bound is not closed",
+        subject=None,
+        scope="static.test",
+        supporting_context=(
+            f"legacy.module={module_path}",
+            "legacy.pc=0x120",
+            "legacy.kind=Store",
+        ),
+    )
+    instruction = InstructionId.from_parts(ModuleId.from_parts(HASH, "executable"), 0x120)
+    observed = ObservedFact.create(
+        schema_version="observed-v1",
+        producer=ProducerId("dynamic-test", "1"),
+        trace_id=trace,
+        execution_id=ThreadInstanceId.from_parts(trace, 1),
+        subject=instruction,
+        observation_kind="memory-site",
+        attributes=(
+            EvidenceAttribute("module_path", module_path),
+            EvidenceAttribute("elf_pc", "0x120"),
+            EvidenceAttribute("event_kind", "Store"),
+            EvidenceAttribute("operand_index", "0"),
+        ),
+    )
+    static = StaticDiagnosticSnapshot(
+        schema_version="static-diagnostic-v1",
+        scope="static.test",
+        verdict=CertificateVerdict.UNKNOWN,
+        evidence=EvidenceSnapshot((unknown,)),
+        binary_closure=closure,
+    )
+    dynamic = DynamicDiagnosticSnapshot(
+        schema_version="dynamic-diagnostic-v1",
+        trace_id=trace,
+        scope="trace.test",
+        complete=True,
+        evidence=EvidenceSnapshot((observed,)),
+        binary_closure=closure,
+    )
+
+    record = correlate_unknowns(static, dynamic).records[0]
+
+    assert record.status == CorrelationStatus.EXACT
+    assert record.key == CorrelationKey.INSTRUCTION
+    assert record.observed_ids == (observed.id,)
+
+
+def test_old_site_only_trace_is_ambiguous_for_multiple_static_operands() -> None:
+    _operand, closure, trace = _ids()
+    module_path = "/bin/fixture"
+    context = (
+        f"legacy.module={module_path}",
+        "legacy.pc=0x120",
+        "legacy.kind=Store",
+    )
+    unknowns = tuple(
+        UnknownFact.create(
+            schema_version="unknown-v1",
+            producer=ProducerId("static-test", str(index)),
+            kind=UnknownKind.UNKNOWN_AFFINE_BOUNDS,
+            reason="loop upper bound is not closed",
+            subject=None,
+            scope="static.test",
+            supporting_context=context + (f"legacy.detail.operand={index}",),
+        )
+        for index in (0, 1)
+    )
+    instruction = InstructionId.from_parts(ModuleId.from_parts(HASH, "executable"), 0x120)
+    observed = ObservedFact.create(
+        schema_version="observed-v1",
+        producer=ProducerId("dynamic-test", "1"),
+        trace_id=trace,
+        execution_id=ThreadInstanceId.from_parts(trace, 1),
+        subject=instruction,
+        observation_kind="memory-site",
+        attributes=(
+            EvidenceAttribute("module_path", module_path),
+            EvidenceAttribute("elf_pc", "0x120"),
+            EvidenceAttribute("event_kind", "Store"),
+            EvidenceAttribute("operand_identity", "missing"),
+        ),
+    )
+    static = StaticDiagnosticSnapshot(
+        schema_version="static-diagnostic-v1",
+        scope="static.test",
+        verdict=CertificateVerdict.UNKNOWN,
+        evidence=EvidenceSnapshot(unknowns),
+        binary_closure=closure,
+    )
+    dynamic = DynamicDiagnosticSnapshot(
+        schema_version="dynamic-diagnostic-v1",
+        trace_id=trace,
+        scope="trace.test",
+        complete=True,
+        evidence=EvidenceSnapshot((observed,)),
+        binary_closure=closure,
+    )
+
+    records = correlate_unknowns(static, dynamic).records
+
+    assert len(records) == 2
+    assert all(item.status == CorrelationStatus.AMBIGUOUS for item in records)
+    assert all(item.key == CorrelationKey.INSTRUCTION for item in records)
+
+
+def test_call_site_location_can_correlate_an_indirect_target_observation() -> None:
+    _operand, closure, trace = _ids()
+    module_path = "/bin/fixture"
+    unknown = UnknownFact.create(
+        schema_version="unknown-v1",
+        producer=ProducerId("static-test", "1"),
+        kind=UnknownKind.INCOMPLETE_INDIRECT_TARGET,
+        reason="indirect call target set is incomplete",
+        subject=None,
+        scope="static.test",
+        supporting_context=(
+            f"legacy.module={module_path}",
+            "legacy.pc=0x120",
+        ),
+    )
+    instruction = InstructionId.from_parts(ModuleId.from_parts(HASH, "executable"), 0x120)
+    observed = ObservedFact.create(
+        schema_version="observed-v1",
+        producer=ProducerId("dynamic-test", "1"),
+        trace_id=trace,
+        execution_id=ThreadInstanceId.from_parts(trace, 1),
+        subject=instruction,
+        observation_kind="indirect-target",
+        attributes=(
+            EvidenceAttribute("module_path", module_path),
+            EvidenceAttribute("elf_pc", "0x120"),
+            EvidenceAttribute("event_kind", "IndirectTarget"),
+            EvidenceAttribute("target_min", "0x500"),
+            EvidenceAttribute("target_max", "0x500"),
+        ),
+    )
+    static = StaticDiagnosticSnapshot(
+        schema_version="static-diagnostic-v1",
+        scope="static.test",
+        verdict=CertificateVerdict.UNKNOWN,
+        evidence=EvidenceSnapshot((unknown,)),
+        binary_closure=closure,
+    )
+    dynamic = DynamicDiagnosticSnapshot(
+        schema_version="dynamic-diagnostic-v1",
+        trace_id=trace,
+        scope="trace.test",
+        complete=True,
+        evidence=EvidenceSnapshot((observed,)),
+        binary_closure=closure,
+    )
+
+    record = correlate_unknowns(static, dynamic).records[0]
+
+    assert record.status == CorrelationStatus.EXACT
+    assert record.key == CorrelationKey.INSTRUCTION

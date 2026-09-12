@@ -11,7 +11,7 @@ immutable snapshots produced by earlier phases. The report keeps:
 - every selected static `UnknownFact` and every trace-bound `ObservedFact`;
 - `Exact`, `Ambiguous` and `Unmatched` correlation records;
 - coverage counts, dynamic Unknowns, and a typed `DiagnosticHint` for each selected
-  Unknown (using `UnknownRootCause` until the D5 registry exists);
+  Unknown (using the typed D5 root-cause registry);
 - the trace identity/completeness and an explicit static-proof-unchanged statement.
 
 The builder has no API that returns a `ProofFact`, `RemovalDecision`, static lattice
@@ -43,12 +43,13 @@ identity.
 
 ## Deliberate limits
 
-- This phase does not classify root causes beyond `UnknownRootCause`.
+- The D4 report only transports the classification produced by D5; it does not
+  infer a new static capability from that classification.
 - It does not infer affine bounds, alias/disjointness or lifecycle proofs from a
   runtime address.
 - It does not emit a static certificate or upgrade `UNKNOWN`.
-- A snapshot must be produced by a future route adapter or by the explicit typed
-  serialization API; the command does not parse legacy analyzer dictionaries.
+- The command accepts a canonical snapshot or a validated dynamic trace through the
+  D1 route adapter; it still does not parse legacy analyzer dictionaries.
 
 ## Acceptance
 

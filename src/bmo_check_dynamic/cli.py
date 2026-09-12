@@ -324,6 +324,18 @@ def build_parser() -> argparse.ArgumentParser:
     diagnose.add_argument("dynamic_snapshot", nargs="?", type=Path)
     diagnose.add_argument("--static-snapshot", dest="static_snapshot_option", type=Path)
     diagnose.add_argument("--dynamic-snapshot", dest="dynamic_snapshot_option", type=Path)
+    diagnose.add_argument(
+        "--trace",
+        dest="trace_dir",
+        type=Path,
+        help="build the dynamic snapshot by streaming a trace directory",
+    )
+    diagnose.add_argument(
+        "--max-snapshot-sites",
+        type=int,
+        default=100_000,
+        help="bound distinct thread/site observations when --trace is used",
+    )
     diagnose.add_argument("--output", type=Path, required=True)
     diagnose.add_argument("--static-certificate", type=Path)
     diagnose.add_argument("--trace-certificate", type=Path)
