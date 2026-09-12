@@ -46,6 +46,14 @@ class HerdOutcome(StrEnum):
     UNSUPPORTED = "Unsupported"  # 外部工具没有覆盖该输入或模型。
 
 
+class ExecutionLegality(StrEnum):
+    """BMoCheck facade 对一个固定关系赋值的底层结果。"""
+
+    ALLOWED = "Allowed"
+    FORBIDDEN = "Forbidden"
+    UNKNOWN = "Unknown"
+
+
 class RelationKind(StrEnum):
     PO = "po"  # 同一线程内的 program-order 关系。
     RF = "rf"  # load 从哪一个 store 读取。
@@ -210,6 +218,14 @@ class ExecutionAssignment(_StrictModel):
     read_from: tuple[ReadFromChoice, ...] = Field(default=(), description="该执行的 rf 选择")
     coherence: tuple[CoherencePair, ...] = Field(default=(), description="该执行的 co 方向")
     from_read: tuple[FromReadEdge, ...] = Field(default=(), description="该执行的 fr 边")
+    expected_source: ExecutionLegality | None = Field(
+        default=None,
+        description="可选的 source legality characterization 期望值",
+    )
+    expected_target: ExecutionLegality | None = Field(
+        default=None,
+        description="可选的 target legality characterization 期望值",
+    )
 
     @model_validator(mode="after")
     def validate_id(self) -> "ExecutionAssignment":
@@ -338,6 +354,7 @@ __all__ = [
     "FixtureEventKind",
     "FromReadEdge",
     "HerdOutcome",
+    "ExecutionLegality",
     "HerdOracleRecord",
     "LitmusCase",
     "LitmusFixtureError",

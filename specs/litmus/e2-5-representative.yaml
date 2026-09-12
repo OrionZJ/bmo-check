@@ -20,6 +20,8 @@ cases:
       - {source: p1-w-y, target: p1-r-x}
     executions:
       - assignment_id: sb-both-initial
+        expected_source: Allowed
+        expected_target: Allowed
         read_from:
           - {load: p0-r-y}
           - {load: p1-r-x}
@@ -55,6 +57,8 @@ cases:
       - {source: p1-r-y, target: p1-r-x}
     executions:
       - assignment_id: mp-r1-r0
+        expected_source: Forbidden
+        expected_target: Allowed
         read_from:
           - {load: p1-r-y, store: p0-w-y}
           - {load: p1-r-x}
@@ -90,6 +94,7 @@ cases:
       - {source: p1-r-y, target: p1-w-x}
     executions:
       - assignment_id: lb-both-one
+        expected_source: Forbidden
         read_from:
           - {load: p0-r-x, store: p1-w-x}
           - {load: p1-r-y, store: p0-w-y}
@@ -125,6 +130,8 @@ cases:
       - {source: p1-w-y, target: p1-w-x}
     executions:
       - assignment_id: 2plus2w-final-two
+        expected_source: Forbidden
+        expected_target: Allowed
         coherence:
           - {object_label: x, before: p1-w-x, after: p0-w-x}
           - {object_label: y, before: p0-w-y, after: p1-w-y}
@@ -157,6 +164,8 @@ cases:
       - {source: p0-w1-x, target: p0-w2-x}
     executions:
       - assignment_id: coww-co-forward
+        expected_source: Allowed
+        expected_target: Allowed
         coherence:
           - {object_label: x, before: p0-w1-x, after: p0-w2-x}
     oracle:
@@ -193,6 +202,8 @@ cases:
       - {source: p1-r-y, target: p1-r-x}
     executions:
       - assignment_id: mfence-blocked-mp
+        expected_source: Forbidden
+        expected_target: Allowed
         read_from:
           - {load: p1-r-y, store: p0-w-y}
           - {load: p1-r-x}

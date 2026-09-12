@@ -20,7 +20,7 @@ from .conformance import (
     ConformanceStatus,
     align_critical_events,
 )
-from .model import ExecutionAssignment, LitmusCase, LitmusManifest
+from .model import ExecutionAssignment, ExecutionLegality, LitmusCase, LitmusManifest
 from .projection import CriticalProjectionError, project_critical_slice
 
 
@@ -78,6 +78,9 @@ class ExecutionLegalityRecord:
     source_reason: str
     target_reason: str
     basis: str = "critical-event evaluation projection"
+    expected_source: str | None = None
+    expected_target: str | None = None
+    expectation_errors: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -224,6 +227,34 @@ def _execution_record(
         coherence=tuple(coherence),
         from_read=tuple(from_read),
     )
+    expected_source = (
+        assignment.expected_source.value.lower()
+        if assignment.expected_source is not None
+        else None
+    )
+    expected_target = (
+        assignment.expected_target.value.lower()
+        if assignment.expected_target is not None
+        else None
+    )
+    expectation_errors = tuple(
+        error
+        for error in (
+            (
+                "source execution characterization drift: "
+                f"expected {expected_source}, got {result.source.status}"
+                if expected_source is not None and expected_source != result.source.status
+                else None
+            ),
+            (
+                "target execution characterization drift: "
+                f"expected {expected_target}, got {result.target.status}"
+                if expected_target is not None and expected_target != result.target.status
+                else None
+            ),
+        )
+        if error is not None
+    )
     return ExecutionLegalityRecord(
         assignment_id=assignment.assignment_id,
         source_status=result.source.status,
@@ -231,6 +262,9 @@ def _execution_record(
         source_reason=result.source.reason,
         target_reason=result.target.reason,
         basis="critical-event evaluation projection",
+        expected_source=expected_source,
+        expected_target=expected_target,
+        expectation_errors=expectation_errors,
     )
 
 
@@ -347,6 +381,13 @@ def run_litmus_conformance(request: LitmusConformanceRequest) -> LitmusConforman
                 for record in executions
             ):
                 errors = (*errors, "one or more fixed executions are unknown")
+            expectation_errors = tuple(
+                error
+                for record in executions
+                for error in record.expectation_errors
+            )
+            if expectation_errors:
+                errors = (*errors, *expectation_errors)
             status = (
                 ConformanceStatus.MATCHED
                 if conformance.status is ConformanceStatus.MATCHED and not errors

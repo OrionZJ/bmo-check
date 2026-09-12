@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from bmo_check_evaluation.litmus import HerdOutcome, load_manifest
+from bmo_check_evaluation.litmus import ExecutionLegality, HerdOutcome, load_manifest
 
 
 def test_representative_manifest_pins_real_elf_dimensions_without_vendoring_corpus() -> None:
@@ -25,6 +25,19 @@ def test_representative_manifest_pins_real_elf_dimensions_without_vendoring_corp
         and case.oracle.herd_version == "not-run-local-herd"
         for case in manifest.cases
     )
+    assert all(
+        assignment.expected_source is not None
+        for case in manifest.cases
+        for assignment in case.executions
+    )
+    assert any(
+        assignment.expected_target is None
+        for case in manifest.cases
+        for assignment in case.executions
+    )
+    assert next(
+        case for case in manifest.cases if case.case_id == "MP"
+    ).executions[0].expected_target is ExecutionLegality.ALLOWED
     assert any(
         event.kind.value == "MFENCE"
         for case in manifest.cases
