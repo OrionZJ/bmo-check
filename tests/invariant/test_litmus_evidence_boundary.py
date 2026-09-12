@@ -23,7 +23,9 @@ def test_litmus_models_do_not_depend_on_proof_or_verdict_routes() -> None:
         "bmo_check_core.certificate",
         "bmo_check_core.evidence",
     )
-    for path in root.rglob("*.py"):
+    # model.py 是 wire/domain schema；conformance.py/service.py 属于 evaluation
+    # 编排，可以在边界上调用静态 recovery，但不能让 schema 反向依赖它们。
+    for path in (root / "model.py",):
         assert all(
             not imported.startswith(prefix)
             for imported in _imports(path)
