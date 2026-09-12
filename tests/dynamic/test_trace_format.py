@@ -13,6 +13,7 @@ from bmo_check_dynamic.trace import (
     trace_digest,
     validate_trace,
 )
+from bmo_check_dynamic.trace.format import HEADER, RECORD, VERSION_MAJOR
 
 
 def test_trace_round_trip_and_validation(trace_manifest, tmp_path: Path) -> None:
@@ -63,6 +64,14 @@ def test_truncated_trace_is_unknown(trace_manifest, tmp_path: Path) -> None:
     with pytest.raises(TraceFormatError):
         tuple(TraceReader(path))
     assert not validate_trace(trace_dir).valid
+
+
+def test_future_trace_minor_version_is_rejected(tmp_path: Path) -> None:
+    path = tmp_path / "events-1.bin"
+    path.write_bytes(HEADER.pack(b"BMOTRACE", VERSION_MAJOR, 3, RECORD.size))
+
+    with pytest.raises(TraceFormatError):
+        tuple(TraceReader(path))
 
 
 def test_incomplete_manifest_never_validates(trace_manifest, tmp_path: Path) -> None:

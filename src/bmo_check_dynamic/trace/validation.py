@@ -70,11 +70,8 @@ def validate_trace(trace_dir: Path) -> TraceValidation:
     previous: dict[int, int] = {}
     known_flags = sum(int(flag) for flag in EventFlags)
     known_kinds = {int(kind) for kind in EventKind}
-    memory_kinds = {
-        int(EventKind.LOAD),
-        int(EventKind.STORE),
-        int(EventKind.ATOMIC_RMW),
-    }
+    # 与 EventKind.is_memory 共用一个来源，避免新增长期内存事件时只更新一处。
+    memory_kinds = {int(kind) for kind in EventKind if kind.is_memory}
     for path in files:
         file_event_count = 0
         pending_call: dict[str, object] | None = None
