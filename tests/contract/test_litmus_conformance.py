@@ -4,6 +4,7 @@ from bmo_check_evaluation.litmus.conformance import (
     ConformanceStatus,
     align_critical_events,
 )
+from bmo_check_evaluation.litmus.projection import project_critical_slice
 from bmo_check_evaluation.litmus.model import (
     BinaryBinding,
     CriticalEvent,
@@ -22,6 +23,7 @@ from bmo_check_static.model import (
     MemoryEvent,
     MemoryEventReport,
     Ordering,
+    ProgramOrderEdge,
     PruningCoverage,
     ProgramManifest,
     ProgramRecoveryReport,
@@ -93,7 +95,10 @@ def _event(
 
 
 def _report(
-    events: tuple[MemoryEvent, ...], unknowns=(), roles: tuple[ThreadRole, ...] | None = None
+    events: tuple[MemoryEvent, ...],
+    unknowns=(),
+    roles: tuple[ThreadRole, ...] | None = None,
+    program_order: tuple[ProgramOrderEdge, ...] = (),
 ) -> ProgramSliceReport:
     roles = roles or tuple(
         ThreadRole(
@@ -120,6 +125,7 @@ def _report(
         ),
         shared_slice=SharedMemorySlice(
             events=events,
+            program_order=program_order,
             coverage=PruningCoverage(
                 total_events=len(events), remaining_shared_events=len(events)
             ),
@@ -276,3 +282,77 @@ def test_conformance_binds_roles_by_binary_entry_pc() -> None:
 
     assert result.status is ConformanceStatus.MATCHED
     assert {match.label for match in result.matches} == {"p0-store", "p1-load"}
+
+
+def test_critical_projection_is_small_and_does_not_mutate_recovery_slice() -> None:
+    case = _case(
+        CriticalEvent(
+            label="store-x",
+            thread=0,
+            ordinal=0,
+            kind=FixtureEventKind.STORE,
+            object_label="x",
+            width=4,
+            instruction_pc=0x60,
+        ),
+        CriticalEvent(
+            label="load-x",
+            thread=0,
+            ordinal=1,
+            kind=FixtureEventKind.LOAD,
+            object_label="x",
+            width=4,
+            instruction_pc=0x70,
+        ),
+    )
+    critical_store = _event(
+        "critical-store", "main", 0x60, EventKind.STORE, "x"
+    ).model_copy(
+        update={
+            "address": AbstractAddress(
+                kind=AddressKind.AFFINE,
+                expression="rdi+rcx",
+            )
+        }
+    )
+    critical_load = _event(
+        "critical-load", "main", 0x70, EventKind.LOAD, "x"
+    ).model_copy(
+        update={
+            "address": AbstractAddress(
+                kind=AddressKind.AFFINE,
+                expression="rdi+rcx",
+            )
+        }
+    )
+    harness = _event("harness", "main", 0x80, EventKind.OPAQUE_CALL)
+    report = _report(
+        (critical_store, critical_load, harness),
+        program_order=(
+            ProgramOrderEdge(
+                source_event="critical-store",
+                target_event="critical-load",
+                thread_role="main",
+                evidence="test CFG",
+            ),
+        ),
+    )
+    conformance = align_critical_events(case, report)
+
+    projected = project_critical_slice(case, conformance, report)
+
+    assert conformance.status is ConformanceStatus.MATCHED
+    assert tuple(event.id for event in projected.events) == (
+        "critical-store",
+        "critical-load",
+    )
+    assert all(
+        event.address is not None
+        and event.address.kind is AddressKind.GLOBAL
+        and event.address.base == "e2.5-object:x"
+        for event in projected.events
+    )
+    assert report.shared_slice is not None
+    assert len(report.shared_slice.events) == 3
+    assert len(projected.program_order) == 1
+    assert "evaluation only" in projected.program_order[0].evidence

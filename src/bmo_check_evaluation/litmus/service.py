@@ -8,7 +8,7 @@ from pathlib import Path
 
 from bmo_check_static.application import StaticRequest, slice_report
 from bmo_check_static.config import load_canonical_contract
-from bmo_check_static.model import ProgramSliceReport
+from bmo_check_static.model import ProgramSliceReport, SharedMemorySlice
 from bmo_check_static.proof.characterization import (
     FixedExecutionResult as StaticExecutionResult,
     check_fixed_execution,
@@ -21,6 +21,7 @@ from .conformance import (
     align_critical_events,
 )
 from .model import ExecutionAssignment, LitmusCase, LitmusManifest
+from .projection import CriticalProjectionError, project_critical_slice
 
 
 class LitmusServiceError(ValueError):
@@ -76,6 +77,7 @@ class ExecutionLegalityRecord:
     target_status: str
     source_reason: str
     target_reason: str
+    basis: str = "critical-event evaluation projection"
 
 
 @dataclass(frozen=True, slots=True)
@@ -146,7 +148,7 @@ def _path_errors(case: LitmusCase, root: Path) -> tuple[Path, Path, tuple[str, .
 def _execution_record(
     case: LitmusCase,
     conformance: ConformanceResult,
-    report: ProgramSliceReport,
+    shared_slice: SharedMemorySlice,
     assignment: ExecutionAssignment,
 ) -> ExecutionLegalityRecord:
     matches = {match.label: match.event_id for match in conformance.matches}
@@ -166,7 +168,7 @@ def _execution_record(
             matches[choice.store] if choice.store is not None else None
         )
 
-    event_by_id = {event.id: event for event in report.shared_slice.events}
+    event_by_id = {event.id: event for event in shared_slice.events}
     object_ids: dict[str, str] = {}
     for critical in case.critical_events:
         if critical.object_label is None or critical.label not in matches:
@@ -196,7 +198,7 @@ def _execution_record(
             (object_ids[pair.object_label], matches[pair.before], matches[pair.after])
         )
     result: StaticExecutionResult = check_fixed_execution(
-        report.shared_slice,
+        shared_slice,
         read_from=read_from,
         coherence=tuple(coherence),
     )
@@ -206,6 +208,7 @@ def _execution_record(
         target_status=result.target.status,
         source_reason=result.source.reason,
         target_reason=result.target.reason,
+        basis="critical-event evaluation projection",
     )
 
 
@@ -299,16 +302,24 @@ def run_litmus_conformance(request: LitmusConformanceRequest) -> LitmusConforman
                 recovered,
                 max_extra_event_ids=request.max_extra_event_ids,
             )
+            projection = None
+            projection_error: str | None = None
+            if conformance.critical_events_complete:
+                try:
+                    projection = project_critical_slice(case, conformance, recovered)
+                except CriticalProjectionError as error:
+                    projection_error = f"critical execution projection failed: {error}"
             executions = (
                 tuple(
-                    _execution_record(case, conformance, recovered, assignment)
+                    _execution_record(case, conformance, projection, assignment)
                     for assignment in case.executions
                 )
-                if conformance.status is ConformanceStatus.MATCHED
-                and recovered.shared_slice is not None
+                if projection is not None
                 else ()
             )
             errors = conformance.reasons
+            if projection_error is not None:
+                errors = (*errors, projection_error)
             if any(
                 record.source_status == "unknown" or record.target_status == "unknown"
                 for record in executions

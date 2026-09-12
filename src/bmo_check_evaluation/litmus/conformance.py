@@ -46,6 +46,17 @@ class ConformanceResult:
     extra_event_ids: tuple[str, ...] = ()
 
     @property
+    def critical_events_complete(self) -> bool:
+        """critical 对齐本身是否封闭，独立于 harness 的其它 Unknown。"""
+
+        return not (
+            self.missing_labels
+            or self.ambiguous_labels
+            or self.ordering_errors
+            or self.object_errors
+        ) and bool(self.matches)
+
+    @property
     def reasons(self) -> tuple[str, ...]:
         return tuple(
             [
@@ -241,6 +252,22 @@ def align_critical_events(
         reverse_objects[identity] = critical.object_label
 
     matched_ids = {event.id for event in matches.values()}
+    if len(matched_ids) != len(matches):
+        duplicate_ids = tuple(
+            sorted(
+                event_id
+                for event_id in matched_ids
+                if sum(value.id == event_id for value in matches.values()) > 1
+            )
+        )
+        ambiguous.extend(
+            label
+            for label, event in matches.items()
+            if event.id in duplicate_ids
+        )
+        for label in tuple(ambiguous):
+            matches.pop(label, None)
+        matched_ids = {event.id for event in matches.values()}
     extra = tuple(event.id for event in events if event.id not in matched_ids)
     recovery_unknowns = tuple(
         f"{unknown.kind.value}: {unknown.reason}"

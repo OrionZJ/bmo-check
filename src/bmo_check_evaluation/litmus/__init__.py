@@ -37,6 +37,7 @@ from .herd import (
     replay_herd_oracle,
     run_herd_oracle,
 )
+from .projection import CriticalProjectionError, project_critical_slice
 
 __all__ = [
     "BinaryBinding",
@@ -66,4 +67,6 @@ __all__ = [
     "parse_herd_outcome",
     "replay_herd_oracle",
     "run_herd_oracle",
+    "CriticalProjectionError",
+    "project_critical_slice",
 ]
