@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from dataclasses import asdict
 from pathlib import Path
 
 from bmo_check_evaluation import (
@@ -240,6 +241,47 @@ def _evaluate_isolated(args: argparse.Namespace) -> int:
     return _evaluate(args)
 
 
+def _litmus(args: argparse.Namespace) -> int:
+    """运行真实 ELF conformance；结果不是 static SAFE verdict。"""
+
+    from bmo_check_evaluation.litmus.service import (
+        LitmusConformanceRequest,
+        LitmusServiceError,
+        run_litmus_conformance,
+    )
+    from bmo_check_evaluation.litmus.model import LitmusFixtureError
+
+    request = LitmusConformanceRequest(
+        manifest=args.manifest,
+        corpus_root=args.corpus_root,
+        dbt_contract=args.dbt_contract,
+        pthread_spec=args.pthread_spec,
+        function_effects=args.function_effects,
+        library_roots=tuple(args.library_root),
+        dbt_revision=args.dbt_revision,
+        scope=args.scope,
+    )
+    try:
+        report = run_litmus_conformance(request)
+    except (LitmusFixtureError, LitmusServiceError, OSError, ValueError) as error:
+        print(f"litmus conformance input error: {error}", file=sys.stderr)
+        return 3
+    payload = asdict(report)
+    payload["status"] = report.status.value
+    output = json.dumps(
+        payload,
+        ensure_ascii=False,
+        indent=2,
+        sort_keys=True,
+        default=lambda value: value.value,
+    )
+    if args.output is None:
+        print(output)
+    else:
+        args.output.write_text(output + "\n", encoding="utf-8")
+    return 0 if report.status.value == "MATCHED" else 2
+
+
 def _add_input_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--executable", "--exe", type=Path, required=True)
     parser.add_argument(
@@ -386,6 +428,32 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate.add_argument("--in-process", action="store_true", help=argparse.SUPPRESS)
     _add_checker_arguments(evaluate)
     evaluate.set_defaults(handler=_evaluate_isolated)
+
+    litmus = subcommands.add_parser(
+        "litmus",
+        help="run end-to-end conformance on versioned real x86 litmus ELF files",
+    )
+    litmus.add_argument("--manifest", type=Path, required=True)
+    litmus.add_argument("--corpus-root", type=Path, required=True)
+    litmus.add_argument("--library-root", type=Path, action="append", default=[])
+    litmus.add_argument("--dbt-contract", type=Path, required=True)
+    litmus.add_argument(
+        "--pthread-spec", type=Path, default=_default_static_spec("pthread-api.yaml")
+    )
+    litmus.add_argument(
+        "--function-effects",
+        type=Path,
+        default=_default_static_spec("library-effects.yaml"),
+    )
+    litmus.add_argument("--dbt-revision")
+    litmus.add_argument(
+        "--scope",
+        choices=("full", "application"),
+        default="full",
+        help="pass the same explicit scope to the ordinary static pipeline",
+    )
+    litmus.add_argument("--output", type=Path)
+    litmus.set_defaults(handler=_litmus)
     return parser
 
 
