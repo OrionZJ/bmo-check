@@ -46,6 +46,11 @@ from .oracle import (
     report_payload,
     write_report,
 )
+from .oracle_comparison import (
+    OracleComparisonStatus,
+    OracleLegalityComparison,
+    compare_execution_with_oracle,
+)
 from .projection import CriticalProjectionError, project_critical_slice
 
 __all__ = [
@@ -83,6 +88,9 @@ __all__ = [
     "replay_report",
     "report_payload",
     "write_report",
+    "OracleComparisonStatus",
+    "OracleLegalityComparison",
+    "compare_execution_with_oracle",
     "CriticalProjectionError",
     "project_critical_slice",
 ]
