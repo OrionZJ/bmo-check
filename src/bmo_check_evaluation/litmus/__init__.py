@@ -26,6 +26,17 @@ from .differential import (
     DifferentialStatus,
     compare_fixed_execution,
 )
+from .herd import (
+    HerdInvocation,
+    HerdOracleRequest,
+    HerdOracleRun,
+    HerdReplayResult,
+    HerdReplayStatus,
+    HerdRunStatus,
+    parse_herd_outcome,
+    replay_herd_oracle,
+    run_herd_oracle,
+)
 
 __all__ = [
     "BinaryBinding",
@@ -46,4 +57,13 @@ __all__ = [
     "DifferentialComparison",
     "DifferentialStatus",
     "compare_fixed_execution",
+    "HerdInvocation",
+    "HerdOracleRequest",
+    "HerdOracleRun",
+    "HerdReplayResult",
+    "HerdReplayStatus",
+    "HerdRunStatus",
+    "parse_herd_outcome",
+    "replay_herd_oracle",
+    "run_herd_oracle",
 ]
