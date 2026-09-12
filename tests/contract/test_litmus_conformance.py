@@ -15,6 +15,7 @@ from bmo_check_evaluation.litmus.model import (
 from bmo_check_static.model import (
     AbstractAddress,
     AddressKind,
+    CodeLocation,
     EventKind,
     ExecutionScope,
     IndirectTargetSet,
@@ -91,8 +92,10 @@ def _event(
     )
 
 
-def _report(events: tuple[MemoryEvent, ...], unknowns=()) -> ProgramSliceReport:
-    roles = tuple(
+def _report(
+    events: tuple[MemoryEvent, ...], unknowns=(), roles: tuple[ThreadRole, ...] | None = None
+) -> ProgramSliceReport:
+    roles = roles or tuple(
         ThreadRole(
             id=role,
             start_targets=IndirectTargetSet(complete=True),
@@ -199,3 +202,77 @@ def test_conformance_does_not_guess_ambiguous_or_wrong_fence_events() -> None:
     assert ambiguous.ambiguous_labels == ("read-x",)
     assert fence.status is ConformanceStatus.UNKNOWN
     assert fence.missing_labels == ("lfence",)
+
+
+def test_conformance_binds_roles_by_binary_entry_pc() -> None:
+    case = _case(
+        CriticalEvent(
+            label="p0-store",
+            thread=0,
+            ordinal=0,
+            kind=FixtureEventKind.STORE,
+            object_label="x",
+            width=4,
+            instruction_pc=0x40,
+            thread_entry_pc=0x1000,
+        ),
+        CriticalEvent(
+            label="p1-load",
+            thread=1,
+            ordinal=0,
+            kind=FixtureEventKind.LOAD,
+            object_label="x",
+            width=4,
+            instruction_pc=0x50,
+            thread_entry_pc=0x2000,
+        ),
+    )
+    roles = (
+        ThreadRole(
+            id="main",
+            start_targets=IndirectTargetSet(complete=True),
+            complete=True,
+        ),
+        ThreadRole(
+            id="p1",
+            start_targets=IndirectTargetSet(
+                known_targets=(
+                    # The role order intentionally does not match fixture thread numbers.
+                    # The PC is the binary identity used by the conformance adapter.
+                    CodeLocation(
+                        module_path="/bin/fixture",
+                        module_sha256=HASH,
+                        pc=0x2000,
+                    ),
+                ),
+                complete=True,
+            ),
+            complete=True,
+        ),
+        ThreadRole(
+            id="p0",
+            start_targets=IndirectTargetSet(
+                known_targets=(
+                    CodeLocation(
+                        module_path="/bin/fixture",
+                        module_sha256=HASH,
+                        pc=0x1000,
+                    ),
+                ),
+                complete=True,
+            ),
+            complete=True,
+        ),
+    )
+    report = _report(
+        (
+            _event("p0-store", "p0", 0x40, EventKind.STORE, "x"),
+            _event("p1-load", "p1", 0x50, EventKind.LOAD, "x"),
+        ),
+        roles=roles,
+    )
+
+    result = align_critical_events(case, report)
+
+    assert result.status is ConformanceStatus.MATCHED
+    assert {match.label for match in result.matches} == {"p0-store", "p1-load"}

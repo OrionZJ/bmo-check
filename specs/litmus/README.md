@@ -13,6 +13,12 @@ Case IDs, source labels and function names are evaluation metadata. They must no
 select BMoCheck proof rules, event removal or verdicts. A malformed, stale or
 ambiguous record is rejected; it is never treated as `UNKNOWN` or `SAFE` silently.
 
+When a recovered role cannot be identified by manifest order, a critical event may
+carry the binary-bound `thread_entry_pc`. The conformance adapter matches that PC
+against recovered callback targets; it does not use symbol names or case names to
+guess a role. Missing or duplicated entry targets remain an explicit conformance
+`UNKNOWN`.
+
 The generated ELF corpus is an external input selected by an explicit corpus-root
 option. A manifest record is valid only after the implementation phase has recorded
 the corpus revision and final ELF hash.

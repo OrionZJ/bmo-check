@@ -113,14 +113,24 @@ def _candidate_events(
     critical: CriticalEvent,
     events: tuple[MemoryEvent, ...],
     role_ids: tuple[str, ...],
+    role_entry_pcs: dict[str, frozenset[int]],
 ) -> tuple[MemoryEvent, ...]:
-    if critical.thread >= len(role_ids):
-        return ()
-    role_id = role_ids[critical.thread]
+    if critical.thread_entry_pc is None:
+        if critical.thread >= len(role_ids):
+            return ()
+        candidate_roles = (role_ids[critical.thread],)
+    else:
+        # 线程角色的列表顺序会因 CFG 新增或恢复差异而变化。用已经恢复的
+        # ELF 入口 PC 绑定角色，避免把 harness 线程按列表位置误认成 worker。
+        candidate_roles = tuple(
+            role_id
+            for role_id in role_ids
+            if critical.thread_entry_pc in role_entry_pcs.get(role_id, frozenset())
+        )
     return tuple(
         event
         for event in events
-        if event.thread_role == role_id
+        if event.thread_role in candidate_roles
         and _kind_matches(critical, event)
         and (
             critical.width is None
@@ -154,12 +164,16 @@ def align_critical_events(
             recovery_unknowns=("thread recovery report is missing",),
         )
     role_ids = tuple(role.id for role in thread_report.roles)
+    role_entry_pcs = {
+        role.id: frozenset(target.pc for target in role.start_targets.known_targets)
+        for role in thread_report.roles
+    }
     events = report.shared_slice.events
     matches: dict[str, MemoryEvent] = {}
     missing: list[str] = []
     ambiguous: list[str] = []
     for critical in case.critical_events:
-        candidates = _candidate_events(critical, events, role_ids)
+        candidates = _candidate_events(critical, events, role_ids, role_entry_pcs)
         if len(candidates) == 1:
             matches[critical.label] = candidates[0]
         elif not candidates:

@@ -38,6 +38,7 @@ def _payload() -> dict[str, object]:
                         "kind": "Store",
                         "object_label": "x",
                         "width": 8,
+                        "thread_entry_pc": 4096,
                     },
                     {
                         "label": "t1:r-x",

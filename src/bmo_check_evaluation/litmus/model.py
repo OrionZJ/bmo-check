@@ -100,6 +100,10 @@ class CriticalEvent(_StrictModel):
     width: int | None = Field(default=None, description="访存宽度，单位为字节")
     instruction_pc: int | None = Field(default=None, description="ELF 中指令 PC")
     operand_index: int | None = Field(default=None, description="指令内 memory operand 编号")
+    thread_entry_pc: int | None = Field(
+        default=None,
+        description="该线程入口在 ELF 中的 PC；用于跨恢复报告稳定绑定线程角色",
+    )
 
     @model_validator(mode="after")
     def validate_event(self) -> "CriticalEvent":
@@ -122,6 +126,8 @@ class CriticalEvent(_StrictModel):
             raise ValueError("instruction_pc must be non-negative")
         if self.operand_index is not None and self.operand_index < 0:
             raise ValueError("operand_index must be non-negative")
+        if self.thread_entry_pc is not None and self.thread_entry_pc < 0:
+            raise ValueError("thread_entry_pc must be non-negative")
         return self
 
 
