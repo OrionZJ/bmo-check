@@ -103,6 +103,13 @@ def _address_identity(event: MemoryEvent) -> tuple[object, ...] | None:
         address.kind.value,
         address.base,
         address.offset,
+        address.expression,
+        address.thread_coefficient,
+        address.index_coefficient,
+        address.index_lower,
+        address.index_upper,
+        address.thread_lower,
+        address.thread_upper,
     )
 
 
