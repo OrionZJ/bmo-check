@@ -24,6 +24,8 @@ from bmo_check_static.model import (
     UnknownKind,
 )
 
+from .callback import resolve_callback_targets
+
 
 # GCC OpenMP lowering把并行函数地址作为 GOMP_parallel 的第一个参数传入。
 # 这些调用没有 pthread_create 那样的 handle，但返回前仍是一个隐式
@@ -256,6 +258,7 @@ def discover_pthread_threads(
     creates: list[ThreadCreateFact] = []
     unknowns: list[UnknownFact] = []
     recovered_creates: list[tuple[object, str, IndirectTargetSet, str | None]] = []
+    callback_contexts: dict[int, tuple[tuple[int, int], ...]] = {}
 
     main_reachable, main_call_graph_closed = _main_reachability(
         control_flow, main_function.pc
@@ -286,18 +289,63 @@ def discover_pthread_threads(
             and callback_pc is not None
             and _executable_pc(module, callback_pc)
         )
-        if callback_valid:
-            target = _location(module, callback_pc, symbols.get(callback_pc))
-            targets = IndirectTargetSet(
-                known_targets=(target,),
-                complete=True,
-                evidence=("SysV third argument has a block-local constant definition",),
+        callback_resolution = None
+        if not callback_valid:
+            # pthread_create 常被 launch 这类 wrapper 包住。先沿 wrapper
+            # 的 SysV 形参回到每个本 ELF caller，再接受已闭合的 callback 集合；
+            # 未闭合 caller 仍保留 Unknown，不能凭一次静态值猜目标。
+            callback_resolution = resolve_callback_targets(
+                context, module, control_flow, call, "rdx"
             )
+            if callback_resolution.targets:
+                callback_valid = callback_resolution.complete
+        if callback_valid:
+            resolved_pcs = (
+                callback_resolution.targets
+                if callback_resolution is not None
+                else (callback_pc,)
+            )
+            target_locations = tuple(
+                _location(module, pc, symbols.get(pc)) for pc in resolved_pcs
+            )
+            targets = IndirectTargetSet(
+                known_targets=target_locations,
+                complete=True,
+                evidence=(
+                    callback_resolution.origin
+                    if callback_resolution is not None
+                    and callback_resolution.origin is not None
+                    else "SysV third argument has a block-local constant definition",
+                ),
+            )
+            if callback_resolution is not None:
+                callback_contexts[call.location.pc] = callback_resolution.contexts
+                argument_origin = callback_resolution.origin
+            elif callback_pc is not None:
+                callback_contexts[call.location.pc] = (
+                    (callback_pc, call.containing_function_pc),
+                )
         else:
             targets = IndirectTargetSet(
+                known_targets=(
+                    tuple(
+                        _location(module, pc, symbols.get(pc))
+                        for pc in callback_resolution.targets
+                    )
+                    if callback_resolution is not None
+                    else ()
+                ),
                 complete=False,
-                reason="pthread_create start routine is not a proven executable constant",
+                reason=(
+                    callback_resolution.reason
+                    if callback_resolution is not None
+                    and callback_resolution.reason is not None
+                    else "pthread_create start routine is not a proven executable constant"
+                ),
             )
+            if callback_resolution is not None:
+                callback_contexts[call.location.pc] = callback_resolution.contexts
+                argument_origin = callback_resolution.origin
             unknowns.append(
                 _unknown(
                     UnknownKind.UNKNOWN_THREAD_ENTRY,
@@ -335,29 +383,57 @@ def discover_pthread_threads(
         callback_pc, origin, constant = _definition_before_call(
             context, call.block_pc, call.location.pc, "rdi"
         )
+        argument_origin = origin
         callback_valid = (
             constant
             and callback_pc is not None
             and _executable_pc(module, callback_pc)
         )
+        callback_resolution = None
+        if not callback_valid:
+            callback_resolution = resolve_callback_targets(
+                context, module, control_flow, call, "rdi"
+            )
+            if callback_resolution.targets:
+                callback_valid = callback_resolution.complete
         if callback_valid:
-            target = _location(module, callback_pc, symbols.get(callback_pc))
+            resolved_pcs = (
+                callback_resolution.targets
+                if callback_resolution is not None
+                else (callback_pc,)
+            )
+            target_locations = tuple(
+                _location(module, pc, symbols.get(pc)) for pc in resolved_pcs
+            )
             targets = IndirectTargetSet(
-                known_targets=(target,),
+                known_targets=target_locations,
                 complete=True,
                 evidence=(
-                    "SysV first argument has a block-local constant OpenMP callback",
+                    callback_resolution.origin
+                    if callback_resolution is not None
+                    and callback_resolution.origin is not None
+                    else "SysV first argument has a block-local constant OpenMP callback",
                 ),
             )
+            if callback_resolution is not None:
+                argument_origin = callback_resolution.origin
             # 角色按并行区入口而不是 callback 地址命名；同一 callback
             # 在两个阶段复用时，两个阶段不能共享同一组事件边界。
             role_id = f"openmp@{call.location.pc:x}"
         else:
             targets = IndirectTargetSet(
-                complete=False,
-                reason=(
-                    "OpenMP parallel callback is not a proven executable constant"
+                known_targets=(
+                    tuple(
+                        _location(module, pc, symbols.get(pc))
+                        for pc in callback_resolution.targets
+                    )
+                    if callback_resolution is not None
+                    else ()
                 ),
+                complete=False,
+                reason=(callback_resolution.reason if callback_resolution is not None
+                        and callback_resolution.reason is not None else
+                        "OpenMP parallel callback is not a proven executable constant"),
             )
             role_id = f"openmp@{call.location.pc:x}"
             unknowns.append(
@@ -372,11 +448,39 @@ def discover_pthread_threads(
                     canonical_scope=canonical_scope,
                 )
             )
-        entry = (call, role_id, targets, origin)
+        entry = (call, role_id, targets, argument_origin)
         openmp_entries.append(entry)
 
+    # 一个 wrapper 可能在 main 和 worker 两条调用上下文中复用；把它的
+    # 多个 callback 合并成一个 role 会让父线程永远变成 unknown，并把
+    # 不同 worker 的事件混在一起。只有 callback 集合和 caller 上下文都
+    # 闭合时才按目标拆 role；普通单目标 pthread_create 保持旧 ID。
+    role_entries: list[
+        tuple[object, str, IndirectTargetSet, str | None, int | None]
+    ] = []
+    for call, role_id, targets, argument_origin in recovered_creates:
+        contexts = callback_contexts.get(call.location.pc, ())
+        if targets.complete and len(targets.known_targets) > 1 and contexts:
+            for target in targets.known_targets:
+                single = IndirectTargetSet(
+                    known_targets=(target,),
+                    complete=True,
+                    evidence=targets.evidence,
+                )
+                role_entries.append(
+                    (
+                        call,
+                        f"{role_id}#{target.pc:x}",
+                        single,
+                        argument_origin,
+                        target.pc,
+                    )
+                )
+        else:
+            role_entries.append((call, role_id, targets, argument_origin, None))
+
     role_roots: dict[str, tuple[int, ...]] = {"main": (main_function.pc,)}
-    for _, role_id, targets, _ in recovered_creates:
+    for _, role_id, targets, _, _ in role_entries:
         role_roots[role_id] = tuple(item.pc for item in targets.known_targets)
     for _, role_id, targets, _ in openmp_entries:
         # role_id 按 call site 区分并行阶段；这里仍用 setdefault 保留该
@@ -386,10 +490,36 @@ def discover_pthread_threads(
         )
     reachability = _role_reachability(control_flow, role_roots)
 
-    for call, role_id, targets, argument_origin in recovered_creates:
-        parent, parent_complete = _containing_role(
-            reachability, call.containing_function_pc
-        )
+    for call, role_id, targets, argument_origin, target_pc in role_entries:
+        contexts = callback_contexts.get(call.location.pc, ())
+        parent_candidates: set[str] = set()
+        parent_complete = True
+        if target_pc is not None:
+            caller_functions = {
+                caller
+                for callback, caller in contexts
+                if callback == target_pc
+            }
+            if not caller_functions:
+                parent_complete = False
+            for caller_function in caller_functions:
+                candidate, complete = _containing_role(
+                    reachability, caller_function
+                )
+                if complete:
+                    parent_candidates.add(candidate)
+                else:
+                    parent_complete = False
+        else:
+            candidate, complete = _containing_role(
+                reachability, call.containing_function_pc
+            )
+            if complete:
+                parent_candidates.add(candidate)
+            else:
+                parent_complete = False
+        parent = next(iter(parent_candidates)) if len(parent_candidates) == 1 else "unknown"
+        parent_complete = parent_complete and len(parent_candidates) == 1
         if not parent_complete:
             unknowns.append(
                 _unknown(

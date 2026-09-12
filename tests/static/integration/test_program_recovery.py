@@ -128,3 +128,36 @@ def test_runtime_pthread_callback_stays_unknown(tmp_path: Path) -> None:
     assert report.creates[0].parent_role == "main"
     assert not report.creates[0].start_targets.complete
     assert any(item.kind == UnknownKind.UNKNOWN_THREAD_ENTRY for item in report.unknowns)
+
+
+def test_parameterized_pthread_wrapper_recovers_closed_callback(tmp_path: Path) -> None:
+    gcc = shutil.which("gcc")
+    assert gcc is not None
+    source = tmp_path / "wrapper-worker.c"
+    source.write_text(
+        "#include <pthread.h>\n"
+        "static void *worker(void *arg) { return arg; }\n"
+        "static void launch(void *(*start)(void *), void *arg) {\n"
+        "  pthread_t thread; pthread_create(&thread, 0, start, arg);\n"
+        "  pthread_join(thread, 0);\n"
+        "}\n"
+        "int main(void) { launch(worker, 0); return 0; }\n",
+        encoding="utf-8",
+    )
+    executable = tmp_path / "wrapper-worker"
+    subprocess.run(
+        [gcc, "-O2", "-fno-inline", "-o", str(executable), str(source), "-pthread"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    manifest = _manifest(executable)
+    assert manifest.executable is not None
+    control_flow = recover_control_flow(manifest.executable, manifest)
+    report = discover_pthread_threads(manifest.executable, manifest, control_flow)
+
+    assert len(report.creates) == 1
+    assert report.creates[0].start_targets.complete
+    assert report.creates[0].start_targets.known_targets[0].symbol == "worker"
+    assert report.creates[0].parent_role == "main"
+    assert not any(item.kind == UnknownKind.UNKNOWN_THREAD_ENTRY for item in report.unknowns)
