@@ -1,0 +1,211 @@
+schema: 1
+corpus_name: litmus-tests-x86
+corpus_revision: a6dadced36343b9c21f00a173950a23e90068cd0
+cases:
+  - case_id: SB
+    binding:
+      source_litmus: tests/non-mixed-size/BASIC_2_THREAD/SB.litmus
+      source_sha256: 959a87a22fc14a122ea1b940adae49c2ea2b7659a80261c50bf90b04f5e880b4
+      elf_relative_path: elf-tests/BASIC_2_THREAD/SB/SB.exe
+      elf_sha256: 18c55e6bfe5e0d07e1d7b9ffaf97d37275c529f8795044efe16be0c8fb7ad7db
+      corpus_revision: a6dadced36343b9c21f00a173950a23e90068cd0
+      build_recipe: litmus-tests-x86/build_all_elf.sh
+    critical_events:
+      - {label: p0-w-x, thread: 0, ordinal: 0, kind: Store, object_label: x, width: 8, instruction_pc: 32879, thread_entry_pc: 32784}
+      - {label: p0-r-y, thread: 0, ordinal: 1, kind: Load, object_label: y, width: 8, instruction_pc: 32887, thread_entry_pc: 32784}
+      - {label: p1-w-y, thread: 1, ordinal: 0, kind: Store, object_label: y, width: 8, instruction_pc: 33039, thread_entry_pc: 32944}
+      - {label: p1-r-x, thread: 1, ordinal: 1, kind: Load, object_label: x, width: 8, instruction_pc: 33047, thread_entry_pc: 32944}
+    program_order:
+      - {source: p0-w-x, target: p0-r-y}
+      - {source: p1-w-y, target: p1-r-x}
+    executions:
+      - assignment_id: sb-both-initial
+        read_from:
+          - {load: p0-r-y}
+          - {load: p1-r-x}
+    oracle:
+      herd_version: not-run-local-herd
+      source_model: x86.cat
+      target_model: riscv.cat
+      outcome: exists (0:rax=0 /\\ 1:rbx=0)
+      source_outcome: Unsupported
+      target_outcome: Unsupported
+      source_input_sha256: 959a87a22fc14a122ea1b940adae49c2ea2b7659a80261c50bf90b04f5e880b4
+      target_input_sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      elf_sha256: 18c55e6bfe5e0d07e1d7b9ffaf97d37275c529f8795044efe16be0c8fb7ad7db
+      contract_version: dbt6-mo-off-v2
+      contract_sha256: 4efd14f5f1f3370c79226dee235cffdcd0e68da0e6240408d673af8d28b877ba
+      raw_output_sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+
+  - case_id: MP
+    binding:
+      source_litmus: tests/non-mixed-size/BASIC_2_THREAD/MP.litmus
+      source_sha256: 7e629847b6f8a5f6e26fedcf68e9032829e7a914dda31fac2408fd926eb257ed
+      elf_relative_path: elf-tests/BASIC_2_THREAD/MP/MP.exe
+      elf_sha256: 75fcc982495a5eec6ea04f4922bacfa1a8e29a32e10f36a43a00a3104902e2cf
+      corpus_revision: a6dadced36343b9c21f00a173950a23e90068cd0
+      build_recipe: litmus-tests-x86/build_all_elf.sh
+    critical_events:
+      - {label: p0-w-x, thread: 0, ordinal: 0, kind: Store, object_label: x, width: 8, instruction_pc: 33053, thread_entry_pc: 32960}
+      - {label: p0-w-y, thread: 0, ordinal: 1, kind: Store, object_label: y, width: 8, instruction_pc: 33061, thread_entry_pc: 32960}
+      - {label: p1-r-y, thread: 1, ordinal: 0, kind: Load, object_label: y, width: 8, instruction_pc: 32897, thread_entry_pc: 32800}
+      - {label: p1-r-x, thread: 1, ordinal: 1, kind: Load, object_label: x, width: 8, instruction_pc: 32901, thread_entry_pc: 32800}
+    program_order:
+      - {source: p0-w-x, target: p0-w-y}
+      - {source: p1-r-y, target: p1-r-x}
+    executions:
+      - assignment_id: mp-r1-r0
+        read_from:
+          - {load: p1-r-y, store: p0-w-y}
+          - {load: p1-r-x}
+    oracle:
+      herd_version: not-run-local-herd
+      source_model: x86.cat
+      target_model: riscv.cat
+      outcome: exists (1:rax=1 /\\ 1:rbx=0)
+      source_outcome: Unsupported
+      target_outcome: Unsupported
+      source_input_sha256: 7e629847b6f8a5f6e26fedcf68e9032829e7a914dda31fac2408fd926eb257ed
+      target_input_sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      elf_sha256: 75fcc982495a5eec6ea04f4922bacfa1a8e29a32e10f36a43a00a3104902e2cf
+      contract_version: dbt6-mo-off-v2
+      contract_sha256: 4efd14f5f1f3370c79226dee235cffdcd0e68da0e6240408d673af8d28b877ba
+      raw_output_sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+
+  - case_id: LB
+    binding:
+      source_litmus: tests/non-mixed-size/BASIC_2_THREAD/LB.litmus
+      source_sha256: 7ac71b095a218eb4e245dbac0f4264e0866fab45f6e2faa31c053bde32b44492
+      elf_relative_path: elf-tests/BASIC_2_THREAD/LB/LB.exe
+      elf_sha256: 3820d90d1dc9aff5b36f6dd21f057c1ca216e41fd414d038c55cd13aef1b7020
+      corpus_revision: a6dadced36343b9c21f00a173950a23e90068cd0
+      build_recipe: litmus-tests-x86/build_all_elf.sh
+    critical_events:
+      - {label: p0-r-x, thread: 0, ordinal: 0, kind: Load, object_label: x, width: 8, instruction_pc: 32895, thread_entry_pc: 32800}
+      - {label: p0-w-y, thread: 0, ordinal: 1, kind: Store, object_label: y, width: 8, instruction_pc: 32899, thread_entry_pc: 32800}
+      - {label: p1-r-y, thread: 1, ordinal: 0, kind: Load, object_label: y, width: 8, instruction_pc: 33055, thread_entry_pc: 32960}
+      - {label: p1-w-x, thread: 1, ordinal: 1, kind: Store, object_label: x, width: 8, instruction_pc: 33059, thread_entry_pc: 32960}
+    program_order:
+      - {source: p0-r-x, target: p0-w-y}
+      - {source: p1-r-y, target: p1-w-x}
+    executions:
+      - assignment_id: lb-both-one
+        read_from:
+          - {load: p0-r-x, store: p1-w-x}
+          - {load: p1-r-y, store: p0-w-y}
+    oracle:
+      herd_version: not-run-local-herd
+      source_model: x86.cat
+      target_model: riscv.cat
+      outcome: exists (0:rax=1 /\\ 1:rax=1)
+      source_outcome: Unsupported
+      target_outcome: Unsupported
+      source_input_sha256: 7ac71b095a218eb4e245dbac0f4264e0866fab45f6e2faa31c053bde32b44492
+      target_input_sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      elf_sha256: 3820d90d1dc9aff5b36f6dd21f057c1ca216e41fd414d038c55cd13aef1b7020
+      contract_version: dbt6-mo-off-v2
+      contract_sha256: 4efd14f5f1f3370c79226dee235cffdcd0e68da0e6240408d673af8d28b877ba
+      raw_output_sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+
+  - case_id: 2+2W
+    binding:
+      source_litmus: tests/non-mixed-size/BASIC_2_THREAD/2+2W.litmus
+      source_sha256: 4802f22c27366f625d23b60abcd4e22c18fab03e5dcdfd5a9306d510cd949c16
+      elf_relative_path: elf-tests/BASIC_2_THREAD/2+2W/2+2W.exe
+      elf_sha256: 0da303f8729846d7657495604e01d03f808379410e4a4fe365a9870d4c732807
+      corpus_revision: a6dadced36343b9c21f00a173950a23e90068cd0
+      build_recipe: litmus-tests-x86/build_all_elf.sh
+    critical_events:
+      - {label: p0-w-x, thread: 0, ordinal: 0, kind: Store, object_label: x, width: 8, instruction_pc: 33629, thread_entry_pc: 33536}
+      - {label: p0-w-y, thread: 0, ordinal: 1, kind: Store, object_label: y, width: 8, instruction_pc: 33637, thread_entry_pc: 33536}
+      - {label: p1-w-y, thread: 1, ordinal: 0, kind: Store, object_label: y, width: 8, instruction_pc: 33789, thread_entry_pc: 33696}
+      - {label: p1-w-x, thread: 1, ordinal: 1, kind: Store, object_label: x, width: 8, instruction_pc: 33797, thread_entry_pc: 33696}
+    program_order:
+      - {source: p0-w-x, target: p0-w-y}
+      - {source: p1-w-y, target: p1-w-x}
+    executions:
+      - assignment_id: 2plus2w-final-two
+        coherence:
+          - {object_label: x, before: p1-w-x, after: p0-w-x}
+          - {object_label: y, before: p0-w-y, after: p1-w-y}
+    oracle:
+      herd_version: not-run-local-herd
+      source_model: x86.cat
+      target_model: riscv.cat
+      outcome: exists (x=2 /\\ y=2)
+      source_outcome: Unsupported
+      target_outcome: Unsupported
+      source_input_sha256: 4802f22c27366f625d23b60abcd4e22c18fab03e5dcdfd5a9306d510cd949c16
+      target_input_sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      elf_sha256: 0da303f8729846d7657495604e01d03f808379410e4a4fe365a9870d4c732807
+      contract_version: dbt6-mo-off-v2
+      contract_sha256: 4efd14f5f1f3370c79226dee235cffdcd0e68da0e6240408d673af8d28b877ba
+      raw_output_sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+
+  - case_id: CoWW
+    binding:
+      source_litmus: tests/non-mixed-size/CO/CoWW.litmus
+      source_sha256: db4870f6c06638cd7c1a3b76171bb5cad5376fab53bbd24d8560f10cecf682b9
+      elf_relative_path: elf-tests/CO/CoWW/CoWW.exe
+      elf_sha256: 0ca602c149b9ec691d43448b3d717e7d89140ae4182b2be476138c7b74507171
+      corpus_revision: a6dadced36343b9c21f00a173950a23e90068cd0
+      build_recipe: litmus-tests-x86/build_all_elf.sh
+    critical_events:
+      - {label: p0-w1-x, thread: 0, ordinal: 0, kind: Store, object_label: x, width: 8, instruction_pc: 32522, thread_entry_pc: 32320}
+      - {label: p0-w2-x, thread: 0, ordinal: 1, kind: Store, object_label: x, width: 8, instruction_pc: 32530, thread_entry_pc: 32320}
+    program_order:
+      - {source: p0-w1-x, target: p0-w2-x}
+    executions:
+      - assignment_id: coww-co-forward
+        coherence:
+          - {object_label: x, before: p0-w1-x, after: p0-w2-x}
+    oracle:
+      herd_version: not-run-local-herd
+      source_model: x86.cat
+      target_model: riscv.cat
+      outcome: exists (not (x=2))
+      source_outcome: Unsupported
+      target_outcome: Unsupported
+      source_input_sha256: db4870f6c06638cd7c1a3b76171bb5cad5376fab53bbd24d8560f10cecf682b9
+      target_input_sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      elf_sha256: 0ca602c149b9ec691d43448b3d717e7d89140ae4182b2be476138c7b74507171
+      contract_version: dbt6-mo-off-v2
+      contract_sha256: 4efd14f5f1f3370c79226dee235cffdcd0e68da0e6240408d673af8d28b877ba
+      raw_output_sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+
+  - case_id: MP+mfence+po
+    binding:
+      source_litmus: tests/non-mixed-size/BASIC_2_THREAD/MP+mfence+po.litmus
+      source_sha256: b4df4ea43b1227f21067f1be12d26a0ea7cb4d137884d1253f4aed7bdeb640b8
+      elf_relative_path: elf-tests/BASIC_2_THREAD/MP+mfence+po/MP+mfence+po.exe
+      elf_sha256: 3307813f92b7948425f388749a9e74b2250e63589ca66d2c10716567903523f0
+      corpus_revision: a6dadced36343b9c21f00a173950a23e90068cd0
+      build_recipe: litmus-tests-x86/build_all_elf.sh
+    critical_events:
+      - {label: p0-w-x, thread: 0, ordinal: 0, kind: Store, object_label: x, width: 8, instruction_pc: 33053, thread_entry_pc: 32960}
+      - {label: p0-mfence, thread: 0, ordinal: 1, kind: MFENCE, thread_entry_pc: 32960, instruction_pc: 33061}
+      - {label: p0-w-y, thread: 0, ordinal: 2, kind: Store, object_label: y, width: 8, instruction_pc: 33064, thread_entry_pc: 32960}
+      - {label: p1-r-y, thread: 1, ordinal: 0, kind: Load, object_label: y, width: 8, instruction_pc: 32897, thread_entry_pc: 32800}
+      - {label: p1-r-x, thread: 1, ordinal: 1, kind: Load, object_label: x, width: 8, instruction_pc: 32901, thread_entry_pc: 32800}
+    program_order:
+      - {source: p0-w-x, target: p0-mfence}
+      - {source: p0-mfence, target: p0-w-y}
+      - {source: p1-r-y, target: p1-r-x}
+    executions:
+      - assignment_id: mfence-blocked-mp
+        read_from:
+          - {load: p1-r-y, store: p0-w-y}
+          - {load: p1-r-x}
+    oracle:
+      herd_version: not-run-local-herd
+      source_model: x86.cat
+      target_model: riscv.cat
+      outcome: exists (1:rax=1 /\\ 1:rbx=0)
+      source_outcome: Unsupported
+      target_outcome: Unsupported
+      source_input_sha256: b4df4ea43b1227f21067f1be12d26a0ea7cb4d137884d1253f4aed7bdeb640b8
+      target_input_sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      elf_sha256: 3307813f92b7948425f388749a9e74b2250e63589ca66d2c10716567903523f0
+      contract_version: dbt6-mo-off-v2
+      contract_sha256: 4efd14f5f1f3370c79226dee235cffdcd0e68da0e6240408d673af8d28b877ba
+      raw_output_sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
