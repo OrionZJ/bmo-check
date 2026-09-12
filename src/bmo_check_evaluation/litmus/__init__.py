@@ -51,6 +51,7 @@ from .oracle_comparison import (
     OracleLegalityComparison,
     compare_execution_with_oracle,
 )
+from .target import TargetExportError, export_contract_target
 from .projection import CriticalProjectionError, project_critical_slice
 
 __all__ = [
@@ -91,6 +92,8 @@ __all__ = [
     "OracleComparisonStatus",
     "OracleLegalityComparison",
     "compare_execution_with_oracle",
+    "TargetExportError",
+    "export_contract_target",
     "CriticalProjectionError",
     "project_critical_slice",
 ]

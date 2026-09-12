@@ -27,7 +27,7 @@ cases:
       herd_version: not-run-local-herd
       source_model: x86.cat
       target_model: riscv.cat
-      outcome: exists (0:rax=0 /\\ 1:rbx=0)
+      outcome: exists (0:rax=0 /\ 1:rbx=0)
       source_outcome: Unsupported
       target_outcome: Unsupported
       source_input_sha256: 959a87a22fc14a122ea1b940adae49c2ea2b7659a80261c50bf90b04f5e880b4
@@ -62,7 +62,7 @@ cases:
       herd_version: not-run-local-herd
       source_model: x86.cat
       target_model: riscv.cat
-      outcome: exists (1:rax=1 /\\ 1:rbx=0)
+      outcome: exists (1:rax=1 /\ 1:rbx=0)
       source_outcome: Unsupported
       target_outcome: Unsupported
       source_input_sha256: 7e629847b6f8a5f6e26fedcf68e9032829e7a914dda31fac2408fd926eb257ed
@@ -97,7 +97,7 @@ cases:
       herd_version: not-run-local-herd
       source_model: x86.cat
       target_model: riscv.cat
-      outcome: exists (0:rax=1 /\\ 1:rax=1)
+      outcome: exists (0:rax=1 /\ 1:rax=1)
       source_outcome: Unsupported
       target_outcome: Unsupported
       source_input_sha256: 7ac71b095a218eb4e245dbac0f4264e0866fab45f6e2faa31c053bde32b44492
@@ -132,7 +132,7 @@ cases:
       herd_version: not-run-local-herd
       source_model: x86.cat
       target_model: riscv.cat
-      outcome: exists (x=2 /\\ y=2)
+      outcome: exists (x=2 /\ y=2)
       source_outcome: Unsupported
       target_outcome: Unsupported
       source_input_sha256: 4802f22c27366f625d23b60abcd4e22c18fab03e5dcdfd5a9306d510cd949c16
@@ -200,7 +200,7 @@ cases:
       herd_version: not-run-local-herd
       source_model: x86.cat
       target_model: riscv.cat
-      outcome: exists (1:rax=1 /\\ 1:rbx=0)
+      outcome: exists (1:rax=1 /\ 1:rbx=0)
       source_outcome: Unsupported
       target_outcome: Unsupported
       source_input_sha256: b4df4ea43b1227f21067f1be12d26a0ea7cb4d137884d1253f4aed7bdeb640b8
