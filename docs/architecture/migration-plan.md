@@ -451,6 +451,27 @@ The generic `AffineValidationReport` and the local canneal run are recorded in
 `docs/exec-plans/active/e2-canneal-validation.md`. This phase reports closure or
 coverage gaps explicitly and does not alter the static verdict.
 
+### E2.5 — Establish a real litmus ELF correctness baseline (planned)
+
+Before E3 changes static precision, validate the current memory-model semantics with
+representative generated x86-64 ELFs from the sibling `litmus-tests-x86/elf-tests`
+corpus. Every ELF must enter through the normal binary/CFG/thread/MemoryEvent/shared
+slice path. A separate evaluation-owned herd oracle checks concrete execution
+legality; it cannot construct proof evidence, remove events or change a verdict.
+
+Keep three results distinct:
+
+- herd outcome legality for the original `exists(...)` predicate;
+- source and contract-lowered target legality for one explicit po/rf/co/fr assignment;
+- the existing static `SAFE / COUNTEREXAMPLE / UNKNOWN` certificate verdict.
+
+Characterize static/dynamic model drift before changing either implementation. Do not
+merge the checkers during E2.5. Any harness pruning must use a generic proof-carrying
+scope and may not consume litmus names, source markers or corpus expectations.
+
+The detailed implementation sequence and exit criteria are in
+`docs/exec-plans/active/e2-5-litmus-elf-correctness.md`.
+
 ### E3 — Improve one generic static capability
 
 Choose the most frequent diagnosed root cause, then implement a generic static
@@ -470,8 +491,8 @@ Commit intent must name the generic capability, not canneal.
 
 ### E4 — Broader evaluation
 
-After synthetic and canneal validation, evaluate the same generic capability on the
-PARSEC portfolio. Report:
+After synthetic, canneal and E2.5 correctness validation, evaluate the same generic
+capability on the PARSEC portfolio. Report:
 
 - Unknown kinds before and after;
 - proof closures added;
@@ -486,6 +507,10 @@ reviewed for version control.
 
 - canneal diagnostics identify actionable static gaps without changing the original
   static verdict;
+- representative real litmus ELFs validate recovery and execution legality without
+  allowing external oracle data to enter proof closure;
+- static and dynamic memory-model drift has no unclassified case in their declared
+  common support set;
 - at least one generic static capability is justified by synthetic tests and produces
   static ProofFacts independently of traces;
 - every changed static verdict is replayable from a proof-closed certificate;
@@ -542,8 +567,9 @@ The expected sequence is:
 12. `Correlate static Unknowns with runtime observations`
 13. `Report dynamic-assisted static diagnostics`
 14. `Diagnose affine-bound Unknowns from observations`
-15. generic static capability commits
-16. `Update repository guidance for evidence architecture`
+15. `Establish real litmus ELF correctness regressions`
+16. generic static capability commits
+17. `Update repository guidance for evidence architecture`
 
 The exact number may change, but a commit must not combine canonical evidence types,
 an analyzer migration and a benchmark precision change.

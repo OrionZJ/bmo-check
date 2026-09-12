@@ -26,6 +26,8 @@ Affine diagnostic workstream:
 
 - E1 bounded `ObservedAffinePattern` summaries — complete
 - E2 canneal validation and static-verdict preservation — complete
+- E2.5 real litmus ELF and memory-model correctness baseline — planned; see
+  `e2-5-litmus-elf-correctness.md`
 - E3 generic static precision improvement — not started
 
 Latest WSL2 validation after the Phase C closure (2026-09-12): DynamoRIO native
