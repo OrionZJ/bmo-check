@@ -8,6 +8,29 @@ from pathlib import Path
 import pytest
 
 
+def pytest_addoption(parser: pytest.Parser) -> None:
+    """为外部 litmus ELF profile 提供显式输入边界。"""
+
+    parser.addoption(
+        "--litmus-elf-root",
+        action="store",
+        default=None,
+        help="external litmus-tests-x86 corpus root for the opt-in profile",
+    )
+    parser.addoption(
+        "--litmus-library-root",
+        action="append",
+        default=[],
+        help="concrete guest library root used by the opt-in ELF profile",
+    )
+    parser.addoption(
+        "--require-litmus-elf",
+        action="store_true",
+        default=False,
+        help="fail instead of skipping when the opt-in ELF corpus is absent",
+    )
+
+
 @dataclass(frozen=True)
 class ElfFixture:
     executable: Path

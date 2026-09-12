@@ -27,3 +27,17 @@ An oracle record may include the original `exists` or final-state expression in
 `outcome`. This text explains what herd evaluates; it never selects BMoCheck proof
 rules. Until herd is refreshed, `source_outcome` and `target_outcome` must remain
 `Unsupported` with an explicit not-run provenance rather than guessed results.
+
+The external profile is opt-in because the generated corpus is kept outside this
+repository. From WSL, run the normal static application path with:
+
+```bash
+BMO_CHECK_LITMUS_ROOT=/mnt/d/CodeProjects/dbt6_workspace/litmus-tests-x86 \
+  uv run pytest tests/static/integration/test_litmus_elf_recovery.py \
+  --litmus-library-root /mnt/d/CodeProjects/dbt6_workspace/x86lib \
+  --require-litmus-elf
+```
+
+This profile checks binary recovery and fixed execution legality. A case with an
+unclosed object or lifecycle proof remains `UNKNOWN`; the profile does not turn its
+critical-event projection into a static proof.

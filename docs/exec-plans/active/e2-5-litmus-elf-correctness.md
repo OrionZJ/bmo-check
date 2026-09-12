@@ -1,6 +1,36 @@
 # E2.5 — Real litmus ELF correctness baseline
 
-Status: planned; architecture audit complete; no implementation has started
+Status: implementation in progress; representative ELF profile is passing; external
+herd oracle refresh remains pending
+
+### Implementation checkpoint (2026-09-13)
+
+The first correctness baseline is now present on `dev`:
+
+- `specs/litmus/e2-5-representative.yaml` pins six real ELF/source pairs by corpus,
+  source and ELF SHA-256, binary-bound worker entry/critical PCs, critical program
+  order, and fixed `rf/co` assignments. The generated corpus remains external.
+- `bmo_check_evaluation.litmus` contains strict fixture types, route-local static and
+  dynamic execution-legality facades, a differential comparison classification, an
+  evaluation-only critical-event projection, and a contract-aware herd invocation /
+  replay report. None of these APIs constructs a SAFE certificate.
+- Critical roles can be correlated by recovered callback entry PC. A matched critical
+  instruction can therefore be checked even when its abstract object identity is
+  still unresolved; the case itself remains `UNKNOWN` until all recovery obligations
+  close.
+- The opt-in `litmus_elf` profile has passed against the pinned local corpus and
+  `x86lib` for SB, MP, LB, 2+2W, CoWW and MP+mfence+po. The profile observed harness
+  events and checked critical PC/thread/order alignment plus fixed source/target
+  legality without deleting harness events from the production slice.
+- Local `herd7` is not installed in the current WSL image. The checked-in oracle
+  records therefore explicitly use `Unsupported` and `not-run-local-herd`; no source
+  or target outcome is guessed. A later refresh must provide a pre-generated
+  contract-lowered target input and record the actual herd version/model hashes.
+
+The profile currently leaves object-provenance gaps visible for some generated
+workers (notably MP and the MFENCE variant). Their lower fixed-execution records are
+useful characterization evidence, but they do not change the ordinary static
+verdict or prove the full ELF safe.
 
 ## 1. Intent
 
@@ -892,23 +922,32 @@ suite. The intended WSL command shape is:
 | 9 | removal/cycle property tests plus the selected ELF profile |
 | 10 | `uv run pytest` followed by the required `litmus-elf` profile |
 
-The optional oracle refresh is a separate explicit evaluation command, for example:
+The optional oracle refresh is a separate explicit evaluation command. The target
+input is intentionally an explicit argument: it must already represent the
+canonical DBT lowering, and this tool will not invent a target translation. For
+example:
 
 ```text
 uv run python -m bmo_check_evaluation.litmus.oracle refresh \
-  --manifest specs/litmus/e2-5-cases.yaml \
-  --corpus-root <corpus-root> \
-  --output .experiments/litmus-oracle-refresh
+  --source-input <case>.litmus \
+  --target-input <contract-lowered-case>.litmus \
+  --source-model x86.cat \
+  --target-model riscv.cat \
+  --contract-version dbt6-mo-off-v2 \
+  --contract-sha256 <contract-sha256> \
+  --elf-sha256 <elf-sha256> \
+  --herd-version <herdtools7-version> \
+  --output .experiments/litmus-oracle-refresh.json
 ```
 
 The real-ELF characterization is likewise an evaluation command, not a new production
-input route:
+input route. The current implementation exposes it as an opt-in pytest profile:
 
 ```text
-uv run python -m bmo_check_evaluation.litmus characterize \
-  --manifest specs/litmus/e2-5-cases.yaml \
-  --corpus-root <corpus-root> \
-  --output .experiments/litmus-characterization
+BMO_CHECK_LITMUS_ROOT=<corpus-root> \
+  uv run pytest tests/static/integration/test_litmus_elf_recovery.py \
+  --litmus-library-root <library-root> \
+  --require-litmus-elf
 ```
 
 After every commit, `uv run pytest`, `git diff --check`, the dependency tests and the

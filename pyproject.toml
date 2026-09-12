@@ -43,6 +43,9 @@ packages = ["src/bmo_check_core", "src/bmo_check_dynamic", "src/bmo_check_static
 [tool.pytest.ini_options]
 addopts = "-ra"
 testpaths = ["tests"]
+markers = [
+    "litmus_elf: opt-in end-to-end checks against the external litmus-tests-x86 corpus",
+]
 
 [tool.coverage.run]
 branch = true
