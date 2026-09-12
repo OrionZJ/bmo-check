@@ -602,6 +602,7 @@ def extract_memory_events(
     function_internal_objects: dict[str, str] | None = None,
     worker_argument_base: str | None = None,
     worker_argument_alias_base: str | None = None,
+    provenance_instruction_limit: int | None = None,
     canonical_ledger: EvidenceLedger | None = None,
     canonical_scope: str = "static.memory",
 ) -> MemoryEventReport:
@@ -708,11 +709,52 @@ def extract_memory_events(
                 "argument_access",
             }
         }
+        # 只有已经绑定到某个线程角色的函数才可能贡献本次 shared slice。
+        # 以前让基础传播遍历 ELF 中全部函数；生成的 litmus harness 会把
+        # libc 适配和统计代码也带进来，传播成本随无关函数数量平方增长。
+        # 未绑定函数仍由 CFG/indirect Unknown 单独记录，不会因为这里裁剪
+        # 而被当成没有副作用。
+        role_functions = _role_functions(control_flow, threads)
+        role_reachable_functions = set().union(*role_functions.values())
+        provenance_include_functions = {
+            function.location.pc
+            for function in control_flow.functions
+            if function.location.symbol == "main"
+        }
+        provenance_include_functions.update(
+            call.containing_function_pc
+            for call in control_flow.call_sites
+            if call.target_symbol in {
+                "pthread_create",
+                "pthread_join",
+                *_OPENMP_BARRIER_APIS,
+            }
+        )
+        # 参数可能经过一层以上普通 wrapper 才到达 create。反向沿已闭合
+        # 的本 ELF call graph 纳入这些 caller，保留对象来源；其余大型
+        # 清理/统计函数仍受 instruction limit 约束，不会拖慢固定点。
+        reverse_calls: dict[int, set[int]] = defaultdict(set)
+        for call in control_flow.call_sites:
+            if len(call.targets.known_targets) != 1:
+                continue
+            target = call.targets.known_targets[0]
+            if target.module_sha256 == module.sha256:
+                reverse_calls[target.pc].add(call.containing_function_pc)
+        pending_include = list(provenance_include_functions)
+        while pending_include:
+            target = pending_include.pop()
+            for caller in reverse_calls.get(target, ()):
+                if caller not in provenance_include_functions:
+                    provenance_include_functions.add(caller)
+                    pending_include.append(caller)
         base_address_provenance = recover_address_provenance(
             module,
             control_flow,
             instruction_report.facts,
             allocation_calls,
+            reachable_function_pcs=role_reachable_functions,
+            provenance_instruction_limit=provenance_instruction_limit,
+            provenance_include_function_pcs=provenance_include_functions,
             preserve_heap_field_call_pcs=preserve_heap_field_call_pcs,
             publication_barrier_call_pcs=publication_barrier_call_pcs,
             preserve_global_call_pcs=preserve_global_call_pcs,
@@ -741,7 +783,6 @@ def extract_memory_events(
                 )
             )
         }
-        role_functions = _role_functions(control_flow, threads)
         role_address_provenance = {}
         for role in threads.roles:
             function_entry_arguments: dict[int, dict[str, AbstractAddress]] = {}
@@ -809,6 +850,8 @@ def extract_memory_events(
                     function_entry_arguments,
                     seeded_function_pcs,
                     reachable,
+                    provenance_instruction_limit=provenance_instruction_limit,
+                    provenance_include_function_pcs=provenance_include_functions,
                     seeded_heap_fields=base_address_provenance.published_heap_fields,
                     seeded_globals=base_address_provenance.published_globals,
                     preserve_heap_field_call_pcs=preserve_heap_field_call_pcs,

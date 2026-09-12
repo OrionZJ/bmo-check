@@ -64,6 +64,7 @@ class StaticRequest:
     dbt_revision: str | None = None
     dbt_root: Path | None = None
     scope: str = "full"
+    provenance_instruction_limit: int | None = None
 
     def __post_init__(self) -> None:
         for name in (
@@ -78,6 +79,13 @@ class StaticRequest:
             raise StaticApplicationError("dbt_root must be a Path")
         if self.scope not in {"full", "application"}:
             raise StaticApplicationError("scope must be 'full' or 'application'")
+        if (
+            self.provenance_instruction_limit is not None
+            and self.provenance_instruction_limit < 1
+        ):
+            raise StaticApplicationError(
+                "provenance_instruction_limit must be positive"
+            )
         if self.threads is not None:
             if (
                 len(self.threads) != 2
@@ -288,6 +296,7 @@ def slice_report(
         function_integer_arguments=effect_contract.integer_arguments,
         function_memory_arguments=effect_contract.memory_arguments,
         function_internal_objects=effect_contract.internal_objects,
+        provenance_instruction_limit=request.provenance_instruction_limit,
     )
     shared_state = analyze_shared_state(
         module,

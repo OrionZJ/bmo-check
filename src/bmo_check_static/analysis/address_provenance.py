@@ -41,6 +41,7 @@ _CALLER_SAVED = {"rax", "rcx", "rdx", "rsi", "rdi", "r8", "r9", "r10", "r11"}
 _INTEGER_ARGUMENTS = ("rdi", "rsi", "rdx", "rcx", "r8", "r9")
 _STACK_ARGUMENT_SLOTS = 8
 _STACK_TRACK_LIMIT = 4096
+_EVIDENCE_PC_LIMIT = 64
 _CALL_STACK_PREFIX = "call-stack@"
 _PENDING_GLOBAL_PREFIX = "pending-global@"
 
@@ -143,6 +144,24 @@ class _SymbolicValue:
     fresh_call_pc: int | None = None
 
 
+def _bounded_evidence(*parts: tuple[int, ...] | list[int] | int) -> tuple[int, ...]:
+    """限制循环传播携带的解释 PC 数量，不改变地址格的取值。"""
+
+    values: list[int] = []
+    for part in parts:
+        if isinstance(part, int):
+            values.append(part)
+        else:
+            values.extend(part)
+    unique = tuple(dict.fromkeys(values))
+    if len(unique) <= _EVIDENCE_PC_LIMIT:
+        return unique
+    # 保留值链两端，既能定位来源又能看到最近一次使用；中间重复的
+    # loop 迭代只增加解释负担，不能增加任何静态证明能力。
+    half = _EVIDENCE_PC_LIMIT // 2
+    return (*unique[:half], *unique[-half:])
+
+
 def _heap_slot_key(value: _SymbolicValue | None) -> str | None:
     """只为已知对象的固定指针字段生成键。"""
 
@@ -231,7 +250,7 @@ def _global_name(module: ModuleFingerprint, pc: int) -> str:
 def _with_evidence(value: _SymbolicValue, pc: int) -> _SymbolicValue:
     return replace(
         value,
-        evidence_pcs=tuple(dict.fromkeys((*value.evidence_pcs, pc))),
+        evidence_pcs=_bounded_evidence(value.evidence_pcs, pc),
     )
 
 
@@ -257,7 +276,25 @@ def _with_owner(
         owner_base=location.base,
         owner_term=location.term,
         owner_coefficient=location.coefficient,
-        evidence_pcs=tuple(dict.fromkeys((*value.evidence_pcs, pc))),
+        evidence_pcs=_bounded_evidence(value.evidence_pcs, pc),
+    )
+
+
+def _value_shape(value: _SymbolicValue) -> tuple[object, ...]:
+    """返回不含解释 PC 的值形状，供 CFG meet 快速比较。"""
+
+    return (
+        value.base,
+        value.indirect,
+        value.term,
+        value.coefficient,
+        value.offset,
+        value.object_kind,
+        value.candidate_bases,
+        value.owner_base,
+        value.owner_term,
+        value.owner_coefficient,
+        value.fresh_call_pc,
     )
 
 
@@ -291,7 +328,7 @@ def _state_values_compatible(
 
     # 同一个循环变量会沿回边经过不同次数，因此 evidence_pcs 不可能
     # 相同；其余字段相同就代表对象来源和算术表达式相同，可以合流。
-    return replace(first, evidence_pcs=()) == replace(second, evidence_pcs=())
+    return _value_shape(first) == _value_shape(second)
 
 
 def _merge_state_values(
@@ -299,9 +336,7 @@ def _merge_state_values(
 ) -> _SymbolicValue:
     return replace(
         first,
-        evidence_pcs=tuple(
-            dict.fromkeys((*first.evidence_pcs, *second.evidence_pcs))
-        ),
+        evidence_pcs=_bounded_evidence(first.evidence_pcs, second.evidence_pcs),
     )
 
 
@@ -313,7 +348,7 @@ def _scaled(value: _SymbolicValue, scale: int, pc: int) -> _SymbolicValue | None
         term=value.term,
         coefficient=value.coefficient * scale,
         offset=value.offset * scale,
-        evidence_pcs=tuple(dict.fromkeys((*value.evidence_pcs, pc))),
+        evidence_pcs=_bounded_evidence(value.evidence_pcs, pc),
         object_kind=value.object_kind,
         candidate_bases=value.candidate_bases,
     )
@@ -338,9 +373,7 @@ def _added(
                 base=left.base,
                 indirect=left.indirect,
                 offset=left.offset + right.offset,
-                evidence_pcs=tuple(
-                    dict.fromkeys((*left.evidence_pcs, *right.evidence_pcs, pc))
-                ),
+                evidence_pcs=_bounded_evidence(left.evidence_pcs, right.evidence_pcs, pc),
                 object_kind=left.object_kind,
                 candidate_bases=left.candidate_bases,
                 owner_base=left.owner_base,
@@ -357,9 +390,7 @@ def _added(
                 base=right.base,
                 indirect=right.indirect,
                 offset=left.offset + right.offset,
-                evidence_pcs=tuple(
-                    dict.fromkeys((*left.evidence_pcs, *right.evidence_pcs, pc))
-                ),
+                evidence_pcs=_bounded_evidence(left.evidence_pcs, right.evidence_pcs, pc),
                 object_kind=right.object_kind,
                 candidate_bases=right.candidate_bases,
                 owner_base=right.owner_base,
@@ -381,9 +412,7 @@ def _added(
         term=term,
         coefficient=coefficient,
         offset=left.offset + right.offset,
-        evidence_pcs=tuple(
-            dict.fromkeys((*left.evidence_pcs, *right.evidence_pcs, pc))
-        ),
+        evidence_pcs=_bounded_evidence(left.evidence_pcs, right.evidence_pcs, pc),
         object_kind=left.object_kind or right.object_kind,
         candidate_bases=left.candidate_bases or right.candidate_bases,
         owner_base=left.owner_base if left.base is not None else right.owner_base,
@@ -468,9 +497,7 @@ def _memory_value(
                     value,
                     term=None,
                     coefficient=0,
-                    evidence_pcs=tuple(
-                        dict.fromkeys((*value.evidence_pcs, fact.pc))
-                    ),
+                    evidence_pcs=_bounded_evidence(value.evidence_pcs, fact.pc),
                 )
             return None
         scaled = _scaled(index_value, operand.scale, fact.pc)
@@ -520,9 +547,7 @@ def _source_value(
             return _SymbolicValue(
                 term=f"loaded-value@0x{fact.pc:x}",
                 coefficient=1,
-                evidence_pcs=tuple(
-                    dict.fromkeys((*value.evidence_pcs, fact.pc))
-                ),
+                evidence_pcs=_bounded_evidence(value.evidence_pcs, fact.pc),
             )
         if (
             value is not None
@@ -604,9 +629,7 @@ def _source_value(
                 return _SymbolicValue(
                     base=f"loaded-pointer@0x{fact.pc:x}",
                     indirect=True,
-                    evidence_pcs=tuple(
-                        dict.fromkeys((*value.evidence_pcs, fact.pc))
-                    ),
+                    evidence_pcs=_bounded_evidence(value.evidence_pcs, fact.pc),
                 )
         return value
     immediate = next(
@@ -677,8 +700,8 @@ def _symbolic_value(address: AbstractAddress) -> _SymbolicValue | None:
         ),
         coefficient=address.index_coefficient or 0,
         offset=address.offset or 0,
-        evidence_pcs=tuple(
-            int(item) for item in address.provenance.get("evidence_pcs", ())
+        evidence_pcs=_bounded_evidence(
+            tuple(int(item) for item in address.provenance.get("evidence_pcs", ()))
         ),
         object_kind=(
             address.kind
@@ -946,9 +969,7 @@ def _transfer(
                 indirect=left.indirect,
                 term=left.term,
                 coefficient=left.coefficient,
-                evidence_pcs=tuple(
-                    dict.fromkeys((*left.evidence_pcs, fact.pc))
-                ),
+                evidence_pcs=_bounded_evidence(left.evidence_pcs, fact.pc),
                 object_kind=left.object_kind,
                 candidate_bases=left.candidate_bases,
                 owner_base=left.owner_base,
@@ -1076,6 +1097,8 @@ def recover_address_provenance(
     preserve_heap_only_call_pcs: set[int] | None = None,
     publication_barrier_call_pcs: set[int] | None = None,
     preserve_global_call_pcs: set[int] | None = None,
+    provenance_instruction_limit: int | None = None,
+    provenance_include_function_pcs: set[int] | None = None,
 ) -> AddressProvenanceReport:
     """在函数 CFG 上传播唯一地址值；路径合流不一致时退回 Unknown。"""
 
@@ -1089,6 +1112,7 @@ def recover_address_provenance(
     preserve_heap_only_call_pcs = preserve_heap_only_call_pcs or set()
     publication_barrier_call_pcs = publication_barrier_call_pcs or set()
     preserve_global_call_pcs = preserve_global_call_pcs or set()
+    provenance_include_function_pcs = provenance_include_function_pcs or set()
     facts_by_pc = {fact.pc: fact for fact in facts}
     blocks = {block.location.pc: block for block in control_flow.basic_blocks}
     functions = {function.location.pc: function for function in control_flow.functions}
@@ -1154,6 +1178,20 @@ def recover_address_provenance(
         }
         for function_pc, function in functions.items()
     }
+    if provenance_instruction_limit is not None:
+        if provenance_instruction_limit < 1:
+            raise ValueError("provenance_instruction_limit must be positive")
+        bounded = {
+            function_pc
+            for function_pc in reachable_functions
+            if function_pc in provenance_include_function_pcs
+            or len(function_instruction_pcs.get(function_pc, ()))
+            <= provenance_instruction_limit
+        }
+        # 复杂函数仍会被 MemoryEvent 提取器按原始 operand 记录；这里只
+        # 跳过昂贵的跨函数地址固定点，地址不确定时回退到 MayAlias。
+        # 这样资源上限不会偷偷变成 NoAlias 或 SAFE 依据。
+        reachable_functions = bounded
     global_store_pcs: dict[str, set[int]] = {}
     for fact in facts:
         if fact.mnemonic not in {"mov", "movabs"}:
@@ -1185,6 +1223,20 @@ def recover_address_provenance(
     # 返回基址唯一且函数没有发布对象时使用，分支不确定时仍回退 Unknown。
     allocation_field_summaries: dict[
         int, dict[str, _SymbolicValue]
+    ] = {}
+    flow_cache: dict[
+        tuple[
+            int,
+            tuple[tuple[str, _SymbolicValue], ...],
+            tuple[tuple[str, _SymbolicValue], ...],
+        ],
+        tuple[
+            dict[int, dict[str, _SymbolicValue]],
+            bool,
+            dict[str, _SymbolicValue],
+            dict[str, _SymbolicValue],
+            tuple[str, ...],
+        ],
     ] = {}
 
     def apply_allocation_field_summary(
@@ -1314,6 +1366,14 @@ def recover_address_provenance(
         dict[str, _SymbolicValue],
         tuple[str, ...],
     ]:
+        cache_key = (
+            function_pc,
+            tuple(sorted((seeded_globals or {}).items())),
+            tuple(sorted((seeded_heap_fields or {}).items())),
+        )
+        cached = flow_cache.get(cache_key)
+        if cached is not None:
+            return cached
         function = functions[function_pc]
         local_allocation_bases = {
             f"heap:{symbol}@0x{call_pc:x}"
@@ -1698,7 +1758,15 @@ def recover_address_provenance(
                 }
             )
         )
-        return incoming, fresh_return, common_globals, common_heap_fields, return_bases
+        result = (
+            incoming,
+            fresh_return,
+            common_globals,
+            common_heap_fields,
+            return_bases,
+        )
+        flow_cache[cache_key] = result
+        return result
 
     internal_calls = {
         call.location.pc: call.targets.known_targets[0].pc
@@ -1719,6 +1787,7 @@ def recover_address_provenance(
         for call_pc, target_pc in internal_calls.items():
             if target_pc in fresh_functions and call_pc not in allocation_calls:
                 allocation_calls[call_pc] = f"function@0x{target_pc:x}"
+                flow_cache.clear()
                 changed = True
 
     # 现在 allocation_calls 已包含所有能证明返回 fresh 对象的内部 helper。
@@ -1746,6 +1815,7 @@ def recover_address_provenance(
                         break
             if allocation_field_summaries.get(call_pc) != remapped:
                 allocation_field_summaries[call_pc] = remapped
+                flow_cache.clear()
                 summaries_changed = True
         if not summaries_changed:
             break
@@ -1809,10 +1879,8 @@ def recover_address_provenance(
                     if all(value.offset == first.offset for value in concrete)
                     else 0
                 ),
-                evidence_pcs=tuple(
-                    dict.fromkeys(
-                        pc for value in concrete for pc in value.evidence_pcs
-                    )
+                evidence_pcs=_bounded_evidence(
+                    tuple(pc for value in concrete for pc in value.evidence_pcs)
                 ),
                 object_kind=AddressKind.STACK,
             )
@@ -1838,10 +1906,8 @@ def recover_address_provenance(
         return _SymbolicValue(
             base=f"heap-union:stack@0x{target_pc:x}+{offset}",
             indirect=False,
-            evidence_pcs=tuple(
-                dict.fromkeys(
-                    pc for value in concrete for pc in value.evidence_pcs
-                )
+            evidence_pcs=_bounded_evidence(
+                tuple(pc for value in concrete for pc in value.evidence_pcs)
             ),
             object_kind=AddressKind.HEAP,
             candidate_bases=tuple(sorted(candidates)),
@@ -1858,6 +1924,9 @@ def recover_address_provenance(
     propagated = True
     while propagated:
         propagated = False
+        # 上一轮可能刚为 helper 写入新的入口对象；先丢掉旧 flow，
+        # 同一轮内每个函数仍只计算一次，避免大 harness 重复走 CFG。
+        flow_cache.clear()
         observed: dict[int, dict[str, _SymbolicValue]] = {}
         observed_fields: dict[int, dict[str, _SymbolicValue]] = {}
         observed_stack: dict[
@@ -1979,8 +2048,8 @@ def recover_address_provenance(
                                 )
                                 else 0
                             ),
-                            evidence_pcs=tuple(
-                                dict.fromkeys(
+                            evidence_pcs=_bounded_evidence(
+                                tuple(
                                     pc
                                     for value in values
                                     if value is not None
@@ -2003,8 +2072,8 @@ def recover_address_provenance(
                         first = _SymbolicValue(
                             base=f"heap-union:argument@0x{target_pc:x}:{register}",
                             indirect=False,
-                            evidence_pcs=tuple(
-                                dict.fromkeys(
+                            evidence_pcs=_bounded_evidence(
+                                tuple(
                                     pc
                                     for value in values
                                     if value is not None
@@ -2070,8 +2139,7 @@ def recover_address_provenance(
                 # 把定点循环重新触发。
                 if (
                     existing is None
-                    or replace(existing, evidence_pcs=())
-                    != replace(first, evidence_pcs=())
+                    or _value_shape(existing) != _value_shape(first)
                 ):
                     target_values[register] = first
                     propagated = True
@@ -2083,8 +2151,7 @@ def recover_address_provenance(
                     existing = target_stack_values.get(offset)
                     if (
                         existing is None
-                        or replace(existing, evidence_pcs=())
-                        != replace(merged, evidence_pcs=())
+                        or _value_shape(existing) != _value_shape(merged)
                     ):
                         target_stack_values[offset] = merged
                         propagated = True
@@ -2120,10 +2187,14 @@ def recover_address_provenance(
                         )
                 existing_global_values = entry_globals.get(target_pc, {})
                 existing_shape = {
-                    key: replace(value, evidence_pcs=())
+                    key: _value_shape(value)
                     for key, value in existing_global_values.items()
                 }
-                if existing_shape != common_global_values:
+                common_global_shape = {
+                    key: _value_shape(value)
+                    for key, value in common_global_values.items()
+                }
+                if existing_shape != common_global_shape:
                     if common_global_values:
                         entry_globals[target_pc] = common_global_values
                     else:
@@ -2144,6 +2215,7 @@ def recover_address_provenance(
         _, _, _, field_summary, _ = flow(target_pc)
         if field_summary:
             function_field_summaries[target_pc] = field_summary
+    flow_cache.clear()
 
     result: dict[tuple[int, int], AbstractAddress] = {}
     call_arguments: dict[int, tuple[AbstractAddress | None, ...]] = {}

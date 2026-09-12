@@ -40,6 +40,9 @@ class LitmusConformanceRequest:
     dbt_revision: str | None = None
     scope: str = "full"
     max_extra_event_ids: int = 32
+    # 生成 harness 中的统计/清理函数可能远大于 critical worker；默认给
+    # conformance 一个有界 provenance 预算，超出部分保留为保守事件。
+    provenance_instruction_limit: int | None = 256
 
     def __post_init__(self) -> None:
         for name in (
@@ -55,6 +58,13 @@ class LitmusConformanceRequest:
             raise LitmusServiceError("scope must be 'full' or 'application'")
         if self.max_extra_event_ids < 0:
             raise LitmusServiceError("max_extra_event_ids must be non-negative")
+        if (
+            self.provenance_instruction_limit is not None
+            and self.provenance_instruction_limit < 1
+        ):
+            raise LitmusServiceError(
+                "provenance_instruction_limit must be positive"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -269,6 +279,7 @@ def run_litmus_conformance(request: LitmusConformanceRequest) -> LitmusConforman
             library_roots=request.library_roots,
             dbt_revision=request.dbt_revision,
             scope=request.scope,
+            provenance_instruction_limit=request.provenance_instruction_limit,
         )
         try:
             recovered = slice_report(static_request)

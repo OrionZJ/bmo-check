@@ -126,6 +126,9 @@ def _request_from_args(args: argparse.Namespace) -> StaticRequest:
         dbt_revision=getattr(args, "dbt_revision", None),
         dbt_root=getattr(args, "dbt_root", None),
         scope=getattr(args, "scope", "full"),
+        provenance_instruction_limit=getattr(
+            args, "provenance_instruction_limit", None
+        ),
     )
 
 
@@ -260,6 +263,7 @@ def _litmus(args: argparse.Namespace) -> int:
         library_roots=tuple(args.library_root),
         dbt_revision=args.dbt_revision,
         scope=args.scope,
+        provenance_instruction_limit=args.provenance_instruction_limit,
     )
     try:
         report = run_litmus_conformance(request)
@@ -317,6 +321,14 @@ def _add_input_arguments(parser: argparse.ArgumentParser) -> None:
         action="store_const",
         const="application",
         help="alias for --scope application",
+    )
+    parser.add_argument(
+        "--provenance-instruction-limit",
+        type=_positive_int,
+        help=(
+            "bound address-provenance CFG work; skipped complex functions remain "
+            "conservative MayAlias events"
+        ),
     )
 
 
@@ -451,6 +463,14 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("full", "application"),
         default="full",
         help="pass the same explicit scope to the ordinary static pipeline",
+    )
+    litmus.add_argument(
+        "--provenance-instruction-limit",
+        type=_positive_int,
+        default=256,
+        help=(
+            "bound address-provenance CFG work for generated harness functions"
+        ),
     )
     litmus.add_argument("--output", type=Path)
     litmus.set_defaults(handler=_litmus)
