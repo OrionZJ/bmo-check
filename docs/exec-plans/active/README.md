@@ -21,4 +21,8 @@ Affine diagnostic workstream:
 - E2 canneal validation and static-verdict preservation — complete
 - E3 generic static precision improvement — not started
 
+Latest WSL2 validation (2026-09-12): DynamoRIO native capture tests `10 passed`;
+full suite `310 passed, 0 skipped, 0 failed` with
+`DYNAMORIO_HOME=/home/hezhj/.local/opt/dynamorio` exported for the test process.
+
 每个阶段都以“不完整证据只能产生 UNKNOWN”为共同验收条件。

@@ -47,6 +47,26 @@ away.
 
 Experiment outputs remain under `.experiments/` and are not source fixtures.
 
+## Native capture environment record
+
+The WSL2 environment was verified on 2026-09-12 before treating the canneal trace
+as E2 input:
+
+```text
+Linux 6.18.33.2-microsoft-standard-WSL2
+DynamoRIO 11.3.0 (build 1)
+CMake 4.2.3
+cc 15.2.0
+```
+
+The test process used
+`DYNAMORIO_HOME=/home/hezhj/.local/opt/dynamorio`; this was a command-level export,
+not a modification of `.bashrc`. With the already-built
+`src/bmo_check_dynamic/native/build/libbmo_trace.so`, the native capture test file
+completed `10 passed`. The complete WSL run completed `310 passed, 0 skipped, 0
+failed`. These results validate the capture environment only; they do not change
+the static canneal verdict or the E2 evidence boundary.
+
 ## Acceptance
 
 - the unchanged static artifact remains `UNKNOWN` (the current replay has 15 affine

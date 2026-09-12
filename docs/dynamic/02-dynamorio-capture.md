@@ -23,6 +23,35 @@ Python launcher 在执行前保存不完整 manifest，执行后读取两个 mar
 `MAP_SHARED`、匿名可执行 mmap、fork/vfork、非 `CLONE_VM` clone 和 exec 会记录
 `unsupported` drop，使完整性检查严格返回 `UNKNOWN`。
 
+## WSL2 原生采集环境记录
+
+2026-09-12 在 WSL2 完成了原生采集测试。当前已验证的工具链为：
+
+```text
+Linux 6.18.33.2-microsoft-standard-WSL2
+DynamoRIO 11.3.0 (build 1)
+CMake 4.2.3
+cc 15.2.0
+```
+
+DynamoRIO 根目录是 `/home/hezhj/.local/opt/dynamorio`，追踪 client 是
+`src/bmo_check_dynamic/native/build/libbmo_trace.so`。本次测试通过命令级环境变量
+导出路径，没有修改 WSL 用户的 `.bashrc`：
+
+```bash
+cd /mnt/d/CodeProjects/dbt6_workspace/moverifier
+DYNAMORIO_HOME=/home/hezhj/.local/opt/dynamorio \
+  ~/.local/bin/uv run pytest
+```
+
+结果为 `310 passed, 0 skipped, 0 failed`；其中
+`tests/dynamic/test_native_capture.py` 的 10 个 DynamoRIO 原生采集测试全部通过。
+如果新终端没有继承路径，可先执行：
+
+```bash
+export DYNAMORIO_HOME=/home/hezhj/.local/opt/dynamorio
+```
+
 当前 syscall 事件只记录编号。内核可能通过参数访问共享用户内存，因此多线程轨迹
 不能把它当无副作用边界；完整性检查会保守返回 `UNKNOWN`。后续只有在采集参数、
 返回值并由 syscall effect 表覆盖后，才能逐项解除该限制。
