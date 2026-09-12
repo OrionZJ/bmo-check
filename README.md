@@ -61,6 +61,8 @@ bmo-check diagnose static-snapshot.json dynamic-snapshot.json \
   --output diagnostic-report.json
 bmo-check diagnose static-snapshot.json --trace trace/run-1 \
   --output diagnostic-report.json
+bmo-check diagnose static-snapshot.json --trace trace/run-1 \
+  --output diagnostic-report.json --affine-output affine-report.json
 ```
 
 大型程序可在 capture/run/campaign 中使用 `--max-thread-events N`
@@ -80,6 +82,11 @@ bmo-check diagnose static-snapshot.json --trace trace/run-1 \
 观察覆盖和 D5 `DiagnosticRootCause`，绝不会把动态事实写入静态 proof 或把
 `UNKNOWN` 升级为 `SAFE`。它不解析旧的无类型字典；静态快照请使用
 `bmo_check_diagnostics.serialization.save_snapshot` 生成。
+
+`--affine-output` 是 E1/E2 的附加诊断输出：它汇总 `UnknownAffineBounds` 的
+动态样本、步长候选和线程覆盖，但仍保留原始静态 verdict；观察到的模式不能
+关闭 Unknown 或进入静态证书。若静态 Unknown 带有明确的模块/PC provenance，
+命令会只保留这些站点的观察，避免为一次回查展开大型 trace 的全部站点。
 
 多轮实验使用 `bmo-check campaign manifest.yaml --output results`。总体 `TRACE_SAFE` 只表示清单中的每条轨迹都为 `TRACE_SAFE`。
 

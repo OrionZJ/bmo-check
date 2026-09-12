@@ -32,6 +32,21 @@ from .report import (
     build_diagnostic_report,
     diagnose,
 )
+from .affine import (
+    AffineObservationError,
+    AffineValidationReport,
+    ObservedAffinePattern,
+    ObservedAffineStatus,
+    ObservedAffineThread,
+    ObservedOverlap,
+    affine_pattern_to_dict,
+    affine_report_to_dict,
+    affine_report_to_json,
+    build_affine_validation_report,
+    save_affine_report,
+    site_filter_for_affine_unknowns,
+    summarize_observed_affine_patterns,
+)
 
 __all__ = [
     "DynamicDiagnosticSnapshot",
@@ -58,4 +73,17 @@ __all__ = [
     "DiagnosticReportError",
     "build_diagnostic_report",
     "diagnose",
+    "AffineObservationError",
+    "AffineValidationReport",
+    "ObservedAffinePattern",
+    "ObservedAffineStatus",
+    "ObservedAffineThread",
+    "ObservedOverlap",
+    "affine_pattern_to_dict",
+    "affine_report_to_dict",
+    "affine_report_to_json",
+    "build_affine_validation_report",
+    "save_affine_report",
+    "site_filter_for_affine_unknowns",
+    "summarize_observed_affine_patterns",
 ]

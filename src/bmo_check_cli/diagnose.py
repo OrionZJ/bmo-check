@@ -6,7 +6,12 @@ from argparse import Namespace
 from pathlib import Path
 
 from bmo_check_core import CertificateVerdict, EvidenceId
-from bmo_check_diagnostics import build_diagnostic_report
+from bmo_check_diagnostics import (
+    build_affine_validation_report,
+    build_diagnostic_report,
+    site_filter_for_affine_unknowns,
+)
+from bmo_check_diagnostics.affine import save_affine_report
 from bmo_check_diagnostics.serialization import (
     DiagnosticSerializationError,
     load_snapshot,
@@ -91,9 +96,15 @@ def run_diagnose(args: Namespace) -> int:
         from bmo_check_dynamic.trace import trace_digest
 
         assert trace_dir is not None
+        site_filter = (
+            site_filter_for_affine_unknowns(static)
+            if getattr(args, "affine_output", None) is not None
+            else None
+        )
         dynamic = dynamic_snapshot_from_trace(
             trace_dir,
             max_sites=int(getattr(args, "max_snapshot_sites", 100_000)),
+            site_filter=site_filter or None,
         )
         trace_artifact = trace_dir / "manifest.json"
     static_id = getattr(args, "static_certificate_id", None)
@@ -118,6 +129,18 @@ def run_diagnose(args: Namespace) -> int:
         selected_unknown_ids=_ids(getattr(args, "unknown_id", ())) or None,
     )
     save_report(report, output)
+    affine_output = getattr(args, "affine_output", None)
+    if affine_output is not None:
+        affine_report = build_affine_validation_report(static, dynamic)
+        save_affine_report(affine_report, _path(affine_output, "affine_output"))
+        print(
+            "Observed affine coverage: "
+            f"affine={affine_report.affine_unknown_count} "
+            f"exercised={affine_report.exercised_count} "
+            f"ambiguous={affine_report.ambiguous_count} "
+            f"not-executed={affine_report.not_executed_count} "
+            f"unmatched={affine_report.unmatched_count}"
+        )
     print(
         f"Diagnostic report: static={report.static_verdict.value} "
         f"exact={report.coverage.exact_count} "

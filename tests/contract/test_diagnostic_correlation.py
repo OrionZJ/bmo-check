@@ -173,6 +173,59 @@ def test_legacy_location_fallback_correlates_static_unknown_without_subject() ->
     assert record.observed_ids == (observed.id,)
 
 
+def test_unknown_kind_context_is_not_treated_as_memory_effect() -> None:
+    _operand, closure, trace = _ids()
+    module_path = "/bin/fixture"
+    unknown = UnknownFact.create(
+        schema_version="unknown-v1",
+        producer=ProducerId("static-test", "unknown-kind"),
+        kind=UnknownKind.UNKNOWN_AFFINE_BOUNDS,
+        reason="affine bound is incomplete",
+        subject=None,
+        scope="static.test",
+        supporting_context=(
+            f"legacy.module={module_path}",
+            "legacy.pc=0x120",
+            "legacy.kind=UnknownAffineBounds",
+        ),
+    )
+    instruction = InstructionId.from_parts(ModuleId.from_parts(HASH, "executable"), 0x120)
+    observed = ObservedFact.create(
+        schema_version="dynamic-v1",
+        producer=ProducerId("dynamic-test", "unknown-kind"),
+        trace_id=trace,
+        execution_id=ThreadInstanceId.from_parts(trace, 1),
+        subject=instruction,
+        observation_kind="memory-site",
+        attributes=(
+            EvidenceAttribute("module_path", module_path),
+            EvidenceAttribute("elf_pc", "0x120"),
+            EvidenceAttribute("event_kind", "Store"),
+        ),
+    )
+    static = StaticDiagnosticSnapshot(
+        schema_version="static-diagnostic-v1",
+        scope="static.test",
+        verdict=CertificateVerdict.UNKNOWN,
+        evidence=EvidenceSnapshot((unknown,)),
+        binary_closure=closure,
+    )
+    dynamic = DynamicDiagnosticSnapshot(
+        schema_version="dynamic-diagnostic-v1",
+        trace_id=trace,
+        scope="trace.test",
+        complete=True,
+        evidence=EvidenceSnapshot((observed,)),
+        binary_closure=closure,
+    )
+
+    record = correlate_unknowns(static, dynamic).records[0]
+
+    assert record.status == CorrelationStatus.EXACT
+    assert record.key == CorrelationKey.INSTRUCTION
+    assert record.observed_ids == (observed.id,)
+
+
 def test_old_site_only_trace_is_ambiguous_for_multiple_static_operands() -> None:
     _operand, closure, trace = _ids()
     module_path = "/bin/fixture"

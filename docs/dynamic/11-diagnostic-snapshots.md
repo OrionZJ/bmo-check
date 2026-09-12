@@ -34,3 +34,21 @@ validated trace
 
 只有新的纯静态 `ProofFact` 才能关闭静态 Unknown。观察到的地址、线程不重叠、
 间接目标或某次运行的值都不能直接成为 `NoAlias`、`Disjoint` 或 `SAFE` 依据。
+
+## UnknownAffineBounds 观察
+
+E1 的 `ObservedAffinePattern` 只汇总已匹配的动态地址样本：每个站点和线程
+有界保存首次地址、范围、相邻差分候选以及样本是否截断。`Stable` 表示当前
+trace 集合中的差分没有变化，不表示静态循环上界、线程 disjoint 或 affine
+proof。样本集合达到上限、trace 不完整或 operand 相关不唯一时，报告保留相应
+`Incomplete`/`Ambiguous` 状态。
+
+E2 的 `AffineValidationReport` 单独列出 canneal（或任何其他输入）的 affine
+Unknown 覆盖。它把 `exercised`、`ambiguous`、`unmatched` 和明确没有动态候选的
+`not_executed` 分开，并原样复制静态 verdict。`--affine-output` 生成的文件不
+进入静态证书，也不能关闭 Unknown；只有后续纯静态分析产生新的 `ProofFact`
+才可以改变静态结论。
+
+当 `diagnose` 同时指定 `--affine-output` 和 `--trace` 时，如果静态 Unknown 的
+provenance 含有模块/PC，适配器会以这些位置作为 `site_filter`。原始 trace 仍
+完整扫描，过滤只减少保留的观察站点；因此不会把未选中的路径当成已经执行。

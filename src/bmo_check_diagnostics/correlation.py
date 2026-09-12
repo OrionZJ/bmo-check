@@ -127,6 +127,16 @@ class _ObservedLocation:
 
 _LOCATION_PREFIX: Final[str] = "legacy."
 _PC_RE: Final[re.Pattern[str]] = re.compile(r"^(?:0x)?[0-9a-fA-F]+$")
+_EFFECT_LABELS: Final[frozenset[str]] = frozenset(
+    {
+        "load",
+        "store",
+        "atomicrmw",
+        "lfence",
+        "sfence",
+        "mfence",
+    }
+)
 
 
 def _attributes(observed: ObservedFact) -> dict[str, str]:
@@ -149,10 +159,16 @@ def _static_location(unknown: UnknownFact) -> _StaticLocation:
         name, separator, value = context.partition("=")
         if separator and name.startswith(_LOCATION_PREFIX):
             values[name[len(_LOCATION_PREFIX) :]] = value
+    kind = values.get("kind")
+    # legacy.kind 通常保存 UnknownKind（例如 UnknownAffineBounds），不是访存
+    # effect。只有明确的 Load/Store 等 effect 标签才能参与位置匹配；否则把
+    # Unknown 分类误当成 effect 会让真实动态站点全部变成 Unmatched。
+    if kind is not None and kind.casefold() not in _EFFECT_LABELS:
+        kind = None
     return _StaticLocation(
         module=values.get("module"),
         pc=_parse_pc(values["pc"]) if "pc" in values else None,
-        kind=values.get("kind"),
+        kind=kind,
     )
 
 

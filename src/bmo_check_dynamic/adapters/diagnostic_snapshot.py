@@ -8,7 +8,7 @@ trace-bound ``UnknownFact``；不完整 snapshot 不能被报告层当成完整�
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from elftools.common.exceptions import ELFError
@@ -63,6 +63,12 @@ _CONTROL_LABELS = {
     EventKind.SIGNAL: "Signal",
 }
 
+# 聚合器只保留少量首次地址和步长候选。超过上限时明确标记不完整，
+# 这样大程序不会因为诊断而把整个访存序列复制到 Python 内存。
+_ADDRESS_SAMPLE_LIMIT = 32
+_STRIDE_CANDIDATE_LIMIT = 16
+_INSTRUMENTATION_BASENAMES = frozenset({"libbmo_trace.so", "libdynamorio.so"})
+
 
 def _event_label(kind: EventKind) -> str:
     return _MEMORY_LABELS.get(
@@ -100,6 +106,20 @@ class _SiteAggregate:
     last_sequence: int | None = None
     min_target: int | None = None
     max_target: int | None = None
+    # distinct_addresses 是已见起始地址数量；样本封顶后只表示下界。
+    distinct_addresses: int = 0
+    # address_samples 只保留站点最先出现的少量地址，供诊断回查。
+    address_samples: list[int] = field(default_factory=list)
+    # address_sample_set 防止重复样本占用地址上限。
+    address_sample_set: set[int] = field(default_factory=set)
+    # 地址集合达到上限后置为 False，不能再声称集合完整。
+    address_sample_complete: bool = True
+    # previous_address 记录相邻事件，用于产生有符号差分候选。
+    previous_address: int | None = None
+    # stride_candidates 保存有界的相邻地址差分。
+    stride_candidates: set[int] = field(default_factory=set)
+    # 差分候选达到上限后置为 False，不能再声称步长集合完整。
+    stride_complete: bool = True
 
     def add(self, event: TraceEvent) -> None:
         self.count += 1
@@ -124,6 +144,28 @@ class _SiteAggregate:
                 if self.max_size is None
                 else max(self.max_size, event.size)
             )
+            if self.address_sample_complete:
+                if event.address not in self.address_sample_set:
+                    self.distinct_addresses += 1
+                    if len(self.address_samples) < _ADDRESS_SAMPLE_LIMIT:
+                        self.address_sample_set.add(event.address)
+                        self.address_samples.append(event.address)
+                    else:
+                        # 只记录下界；继续保留计数不会泄露未界定的完整地址集合。
+                        self.address_sample_complete = False
+                        self.distinct_addresses = _ADDRESS_SAMPLE_LIMIT + 1
+            elif self.distinct_addresses == _ADDRESS_SAMPLE_LIMIT + 1:
+                # 样本已封顶，后续只保留“至少超过上限”这一事实。
+                pass
+            if self.previous_address is not None:
+                delta = event.address - self.previous_address
+                if delta != 0 and self.stride_complete:
+                    if delta not in self.stride_candidates:
+                        if len(self.stride_candidates) < _STRIDE_CANDIDATE_LIMIT:
+                            self.stride_candidates.add(delta)
+                        else:
+                            self.stride_complete = False
+            self.previous_address = event.address
         elif event.kind == EventKind.INDIRECT_TARGET:
             self.min_target = (
                 event.address
@@ -152,9 +194,12 @@ def _manifest_modules(manifest: TraceManifest) -> tuple[tuple[str, str, str], ..
     modules: list[tuple[str, str, str]] = [
         (manifest.executable.path, manifest.executable.sha256, "executable")
     ]
-    modules.extend(
-        (item.path, item.sha256, _module_role(item.path)) for item in manifest.libraries
-    )
+    for item in manifest.libraries:
+        # DynamoRIO 的模块清单会把主 ELF 也记进 libraries；重复加入 shared_library
+        # 会让动态闭包与静态闭包产生一个虚假的角色差异。
+        if item.path == manifest.executable.path and item.sha256 == manifest.executable.sha256:
+            continue
+        modules.append((item.path, item.sha256, _module_role(item.path)))
     return tuple(modules)
 
 
@@ -167,6 +212,12 @@ def _module_role(path: str) -> str:
         "ld.so.1",
     }:
         return "interpreter"
+    if (
+        name in _INSTRUMENTATION_BASENAMES
+        or name.startswith("libdynamorio.so.")
+        or name.startswith("libbmo_trace.so.")
+    ):
+        return "instrumentation"
     return "shared_library"
 
 
@@ -192,6 +243,8 @@ def _module_ranges(
     trace_dir: Path,
     manifest: TraceManifest,
     reasons: list[str],
+    *,
+    report_unbound: bool = True,
 ) -> tuple[_ModuleRange, ...]:
     known: dict[str, tuple[str, str]] = {}
     for path, sha256, role in _manifest_modules(manifest):
@@ -233,7 +286,8 @@ def _module_ranges(
                 reasons.append(str(error))
         if identity is None:
             # vDSO/anonymous mappings have no stable ELF closure identity.
-            reasons.append(f"module has no bound fingerprint: {path}")
+            if report_unbound:
+                reasons.append(f"module has no bound fingerprint: {path}")
             continue
         sha256, role = identity
         try:
@@ -270,6 +324,13 @@ def _trace_identity(
         ModuleId.from_parts(sha256, role)
         for _path, sha256, role in module_refs
     )
+    # DynamoRIO/client 只负责采集，不属于被证明的 guest 闭包；把它们放进
+    # BinaryClosureId 会让同一程序的静态快照因插桩实现不同而永远无法匹配。
+    closure_refs = tuple(
+        (path, sha256, role)
+        for path, sha256, role in module_refs
+        if role != "instrumentation"
+    )
     records_digest = trace_digest(trace_dir)
     try:
         trace_id = TraceId.from_parts(
@@ -281,7 +342,7 @@ def _trace_identity(
         )
         closure = BinaryClosureId.from_parts(
             manifest.executable.sha256,
-            tuple((role, sha256) for _path, sha256, role in module_refs),
+            tuple((role, sha256) for _path, sha256, role in closure_refs),
             "EM_X86_64:elf64:le",
         )
     except ValueError as error:
@@ -397,6 +458,34 @@ def _observed_fact(
                 EvidenceAttribute("size_max", str(aggregate.max_size or 0)),
             )
         )
+        attributes.extend(
+            (
+                EvidenceAttribute(
+                    "address_distinct_count", str(aggregate.distinct_addresses)
+                ),
+                EvidenceAttribute(
+                    "address_samples",
+                    ",".join(f"0x{value:x}" for value in aggregate.address_samples)
+                    or "none",
+                ),
+                EvidenceAttribute(
+                    "address_sample_complete",
+                    str(aggregate.address_sample_complete).lower(),
+                ),
+                EvidenceAttribute(
+                    "address_sample_limit", str(_ADDRESS_SAMPLE_LIMIT)
+                ),
+                EvidenceAttribute(
+                    "stride_candidates",
+                    ",".join(str(value) for value in sorted(aggregate.stride_candidates))
+                    or "none",
+                ),
+                EvidenceAttribute(
+                    "stride_candidates_complete",
+                    str(aggregate.stride_complete).lower(),
+                ),
+            )
+        )
     if aggregate.first_sequence is not None and aggregate.last_sequence is not None:
         attributes.extend(
             (
@@ -438,8 +527,14 @@ def dynamic_snapshot_from_trace(
     *,
     scope: str = "dynamic.trace",
     max_sites: int = 100_000,
+    site_filter: set[tuple[str, int]] | None = None,
 ) -> DynamicDiagnosticSnapshot:
-    """流式读取一个 trace 目录并生成 canonical DynamicDiagnosticSnapshot。"""
+    """流式读取一个 trace 目录并生成 canonical DynamicDiagnosticSnapshot。
+
+    ``site_filter`` 只限制保留哪些模块相对 PC；原始文件仍会完整扫描，因而
+    不会把过滤掉的执行路径误报成已证明。它用于诊断已知静态缺口，避免为一次
+    回查保留大型程序的所有站点。
+    """
 
     if not isinstance(trace_dir, Path):
         raise DynamicSnapshotAdapterError("trace_dir must be a Path")
@@ -447,6 +542,27 @@ def dynamic_snapshot_from_trace(
         raise DynamicSnapshotAdapterError("dynamic snapshot scope must be non-empty")
     if isinstance(max_sites, bool) or not isinstance(max_sites, int) or max_sites < 1:
         raise DynamicSnapshotAdapterError("max_sites must be positive")
+    if site_filter is not None:
+        try:
+            filter_items = tuple(site_filter)
+        except TypeError as error:
+            raise DynamicSnapshotAdapterError(
+                "site_filter must contain (module path, non-negative offset) pairs"
+            ) from error
+        for item in filter_items:
+            if (
+                not isinstance(item, tuple)
+                or len(item) != 2
+                or not isinstance(item[0], str)
+                or not item[0]
+                or isinstance(item[1], bool)
+                or not isinstance(item[1], int)
+                or item[1] < 0
+            ):
+                raise DynamicSnapshotAdapterError(
+                    "site_filter must contain (module path, non-negative offset) pairs"
+                )
+        site_filter = set(filter_items)
     try:
         manifest = TraceManifest.load(trace_dir / "manifest.json")
     except (OSError, ValueError) as error:
@@ -460,7 +576,14 @@ def dynamic_snapshot_from_trace(
         reasons.append("trace is missing the completion marker")
     elif not manifest.complete and marker.is_file():
         reasons.append("incomplete trace has a completion marker")
-    ranges = _module_ranges(trace_dir, manifest, reasons)
+    # 诊断 site filter 只回查指定静态站点；未绑定的 vDSO/匿名映射若没有
+    # 命中这些站点，不应让一个本来完整的 trace 被无关运行库事件标成不完整。
+    ranges = _module_ranges(
+        trace_dir,
+        manifest,
+        reasons,
+        report_unbound=site_filter is None,
+    )
     trace_id, closure = _trace_identity(
         trace_dir,
         manifest,
@@ -479,10 +602,18 @@ def dynamic_snapshot_from_trace(
                     or event.kind in _CONTROL_LABELS
                 ):
                     continue
+                if site_filter is not None and not any(
+                    item.start <= event.pc < item.end
+                    and (item.path, event.pc - item.start) in site_filter
+                    for item in ranges
+                ):
+                    continue
                 module = _range_for_pc(ranges, event.pc, reasons) if event.pc else None
                 if module is None:
                     continue
                 offset = event.pc - module.start
+                if site_filter is not None and (module.path, offset) not in site_filter:
+                    continue
                 operand_index = event.operand_index if event.kind.is_memory else None
                 key = (module.path, offset, event.thread_id, event.kind, operand_index)
                 aggregate = aggregates.get(key)

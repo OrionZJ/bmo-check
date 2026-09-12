@@ -337,6 +337,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="bound distinct thread/site observations when --trace is used",
     )
     diagnose.add_argument("--output", type=Path, required=True)
+    diagnose.add_argument(
+        "--affine-output",
+        type=Path,
+        help="also write the trace-bound UnknownAffineBounds coverage report",
+    )
     diagnose.add_argument("--static-certificate", type=Path)
     diagnose.add_argument("--trace-certificate", type=Path)
     diagnose.add_argument("--static-certificate-id")

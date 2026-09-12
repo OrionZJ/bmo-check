@@ -386,7 +386,7 @@ they never create proof or change a verdict.
 
 canneal is a validation case, not a semantic input.
 
-### E1 — Observed affine summaries
+### E1 — Observed affine summaries (implemented)
 
 For each correlated `UnknownAffineBounds`, aggregate trace-bound observations:
 
@@ -403,20 +403,30 @@ The output type is `ObservedAffinePattern`. It cannot be used where
 
 Commit intent: `Diagnose affine-bound Unknowns from observations`.
 
-### E2 — Validate on canneal
+The implementation is recorded in `docs/exec-plans/active/e1-observed-affine-patterns.md`.
 
-Run the unchanged static analyzer and preserve:
+### E2 — Validate on canneal (implemented)
+
+Run the unchanged static analyzer and preserve the `UNKNOWN` verdict. The historical
+validation artifact used by this plan had:
 
 ```text
 static verdict = UNKNOWN
 relevant UnknownAffineBounds = 8
 ```
 
+If a later static provenance/pruning change changes that count, record the baseline
+drift explicitly; do not tune the dynamic diagnostic to restore the old number.
+
 Then correlate the available canneal traces and report, for example, how many of the
 eight sites were exercised, ambiguous or not executed. Do not require all eight to
 match before the generic diagnostic system is accepted.
 
 No code may branch on `canneal`, its function names or observed stride/bounds.
+
+The generic `AffineValidationReport` and the local canneal run are recorded in
+`docs/exec-plans/active/e2-canneal-validation.md`. This phase reports closure or
+coverage gaps explicitly and does not alter the static verdict.
 
 ### E3 — Improve one generic static capability
 

@@ -15,4 +15,10 @@ The diagnostics workstream is tracked separately after the repository split:
 - D4 versioned diagnostic report and CLI — complete
 - D5 generic root-cause registry — complete
 
+Affine diagnostic workstream:
+
+- E1 bounded `ObservedAffinePattern` summaries — complete
+- E2 canneal validation and static-verdict preservation — complete
+- E3 generic static precision improvement — not started
+
 每个阶段都以“不完整证据只能产生 UNKNOWN”为共同验收条件。
