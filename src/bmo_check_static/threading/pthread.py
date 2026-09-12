@@ -489,6 +489,19 @@ def discover_pthread_threads(
             role_id, tuple(item.pc for item in targets.known_targets)
         )
     reachability = _role_reachability(control_flow, role_roots)
+    root_roles: dict[int, tuple[str, ...]] = {}
+    for role_id, roots in role_roots.items():
+        for root in roots:
+            root_roles[root] = (*root_roles.get(root, ()), role_id)
+
+    def parent_from_callback_context(function_pc: int) -> tuple[str, bool]:
+        # callback 的直接 caller 如果正好是另一个线程角色的入口，
+        # 这个事实比全函数调用图更精确；同一个函数被 main 和 worker
+        # 复用时，单靠可达性会产生两个候选而丢掉真实父子关系。
+        candidates = tuple(sorted(set(root_roles.get(function_pc, ()))))
+        if len(candidates) == 1:
+            return candidates[0], True
+        return _containing_role(reachability, function_pc)
 
     for call, role_id, targets, argument_origin, target_pc in role_entries:
         contexts = callback_contexts.get(call.location.pc, ())
@@ -503,9 +516,7 @@ def discover_pthread_threads(
             if not caller_functions:
                 parent_complete = False
             for caller_function in caller_functions:
-                candidate, complete = _containing_role(
-                    reachability, caller_function
-                )
+                candidate, complete = parent_from_callback_context(caller_function)
                 if complete:
                     parent_candidates.add(candidate)
                 else:
