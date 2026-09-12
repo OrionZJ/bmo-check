@@ -23,6 +23,7 @@ candidate.
 
 ## Next gate
 
-Add function/block/operand fallback keys only as typed facts, then build
-`DiagnosticHint` and root-cause classification. Hints must remain outside static
-proof closure and must show the original static verdict.
+D4 consumes this correlation result to build a versioned report and conservative
+`DiagnosticHint` records. Root-cause classification beyond `UnknownRootCause` is a
+separate D5 task; hints remain outside static proof closure and retain the original
+static verdict.

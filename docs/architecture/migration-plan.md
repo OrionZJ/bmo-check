@@ -330,6 +330,13 @@ Add `bmo-check diagnose` to produce a versioned report containing:
 
 Commit intent: `Report dynamic-assisted static diagnostics`.
 
+Implementation record: `docs/exec-plans/active/d4-diagnostic-report.md`. The
+diagnostics package now builds an immutable, versioned report from typed static and
+dynamic snapshots. JSON is an explicit serialization boundary, and `bmo-check
+diagnose` returns the unchanged static verdict while recording identities, selected
+Unknowns, observations, coverage and conservative hints. Root-cause classification
+remains a D5 task.
+
 ### D5 — Generic root-cause registry
 
 Introduce typed classifications incrementally:

@@ -57,6 +57,8 @@ bmo-check analyze trace/run-1 --output trace/run-1/application-certificate.json 
 bmo-check run --trace trace/run-2 --output trace/run-2/certificate.json -- ./program arg
 bmo-check explain trace/run-1/certificate.json
 bmo-check locate trace/run-1 --module /path/to/module --offset 0x1234
+bmo-check diagnose static-snapshot.json dynamic-snapshot.json \
+  --output diagnostic-report.json
 ```
 
 大型程序可在 capture/run/campaign 中使用 `--max-thread-events N`
@@ -69,6 +71,12 @@ bmo-check locate trace/run-1 --module /path/to/module --offset 0x1234
 
 `locate` 按模块内偏移汇总某条指令的实际事件、线程、宽度和 flags。它用于复核
 发布点或原子分类，不参与 verdict，也不能单独证明 `TRACE_SAFE`。
+
+`diagnose` 读取由 canonical snapshot API 生成的静态/动态 JSON，输出
+`diagnostic-report-v1`。报告只定位静态 Unknown：它保留原始静态 verdict、
+Exact/Ambiguous/Unmatched 结果、观察覆盖和 `DiagnosticHint`，绝不会把动态事实
+写入静态 proof 或把 `UNKNOWN` 升级为 `SAFE`。当前 D4 尚未解析旧的无类型字典；
+请使用 `bmo_check_diagnostics.serialization.save_snapshot` 生成输入。
 
 多轮实验使用 `bmo-check campaign manifest.yaml --output results`。总体 `TRACE_SAFE` 只表示清单中的每条轨迹都为 `TRACE_SAFE`。
 

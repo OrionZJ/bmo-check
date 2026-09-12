@@ -118,10 +118,11 @@ reproduction path and a reviewed reason that a synthetic fixture is insufficient
 ## Current commands
 
 ```text
-bmo-check capture|analyze|run|campaign|explain|locate
+bmo-check capture|analyze|run|campaign|explain|locate|diagnose
 bmo-check-static fingerprint|recover|slice|analyze|explain|evaluate
 ```
 
-The target architecture later adds `bmo-check diagnose`. Snapshot construction may
-start before the correlator, but diagnostic code must not attach directly to verifier
-internals or change a static verdict.
+`diagnose` consumes only typed static/dynamic snapshots and writes a versioned
+diagnostic report. It may correlate observations and create hints, but must not attach
+directly to verifier internals, discharge an Unknown, or change a static verdict.
+Root-cause classification beyond `UnknownRootCause` remains a later milestone.

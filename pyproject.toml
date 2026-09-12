@@ -30,7 +30,7 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/bmo_check_core", "src/bmo_check_dynamic", "src/bmo_check_static", "src/bmo_check_diagnostics", "src/bmo_check_evaluation"]
+packages = ["src/bmo_check_core", "src/bmo_check_dynamic", "src/bmo_check_static", "src/bmo_check_diagnostics", "src/bmo_check_evaluation", "src/bmo_check_cli"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "specs/dynamic/dbt6-mo-off.yaml" = "bmo_check_dynamic/data/dbt6-mo-off.yaml"

@@ -14,6 +14,14 @@ from .correlation import (
     DiagnosticCorrelationReport,
     correlate_unknowns,
 )
+from .report import (
+    CertificateIdentity,
+    DiagnosticCoverage,
+    DiagnosticReport,
+    DiagnosticReportError,
+    build_diagnostic_report,
+    diagnose,
+)
 
 __all__ = [
     "DynamicDiagnosticSnapshot",
@@ -26,4 +34,10 @@ __all__ = [
     "CorrelationStatus",
     "DiagnosticCorrelationReport",
     "correlate_unknowns",
+    "CertificateIdentity",
+    "DiagnosticCoverage",
+    "DiagnosticReport",
+    "DiagnosticReportError",
+    "build_diagnostic_report",
+    "diagnose",
 ]

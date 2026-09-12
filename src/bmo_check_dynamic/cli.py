@@ -221,6 +221,14 @@ def _locate(args: argparse.Namespace) -> int:
     return 0
 
 
+def _diagnose(args: argparse.Namespace) -> int:
+    """把诊断命令交给 CLI 组合层，避免 dynamic route 读取 diagnostics 内部。"""
+
+    from bmo_check_cli.diagnose import run_diagnose
+
+    return run_diagnose(args)
+
+
 def _add_capture_options(parser: argparse.ArgumentParser) -> None:
     default_home = Path(os.environ.get("DYNAMORIO_HOME", "/opt/dynamorio"))
     parser.add_argument("--dynamorio-home", type=Path, default=default_home)
@@ -306,6 +314,28 @@ def build_parser() -> argparse.ArgumentParser:
     locate.add_argument("--module", required=True)
     locate.add_argument("--offset", type=lambda value: int(value, 0), required=True)
     locate.set_defaults(handler=_locate)
+
+    diagnose = subparsers.add_parser(
+        "diagnose",
+        help="correlate static Unknowns with a dynamic diagnostic snapshot",
+    )
+    # 位置参数是最短调用形式；选项别名方便脚本明确标注输入角色。
+    diagnose.add_argument("static_snapshot", nargs="?", type=Path)
+    diagnose.add_argument("dynamic_snapshot", nargs="?", type=Path)
+    diagnose.add_argument("--static-snapshot", dest="static_snapshot_option", type=Path)
+    diagnose.add_argument("--dynamic-snapshot", dest="dynamic_snapshot_option", type=Path)
+    diagnose.add_argument("--output", type=Path, required=True)
+    diagnose.add_argument("--static-certificate", type=Path)
+    diagnose.add_argument("--trace-certificate", type=Path)
+    diagnose.add_argument("--static-certificate-id")
+    diagnose.add_argument("--trace-certificate-id")
+    diagnose.add_argument(
+        "--unknown-id",
+        action="append",
+        default=[],
+        help="limit the report to this static EvidenceId (repeatable)",
+    )
+    diagnose.set_defaults(handler=_diagnose)
     return parser
 
 
