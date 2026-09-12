@@ -46,15 +46,20 @@ class ConformanceResult:
     extra_event_ids: tuple[str, ...] = ()
 
     @property
-    def critical_events_complete(self) -> bool:
-        """critical 对齐本身是否封闭，独立于 harness 的其它 Unknown。"""
+    def critical_events_aligned(self) -> bool:
+        """指令、线程和程序顺序已封闭，独立于对象身份缺口。"""
 
         return not (
             self.missing_labels
             or self.ambiguous_labels
             or self.ordering_errors
-            or self.object_errors
         ) and bool(self.matches)
+
+    @property
+    def critical_events_complete(self) -> bool:
+        """critical 对齐和静态对象身份都已封闭。"""
+
+        return self.critical_events_aligned and not self.object_errors
 
     @property
     def reasons(self) -> tuple[str, ...]:

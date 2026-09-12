@@ -304,7 +304,7 @@ def run_litmus_conformance(request: LitmusConformanceRequest) -> LitmusConforman
             )
             projection = None
             projection_error: str | None = None
-            if conformance.critical_events_complete:
+            if conformance.critical_events_aligned:
                 try:
                     projection = project_critical_slice(case, conformance, recovered)
                 except CriticalProjectionError as error:

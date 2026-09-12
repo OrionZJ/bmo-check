@@ -224,6 +224,10 @@ class HerdOracleRecord(_StrictModel):
     herd_version: str = Field(description="产生该记录的 herdtools7 版本")
     source_model: str = Field(description="source outcome 使用的 herd 模型")
     target_model: str = Field(description="contract lowering 后 target 使用的模型")
+    outcome: str | None = Field(
+        default=None,
+        description="原始 litmus 的 exists/final-state 谓词，供报告解释",
+    )
     source_outcome: HerdOutcome = Field(description="source 模型对 outcome 的判断")
     target_outcome: HerdOutcome = Field(description="target 模型对 outcome 的判断")
     source_input_sha256: str = Field(description="source herd 输入的 SHA-256")
@@ -237,6 +241,8 @@ class HerdOracleRecord(_StrictModel):
     def validate_oracle(self) -> "HerdOracleRecord":
         if not self.herd_version or not self.source_model or not self.target_model:
             raise ValueError("herd version and model names must be non-empty")
+        if self.outcome is not None and not self.outcome:
+            raise ValueError("oracle outcome must be non-empty when present")
         if not self.contract_version:
             raise ValueError("contract_version must be non-empty")
         for value in (

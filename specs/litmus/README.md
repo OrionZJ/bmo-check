@@ -22,3 +22,8 @@ guess a role. Missing or duplicated entry targets remain an explicit conformance
 The generated ELF corpus is an external input selected by an explicit corpus-root
 option. A manifest record is valid only after the implementation phase has recorded
 the corpus revision and final ELF hash.
+
+An oracle record may include the original `exists` or final-state expression in
+`outcome`. This text explains what herd evaluates; it never selects BMoCheck proof
+rules. Until herd is refreshed, `source_outcome` and `target_outcome` must remain
+`Unsupported` with an explicit not-run provenance rather than guessed results.

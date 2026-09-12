@@ -17,7 +17,7 @@ from bmo_check_static.model import (
     SharedMemorySlice,
 )
 
-from .conformance import ConformanceResult, ConformanceStatus
+from .conformance import ConformanceResult
 from .model import CriticalEvent, LitmusCase
 
 
@@ -65,8 +65,8 @@ def project_critical_slice(
     抛出错误，由上层把该 case 保持为 `UNKNOWN`。
     """
 
-    if conformance.status is not ConformanceStatus.MATCHED:
-        raise CriticalProjectionError("cannot project a non-matched conformance")
+    if not conformance.critical_events_aligned:
+        raise CriticalProjectionError("cannot project an incompletely aligned conformance")
     if report.shared_slice is None:
         raise CriticalProjectionError("recovery report has no shared slice")
     matched = {match.label: match.event_id for match in conformance.matches}
