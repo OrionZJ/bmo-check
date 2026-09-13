@@ -73,6 +73,8 @@ def test_representative_real_elves_enter_normal_static_pipeline(
     )
     for case in report.cases:
         assert case.conformance is not None, case.errors
+        assert case.static_verdict in {"SAFE", "COUNTEREXAMPLE", "UNKNOWN"}
+        assert case.static_checker_conclusion
         conformance = case.conformance
         # 关键 PC/线程/程序序必须能单独对齐；对象缺口可以让最终 case
         # 保持 UNKNOWN，但不能阻止我们检查底层 fixed execution。

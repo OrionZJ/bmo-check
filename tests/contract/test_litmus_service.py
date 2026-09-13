@@ -226,5 +226,7 @@ def test_service_runs_regular_static_pipeline_and_fixed_legality(
     case = result.cases[0]
     assert case.status.value == "MATCHED"
     assert case.conformance is not None
+    assert case.static_verdict == "SAFE"
+    assert case.static_checker_conclusion == "StructuralSafe"
     assert case.executions[0].source_status == "allowed"
     assert case.executions[0].target_status == "allowed"

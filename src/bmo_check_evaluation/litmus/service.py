@@ -14,6 +14,7 @@ from bmo_check_static.proof.characterization import (
     check_fixed_execution,
 )
 from bmo_check_static.proof.encoding import _object_id
+from bmo_check_static.proof.verifier import verify_portability
 
 from .conformance import (
     ConformanceResult,
@@ -77,9 +78,13 @@ class ExecutionLegalityRecord:
     target_status: str
     source_reason: str
     target_reason: str
+    # 固定 execution 结果来自 evaluation projection，而非 static proof slice。
     basis: str = "critical-event evaluation projection"
+    # manifest 可选的 characterization 期望，只用于发现实现漂移。
     expected_source: str | None = None
+    # manifest 可选的 target characterization 期望，只用于发现实现漂移。
     expected_target: str | None = None
+    # 实际结果与期望不同时保留原因，不能静默改写状态。
     expectation_errors: tuple[str, ...] = ()
 
 
@@ -93,6 +98,10 @@ class LitmusCaseConformance:
     source_path: str
     conformance: ConformanceResult | None = None
     executions: tuple[ExecutionLegalityRecord, ...] = ()
+    # 这是同一份完整 recovery report 交给普通 static verifier 的结果；
+    # critical projection 不能覆盖它，也不能把 UNKNOWN 改成 SAFE。
+    static_verdict: str | None = None
+    static_checker_conclusion: str | None = None
     errors: tuple[str, ...] = ()
 
 
@@ -358,6 +367,10 @@ def run_litmus_conformance(request: LitmusConformanceRequest) -> LitmusConforman
                 recovered,
                 max_extra_event_ids=request.max_extra_event_ids,
             )
+            static_certificate = verify_portability(
+                recovered,
+                analysis_options={"scope": request.scope},
+            )
             projection = None
             projection_error: str | None = None
             if conformance.critical_events_aligned:
@@ -401,6 +414,10 @@ def run_litmus_conformance(request: LitmusConformanceRequest) -> LitmusConforman
                     source_path=str(source),
                     conformance=conformance,
                     executions=executions,
+                    static_verdict=static_certificate.verdict.value,
+                    static_checker_conclusion=(
+                        static_certificate.checker.conclusion.value
+                    ),
                     errors=tuple(dict.fromkeys(errors)),
                 )
             )
