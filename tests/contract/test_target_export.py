@@ -5,7 +5,12 @@ from pathlib import Path
 import pytest
 
 from bmo_check_core.contracts import MemoryOrderContract
-from bmo_check_evaluation.litmus import TargetExportError, export_contract_target, load_manifest
+from bmo_check_evaluation.litmus import (
+    FixtureEventKind,
+    TargetExportError,
+    export_contract_target,
+    load_manifest,
+)
 
 
 def _contract() -> MemoryOrderContract:
@@ -68,6 +73,32 @@ def test_target_export_rejects_missing_store_value() -> None:
         }
     )
     with pytest.raises(TargetExportError):
+        export_contract_target(case, _contract())
+
+
+def test_target_export_rejects_underspecified_atomic_rmw() -> None:
+    manifest = load_manifest(
+        Path(__file__).resolve().parents[2]
+        / "specs"
+        / "litmus"
+        / "e2-5-representative.yaml"
+    )
+    case = manifest.cases[0].model_copy(
+        update={
+            "critical_events": tuple(
+                event.model_copy(
+                    update={
+                        "kind": FixtureEventKind.ATOMIC_RMW,
+                        "value": None,
+                    }
+                )
+                if event.label == "p0-w-x"
+                else event
+                for event in manifest.cases[0].critical_events
+            )
+        }
+    )
+    with pytest.raises(TargetExportError, match="explicit operation/value"):
         export_contract_target(case, _contract())
 
 

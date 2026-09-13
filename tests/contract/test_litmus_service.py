@@ -10,6 +10,7 @@ from bmo_check_evaluation.litmus.model import (
     CriticalEvent,
     ExecutionAssignment,
     FixtureEventKind,
+    HerdOutcome,
     HerdOracleRecord,
     LitmusCase,
     LitmusManifest,
@@ -230,3 +231,26 @@ def test_service_runs_regular_static_pipeline_and_fixed_legality(
     assert case.static_checker_conclusion == "StructuralSafe"
     assert case.executions[0].source_status == "allowed"
     assert case.executions[0].target_status == "allowed"
+    assert len(case.oracle_comparisons) == 1
+    assert case.oracle_comparisons[0].status.value == "MATCH"
+
+
+def test_oracle_mismatch_keeps_static_verdict_but_marks_conformance_unknown(
+    tmp_path: Path, monkeypatch
+) -> None:
+    manifest_path = _write_manifest(tmp_path, b"source", b"elf")
+    payload = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+    payload["cases"][0]["oracle"]["source_outcome"] = HerdOutcome.FORBIDDEN.value
+    manifest_path.write_text(yaml.safe_dump(payload), encoding="utf-8")
+    monkeypatch.setattr(
+        "bmo_check_evaluation.litmus.service.slice_report",
+        lambda request: _report(hashlib.sha256(b"elf").hexdigest()),
+    )
+
+    result = run_litmus_conformance(_request(tmp_path, manifest_path))
+
+    case = result.cases[0]
+    assert case.static_verdict == "SAFE"
+    assert case.oracle_comparisons[0].status.value == "MISMATCH"
+    assert case.status.value == "UNKNOWN"
+    assert any("external herd oracle" in error for error in case.errors)

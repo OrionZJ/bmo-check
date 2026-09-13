@@ -18,6 +18,9 @@ The first correctness baseline is now present on `dev`:
 - Critical store values and target-specific outcome expressions are explicit in the
   fixture. The target exporter rejects either omission instead of reusing x86
   register names or inventing a store value.
+- The target exporter rejects an underspecified `AtomicRMW`; it does not guess an
+  `amoadd` for LOCK/XCHG. Atomic execution remains characterized by the route-local
+  facades until the fixture carries an operation and value lowering.
 - Critical roles can be correlated by recovered callback entry PC. A matched critical
   instruction can therefore be checked even when its abstract object identity is
   still unresolved; the case itself remains `UNKNOWN` until all recovery obligations
@@ -36,6 +39,10 @@ workers (notably MP and the MFENCE variant). Their lower fixed-execution records
 useful characterization evidence, but they do not change the ordinary static
 verdict or prove the full ELF safe. Each case report now also records that unchanged
 full-slice static verdict and checker conclusion separately from the projection.
+When an oracle record has concrete herd outcomes, the same case report also stores
+an evaluation-only comparison for each fixed execution. `Unsupported` oracle data
+remain `INCOMPLETE`; an actual legality mismatch is retained as an error and leaves
+the case `UNKNOWN` without changing its static verdict.
 
 ### Implementation mapping
 

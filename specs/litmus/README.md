@@ -24,6 +24,10 @@ The generated ELF corpus is an external input selected by an explicit corpus-roo
 option. A manifest record is valid only after the implementation phase has recorded
 the corpus revision and final ELF hash.
 
+The first target exporter intentionally rejects an `AtomicRMW` that does not carry
+its concrete operation and value. It must not guess `amoadd` for a LOCK/XCHG event;
+atomic cases stay in route-local characterization until their lowering is explicit.
+
 An oracle record may include the original `exists` or final-state expression in
 `outcome`, and a separately written `target_condition` for the contract-lowered
 RISC-V registers. These texts explain what herd evaluates; neither selects BMoCheck

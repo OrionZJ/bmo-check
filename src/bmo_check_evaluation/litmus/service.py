@@ -22,6 +22,11 @@ from .conformance import (
     align_critical_events,
 )
 from .model import ExecutionAssignment, ExecutionLegality, LitmusCase, LitmusManifest
+from .oracle_comparison import (
+    OracleComparisonStatus,
+    OracleLegalityComparison,
+    compare_execution_with_oracle,
+)
 from .projection import CriticalProjectionError, project_critical_slice
 
 
@@ -98,6 +103,9 @@ class LitmusCaseConformance:
     source_path: str
     conformance: ConformanceResult | None = None
     executions: tuple[ExecutionLegalityRecord, ...] = ()
+    # 每个固定 execution 与 manifest 中 herd outcome 的对照；这是
+    # evaluation 证据，不会成为 static proof premise。
+    oracle_comparisons: tuple[OracleLegalityComparison, ...] = ()
     # 这是同一份完整 recovery report 交给普通 static verifier 的结果；
     # critical projection 不能覆盖它，也不能把 UNKNOWN 改成 SAFE。
     static_verdict: str | None = None
@@ -386,6 +394,10 @@ def run_litmus_conformance(request: LitmusConformanceRequest) -> LitmusConforman
                 if projection is not None
                 else ()
             )
+            oracle_comparisons = tuple(
+                compare_execution_with_oracle(execution, case.oracle)
+                for execution in executions
+            )
             errors = conformance.reasons
             if projection_error is not None:
                 errors = (*errors, projection_error)
@@ -401,6 +413,20 @@ def run_litmus_conformance(request: LitmusConformanceRequest) -> LitmusConforman
             )
             if expectation_errors:
                 errors = (*errors, *expectation_errors)
+            oracle_mismatches = tuple(
+                f"{execution.assignment_id}: {difference}"
+                for execution, comparison in zip(
+                    executions, oracle_comparisons, strict=True
+                )
+                if comparison.status is OracleComparisonStatus.MISMATCH
+                for difference in comparison.differences
+            )
+            if oracle_mismatches:
+                errors = (
+                    *errors,
+                    "execution legality disagrees with the external herd oracle",
+                    *oracle_mismatches,
+                )
             status = (
                 ConformanceStatus.MATCHED
                 if conformance.status is ConformanceStatus.MATCHED and not errors
@@ -414,6 +440,7 @@ def run_litmus_conformance(request: LitmusConformanceRequest) -> LitmusConforman
                     source_path=str(source),
                     conformance=conformance,
                     executions=executions,
+                    oracle_comparisons=oracle_comparisons,
                     static_verdict=static_certificate.verdict.value,
                     static_checker_conclusion=(
                         static_certificate.checker.conclusion.value

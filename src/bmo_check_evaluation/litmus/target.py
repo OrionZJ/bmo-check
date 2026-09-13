@@ -91,10 +91,12 @@ def _event_instruction(
             )
         return (f"addi x5,x0,{value}", f"{mnemonic} x5,0({object_register})")
     if kind is FixtureEventKind.ATOMIC_RMW:
-        if width not in {4, 8} or object_register is None:
-            raise TargetExportError("target atomic oracle supports only 4/8-byte AMO")
-        mnemonic = "amoadd.w.aqrl" if width == 4 else "amoadd.d.aqrl"
-        return (f"{mnemonic} {destination},x0,({object_register})",)
+        # ``AtomicRMW`` 没有记录具体的 x86 操作和值；把它猜成 amoadd 会把
+        # XCHG 或 LOCK 指令悄悄改成另一种写入。E2.5 首批 oracle 只覆盖
+        # 普通访存和显式 Fence，原子 case 必须等 fixture 增加完整操作信息。
+        raise TargetExportError(
+            "target atomic oracle needs an explicit operation/value lowering"
+        )
     if kind in _FENCE_FIELDS:
         field = _FENCE_FIELDS[kind]
         fence = getattr(contract.translation, field)
