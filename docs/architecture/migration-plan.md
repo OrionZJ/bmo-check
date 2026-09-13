@@ -451,13 +451,20 @@ The generic `AffineValidationReport` and the local canneal run are recorded in
 `docs/exec-plans/active/e2-canneal-validation.md`. This phase reports closure or
 coverage gaps explicitly and does not alter the static verdict.
 
-### E2.5 — Establish a real litmus ELF correctness baseline (planned)
+### E2.5 — Establish a real litmus ELF correctness baseline (implemented baseline)
 
 Before E3 changes static precision, validate the current memory-model semantics with
 representative generated x86-64 ELFs from the sibling `litmus-tests-x86/elf-tests`
 corpus. Every ELF must enter through the normal binary/CFG/thread/MemoryEvent/shared
 slice path. A separate evaluation-owned herd oracle checks concrete execution
 legality; it cannot construct proof evidence, remove events or change a verdict.
+
+The repository now contains the versioned fixture, route-local characterization,
+contract-aware oracle adapter and opt-in real-ELF conformance profile described in
+`docs/exec-plans/active/e2-5-litmus-elf-correctness.md`. The six pinned cases pass
+the local recovery profile. Actual source/target herd outcomes remain pending until
+herd7 is available in the execution environment; checked-in records therefore stay
+`Unsupported` rather than guessing a result.
 
 Keep three results distinct:
 

@@ -1021,7 +1021,7 @@ precision.
 
 ## 16. Risks and deferred work
 
-Known risks to resolve during implementation:
+Remaining risks and environment-dependent validation:
 
 - generated wrapper/function-pointer patterns may prevent complete pthread role
   recovery;
@@ -1029,8 +1029,10 @@ Known risks to resolve during implementation:
   assumption;
 - generated mbar/barrier code may connect otherwise separate critical events;
 - same-address PPO currently differs between static and dynamic implementations;
-- static contract interpretation is not yet field-by-field canonical;
-- a herd target exporter must model the contract rather than raw x86-to-RISC-V names;
+- the general legacy static CLI still reads only the contract version; the E2.5
+  conformance service itself is field-by-field bound to the canonical contract;
+- the evaluation-only target exporter models the supported contract, but actual herd
+  source/target outcomes still need a local herd7 installation and reviewed inputs;
 - generated-code licensing and compiler/runtime reproducibility may rule out vendoring
   ELFs.
 
@@ -1045,8 +1047,9 @@ Deferred beyond E2.5:
 
 ## 17. This planning pass
 
-This document was produced by reading repository source, existing tests, generated C,
-`.t` summaries, corpus scripts and current architecture/specification documents. The
-planning pass did not execute BMoCheck, herd, any generated ELF or the test suite, and
-did not disassemble an ELF. All facts that require final-binary confirmation are
-explicit characterization gates above.
+The initial planning pass was produced by reading repository source, existing tests,
+generated C, `.t` summaries, corpus scripts and current architecture/specification
+documents without executing BMoCheck, herd or the generated ELFs. The subsequent
+implementation checkpoint ran the opt-in recovery profile against the pinned local
+corpus; facts that still require an external herd binary or fresh corpus build remain
+explicitly marked as pending above.
