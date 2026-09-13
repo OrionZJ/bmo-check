@@ -159,6 +159,35 @@ Each case directory also contains generated C, a compact `.t` listing, a Makefil
 build/run scripts, and generated utility, output and random-number sources/objects.
 The main repository must not copy this full generated tree.
 
+### 3.3 Full-corpus execution plan
+
+The six-case profile above is the checked-in correctness baseline; it is not a
+claim that all generated ELF have already passed the end-to-end service. The
+local corpus expansion is tracked separately so a partial run cannot be mistaken
+for an E2.5 completion:
+
+- A source-only herd7 sweep has completed for all 2,595 `.litmus` files. It uses
+  the installed `x86tso-mixed.cat` model and records only one compact JSONL row per
+  source under the external E2.5 artifact directory: `Allowed=803`,
+  `Forbidden=1,792`, and no invocation errors.
+- `scripts/run_e2_5_corpus_sweep.py` maps each source to its generated ELF using
+  the corpus-relative path, then invokes the ordinary `slice_report` and
+  `verify_portability` service. It records hashes, event counts, thread-role
+  count, verdict/conclusion, Unknown-kind counts and elapsed time; it never
+  serializes a full recovery report, target file or herd output.
+- The sweep is append-only and resumable by ELF relative path. It defaults to one
+  worker because a single static worker currently peaks around 2.5 GB in WSL;
+  output and logs belong in the user-authorized `E:\bmo-check-e2-5-full` directory.
+  The generated corpus itself remains in its existing location and is not copied.
+- A completed source oracle row does not substitute for ELF recovery or target
+  legality. Until every ELF has a result row (or an explicit bounded failure),
+  the full-corpus E2.5 status remains `INCOMPLETE`; individual static
+  `UNKNOWN` results are preserved as findings, not converted to passes.
+
+The first full-corpus run was started with the bounded settings documented by the
+script (`scope=application`, provenance limit 32, 24-event checker bound, one
+worker). Its partial rows are temporary E-drive evidence and are not committed.
+
 ### 3.1 Confirmed generated-program shape
 
 Source inspection of the generated `SB` and `MP+mfence+po` cases establishes the
