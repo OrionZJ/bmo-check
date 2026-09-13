@@ -330,6 +330,15 @@ def discover_pthread_threads(
             )
             if callback_resolution.targets:
                 callback_valid = callback_resolution.complete
+        else:
+            # 即使第三实参已经在 wrapper 内由常量定义，也要查询 caller
+            # 上下文；否则同一个 wrapper 被多个线程角色调用时，常量 callback
+            # 会被错误地归到一个合并后的父角色。
+            enriched = resolve_callback_targets(
+                context, module, control_flow, call, "rdx"
+            )
+            if enriched.complete and callback_pc in enriched.targets:
+                callback_resolution = enriched
         if callback_valid:
             resolved_pcs = (
                 callback_resolution.targets
@@ -498,19 +507,38 @@ def discover_pthread_threads(
     # 一个 wrapper 可能在 main 和 worker 两条调用上下文中复用；把它的
     # 多个 callback 合并成一个 role 会让父线程永远变成 unknown，并把
     # 不同 worker 的事件混在一起。只有 callback 集合和 caller 上下文都
-    # 闭合时才按目标拆 role；普通单目标 pthread_create 保持旧 ID。
+    # 闭合时才按目标和调用点拆 role；普通单目标、单调用点仍保持旧 ID。
     role_entries: list[
-        tuple[object, str, IndirectTargetSet, str | None, int | None, tuple[str, ...]]
+        tuple[
+            object,
+            str,
+            IndirectTargetSet,
+            str | None,
+            int | None,
+            tuple[str, ...],
+            tuple[int, int, int | None] | None,
+        ]
     ] = []
     for call, role_id, targets, argument_origin, all_handles in recovered_creates:
         contexts = callback_contexts.get(call.location.pc, ())
-        if targets.complete and len(targets.known_targets) > 1 and contexts:
-            for target in targets.known_targets:
-                target_contexts = {
-                    (caller, caller_call)
-                    for callback, caller, caller_call in contexts
-                    if callback == target.pc
-                }
+        context_keys = tuple(
+            dict.fromkeys(
+                (callback, caller, caller_call)
+                for callback, caller, caller_call in contexts
+            )
+        )
+        split_contexts = targets.complete and bool(context_keys) and (
+            len(targets.known_targets) > 1 or len(context_keys) > 1
+        )
+        if split_contexts:
+            for target_pc, caller_function, caller_call in context_keys:
+                target = next(
+                    (item for item in targets.known_targets if item.pc == target_pc),
+                    None,
+                )
+                if target is None:
+                    continue
+                target_contexts = {(caller_function, caller_call)}
                 target_handles = tuple(
                     dict.fromkeys(
                         location
@@ -528,20 +556,29 @@ def discover_pthread_threads(
                 role_entries.append(
                     (
                         call,
-                        f"{role_id}#{target.pc:x}",
+                        (
+                            f"{role_id}#{target.pc:x}"
+                            + (
+                                f"@caller:{caller_function:x}:call:"
+                                f"{caller_call if caller_call is not None else 'none'}"
+                                if len(context_keys) > 1
+                                else ""
+                            )
+                        ),
                         single,
                         argument_origin,
                         target.pc,
                         target_handles,
+                        (target_pc, caller_function, caller_call),
                     )
                 )
         else:
             role_entries.append(
-                (call, role_id, targets, argument_origin, None, all_handles)
+                (call, role_id, targets, argument_origin, None, all_handles, None)
             )
 
     role_roots: dict[str, tuple[int, ...]] = {"main": (main_function.pc,)}
-    for _, role_id, targets, _, _, _ in role_entries:
+    for _, role_id, targets, _, _, _, _ in role_entries:
         role_roots[role_id] = tuple(item.pc for item in targets.known_targets)
     for _, role_id, targets, _ in openmp_entries:
         # role_id 按 call site 区分并行阶段；这里仍用 setdefault 保留该
@@ -565,8 +602,22 @@ def discover_pthread_threads(
         return _containing_role(reachability, function_pc)
 
     role_handle_locations: dict[str, tuple[str, ...]] = {}
-    for call, role_id, targets, argument_origin, target_pc, handle_locations in role_entries:
+    for (
+        call,
+        role_id,
+        targets,
+        argument_origin,
+        target_pc,
+        handle_locations,
+        selected_context,
+    ) in role_entries:
         contexts = callback_contexts.get(call.location.pc, ())
+        if selected_context is not None:
+            contexts = tuple(
+                context
+                for context in contexts
+                if context == selected_context
+            )
         parent_candidates: set[str] = set()
         parent_complete = True
         if target_pc is not None:

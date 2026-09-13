@@ -252,3 +252,74 @@ def test_multiple_wrapper_calls_map_join_handles_to_distinct_roles(
         }
         for item in report.unknowns
     )
+
+
+def test_wrapper_called_from_main_and_worker_keeps_lifecycle_contexts(
+    tmp_path: Path,
+) -> None:
+    """同一 callback wrapper 的不同父角色必须各自形成可回查生命周期事实。"""
+
+    gcc = shutil.which("gcc")
+    assert gcc is not None
+    source = tmp_path / "multi-caller-wrapper.c"
+    source.write_text(
+        "#include <pthread.h>\n"
+        "typedef void *(*start_fn)(void *);\n"
+        "static volatile int sink;\n"
+        "static __attribute__((noinline)) void *worker(void *arg) { sink = 1; return arg; }\n"
+        "static __attribute__((noinline)) void launch(start_fn fn) {\n"
+        "  pthread_t local; pthread_create(&local, 0, fn, 0);\n"
+        "  pthread_join(local, 0);\n"
+        "}\n"
+        "static __attribute__((noinline)) void *parent(void *arg) {\n"
+        "  launch(worker); return arg;\n"
+        "}\n"
+        "int main(void) {\n"
+        "  pthread_t outer; pthread_create(&outer, 0, parent, 0);\n"
+        "  launch(worker); pthread_join(outer, 0);\n"
+        "  return sink != 1;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    executable = tmp_path / "multi-caller-wrapper"
+    subprocess.run(
+        [
+            gcc,
+            "-O0",
+            "-fno-omit-frame-pointer",
+            "-o",
+            str(executable),
+            str(source),
+            "-pthread",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    manifest = _manifest(executable)
+    assert manifest.executable is not None
+    control_flow = recover_control_flow(manifest.executable, manifest)
+    report = discover_pthread_threads(manifest.executable, manifest, control_flow)
+
+    assert len(report.creates) == 3
+    assert all(fact.start_targets.complete for fact in report.creates)
+    assert all(fact.handle_locations for fact in report.creates)
+    assert len(report.joins) == 3
+    assert all(fact.complete for fact in report.joins)
+    assert {fact.parent_role for fact in report.creates} == {
+        "main",
+        next(
+            fact.child_role
+            for fact in report.creates
+            if fact.start_targets.known_targets[0].symbol == "parent"
+        ),
+    }
+    assert not any(
+        item.kind
+        in {
+            UnknownKind.REACHING_DEFINITION_FAILURE,
+            UnknownKind.UNKNOWN_THREAD_ENTRY,
+            UnknownKind.UNKNOWN_JOIN_RELATION,
+        }
+        for item in report.unknowns
+    )

@@ -285,7 +285,11 @@ def _value_from_operand(
     # movaps/movdqa 常把两个 callback 指针一次写入 16 字节栈槽；
     # 后续按 +8 读取时仍应取第二个 lane，而不是把整个槽判成 Unknown。
     for (stored_base, stored_offset), lanes in stack.items():
-        if stored_base != base or not stored_offset <= displacement < stored_offset + 16:
+        stored_width = 16 if lanes[1] is not None else 8
+        if (
+            stored_base != base
+            or not stored_offset <= displacement < stored_offset + stored_width
+        ):
             continue
         lane = 1 if displacement - stored_offset >= 8 else 0
         return lanes[lane]
@@ -581,6 +585,43 @@ def _resolve_tokens(
         if pcs or locations:
             unique_pcs = tuple(dict.fromkeys(pcs))
             unique_locations = tuple(dict.fromkeys(locations))
+            callers = _callers_of(control_flow, function_pc, module.sha256) if control_flow is not None else ()
+            if callers:
+                # wrapper 内部直接保存的 callback/句柄也要沿调用点区分。
+                # 否则同一个栈槽会把 main 和 worker 的生命周期事实合成一条，
+                # 后续只能错误地选择一个父角色。
+                contextual_locations = tuple(
+                    dict.fromkeys(
+                        f"{location}|caller@0x{caller.containing_function_pc:x}:call@0x{caller.location.pc:x}"
+                        for caller in callers
+                        for location in unique_locations
+                    )
+                )
+                return CallbackResolution(
+                    targets=unique_pcs,
+                    complete=True,
+                    origin="closed ELF callback value with caller contexts",
+                    contexts=tuple(
+                        (pc, caller.containing_function_pc)
+                        for caller in callers
+                        for pc in unique_pcs
+                    ),
+                    call_contexts=tuple(
+                        (pc, caller.containing_function_pc, caller.location.pc)
+                        for caller in callers
+                        for pc in unique_pcs
+                    ),
+                    locations=contextual_locations,
+                    location_contexts=tuple(
+                        (
+                            f"{location}|caller@0x{caller.containing_function_pc:x}:call@0x{caller.location.pc:x}",
+                            caller.containing_function_pc,
+                            caller.location.pc,
+                        )
+                        for caller in callers
+                        for location in unique_locations
+                    ),
+                )
             return CallbackResolution(
                 targets=unique_pcs,
                 complete=True,
