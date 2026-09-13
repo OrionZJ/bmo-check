@@ -85,10 +85,16 @@ def test_run_binds_both_inputs_and_preserves_raw_observations(
     outputs = iter(
         (
             subprocess.CompletedProcess(
-                args=(), returncode=0, stdout="Test source Allowed\n", stderr=""
+                args=(),
+                returncode=0,
+                stdout="Test source Allowed\nPositive: 1 Negative: 0\n",
+                stderr="",
             ),
             subprocess.CompletedProcess(
-                args=(), returncode=0, stdout="Test target Forbidden\n", stderr=""
+                args=(),
+                returncode=0,
+                stdout="Test target Allowed\nPositive: 0 Negative: 1\n",
+                stderr="",
             ),
         )
     )
@@ -121,10 +127,16 @@ def test_replay_rejects_changed_contract_or_outcome_without_proof_effect(
     outputs = iter(
         (
             subprocess.CompletedProcess(
-                args=(), returncode=0, stdout="Test source Allowed\n", stderr=""
+                args=(),
+                returncode=0,
+                stdout="Test source Allowed\nPositive: 1 Negative: 0\n",
+                stderr="",
             ),
             subprocess.CompletedProcess(
-                args=(), returncode=0, stdout="Test target Allowed\n", stderr=""
+                args=(),
+                returncode=0,
+                stdout="Test target Allowed\nPositive: 1 Negative: 0\n",
+                stderr="",
             ),
         )
     )
@@ -158,8 +170,18 @@ def test_oracle_report_round_trip_keeps_contract_and_run_provenance(
     request = replace(request, herd_version="herd7-test")
     outputs = iter(
         (
-            subprocess.CompletedProcess(args=(), returncode=0, stdout="Test source Allowed\n", stderr=""),
-            subprocess.CompletedProcess(args=(), returncode=0, stdout="Test target Allowed\n", stderr=""),
+            subprocess.CompletedProcess(
+                args=(),
+                returncode=0,
+                stdout="Test source Allowed\nPositive: 1 Negative: 0\n",
+                stderr="",
+            ),
+            subprocess.CompletedProcess(
+                args=(),
+                returncode=0,
+                stdout="Test target Allowed\nPositive: 1 Negative: 0\n",
+                stderr="",
+            ),
         )
     )
     monkeypatch.setattr("subprocess.run", lambda *args, **kwargs: next(outputs))
@@ -184,8 +206,18 @@ def test_oracle_replay_detects_herd_version_drift(tmp_path: Path, monkeypatch) -
     request = replace(request, herd_version="herd7-recorded")
     outputs = iter(
         (
-            subprocess.CompletedProcess(args=(), returncode=0, stdout="Test source Allowed\n", stderr=""),
-            subprocess.CompletedProcess(args=(), returncode=0, stdout="Test target Allowed\n", stderr=""),
+            subprocess.CompletedProcess(
+                args=(),
+                returncode=0,
+                stdout="Test source Allowed\nPositive: 1 Negative: 0\n",
+                stderr="",
+            ),
+            subprocess.CompletedProcess(
+                args=(),
+                returncode=0,
+                stdout="Test target Allowed\nPositive: 1 Negative: 0\n",
+                stderr="",
+            ),
         )
     )
     monkeypatch.setattr("subprocess.run", lambda *args, **kwargs: next(outputs))
@@ -199,8 +231,18 @@ def test_oracle_replay_detects_herd_version_drift(tmp_path: Path, monkeypatch) -
 
     replay_outputs = iter(
         (
-            subprocess.CompletedProcess(args=(), returncode=0, stdout="Test source Allowed\n", stderr=""),
-            subprocess.CompletedProcess(args=(), returncode=0, stdout="Test target Allowed\n", stderr=""),
+            subprocess.CompletedProcess(
+                args=(),
+                returncode=0,
+                stdout="Test source Allowed\nPositive: 1 Negative: 0\n",
+                stderr="",
+            ),
+            subprocess.CompletedProcess(
+                args=(),
+                returncode=0,
+                stdout="Test target Allowed\nPositive: 1 Negative: 0\n",
+                stderr="",
+            ),
         )
     )
     monkeypatch.setattr("subprocess.run", lambda *args, **kwargs: next(replay_outputs))
