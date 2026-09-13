@@ -185,3 +185,70 @@ def test_parameterized_pthread_wrapper_recovers_closed_callback(tmp_path: Path) 
     assert callback.call_contexts
     assert handle.complete
     assert handle.locations
+
+
+def test_multiple_wrapper_calls_map_join_handles_to_distinct_roles(
+    tmp_path: Path,
+) -> None:
+    gcc = shutil.which("gcc")
+    assert gcc is not None
+    source = tmp_path / "multi-wrapper.c"
+    source.write_text(
+        "#include <pthread.h>\n"
+        "typedef void *(*start_fn)(void *);\n"
+        "static volatile int sink;\n"
+        "static __attribute__((noinline)) void *worker_a(void *arg) { sink = 1; return arg; }\n"
+        "static __attribute__((noinline)) void *worker_b(void *arg) { sink = 2; return arg; }\n"
+        "static __attribute__((noinline)) void launch(pthread_t *slot, start_fn fn) {\n"
+        "  pthread_create(slot, 0, fn, 0);\n"
+        "}\n"
+        "static __attribute__((noinline)) void wait_one(pthread_t *slot) {\n"
+        "  pthread_join(*slot, 0);\n"
+        "}\n"
+        "int main(void) {\n"
+        "  pthread_t first, second;\n"
+        "  launch(&first, worker_a); launch(&second, worker_b);\n"
+        "  wait_one(&first); wait_one(&second);\n"
+        "  return sink == 2 ? 0 : 1;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    executable = tmp_path / "multi-wrapper"
+    subprocess.run(
+        [
+            gcc,
+            "-O0",
+            "-fno-omit-frame-pointer",
+            "-o",
+            str(executable),
+            str(source),
+            "-pthread",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    manifest = _manifest(executable)
+    assert manifest.executable is not None
+    control_flow = recover_control_flow(manifest.executable, manifest)
+    report = discover_pthread_threads(manifest.executable, manifest, control_flow)
+
+    assert len(report.creates) == 2
+    assert {fact.parent_role for fact in report.creates} == {"main"}
+    assert all(fact.start_targets.complete for fact in report.creates)
+    assert all(fact.handle_locations for fact in report.creates)
+    assert len(report.joins) == 2
+    assert all(fact.complete for fact in report.joins)
+    assert {
+        role
+        for fact in report.joins
+        for role in fact.candidate_child_roles
+    } == {fact.child_role for fact in report.creates}
+    assert not any(
+        item.kind
+        in {
+            UnknownKind.UNKNOWN_THREAD_ENTRY,
+            UnknownKind.UNKNOWN_JOIN_RELATION,
+        }
+        for item in report.unknowns
+    )
