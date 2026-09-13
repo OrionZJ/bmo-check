@@ -119,6 +119,9 @@ def _report(elf_hash: str = HASH) -> ProgramSliceReport:
                 ),
             ),
             dbt_contract_version="dbt6-mo-off-v2",
+            # 证书只有绑定具体翻译器 revision 才能代表可回放的 lowering；
+            # fixture 也应覆盖这条静态 proof 的完整性门槛。
+            dbt_revision="fixture-rev",
             closure_complete=True,
             execution=ExecutionScope(thread_count_min=1, thread_count_max=1),
         ),
