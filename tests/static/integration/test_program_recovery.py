@@ -398,3 +398,64 @@ def test_openmp_wrapper_keeps_parallel_contexts_per_caller(tmp_path: Path) -> No
         }
         for item in report.unknowns
     )
+
+
+def test_ambiguous_reused_handle_stays_unknown(tmp_path: Path) -> None:
+    """同一 pthread_t 槽位承载多个 child 时，join 不能猜一个角色。"""
+
+    gcc = shutil.which("gcc")
+    assert gcc is not None
+    source = tmp_path / "reused-handle.c"
+    source.write_text(
+        "#include <pthread.h>\n"
+        "typedef void *(*start_fn)(void *);\n"
+        "static volatile int sink;\n"
+        "static __attribute__((noinline)) void *worker_a(void *arg) { sink = 1; return arg; }\n"
+        "static __attribute__((noinline)) void *worker_b(void *arg) { sink = 2; return arg; }\n"
+        "static __attribute__((noinline)) void launch(pthread_t *slot, start_fn fn) {\n"
+        "  pthread_create(slot, 0, fn, 0);\n"
+        "}\n"
+        "static __attribute__((noinline)) void wait_one(pthread_t *slot) {\n"
+        "  pthread_join(*slot, 0);\n"
+        "}\n"
+        "int main(void) {\n"
+        "  pthread_t reused;\n"
+        "  launch(&reused, worker_a); launch(&reused, worker_b);\n"
+        "  wait_one(&reused);\n"
+        "  return sink == 0;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    executable = tmp_path / "reused-handle"
+    subprocess.run(
+        [
+            gcc,
+            "-O0",
+            "-fno-omit-frame-pointer",
+            "-o",
+            str(executable),
+            str(source),
+            "-pthread",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    manifest = _manifest(executable)
+    assert manifest.executable is not None
+    control_flow = recover_control_flow(manifest.executable, manifest)
+    report = discover_pthread_threads(manifest.executable, manifest, control_flow)
+
+    assert len(report.creates) == 2
+    assert all(fact.handle_locations for fact in report.creates)
+    assert set(report.creates[0].handle_locations) == set(
+        report.creates[1].handle_locations
+    )
+    assert len(report.joins) == 1
+    assert not report.joins[0].complete
+    assert set(report.joins[0].candidate_child_roles) == {
+        fact.child_role for fact in report.creates
+    }
+    assert any(
+        item.kind == UnknownKind.UNKNOWN_JOIN_RELATION for item in report.unknowns
+    )
