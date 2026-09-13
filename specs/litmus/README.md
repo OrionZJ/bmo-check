@@ -3,11 +3,12 @@
 This directory contains reviewed metadata for the real ELF correctness profile. It
 does not contain the generated `litmus-tests-x86/elf-tests` tree.
 
-The future manifest uses `schema`, `corpus_name`, `corpus_revision` and `cases`. Every
-case binds the original `.litmus` and generated ELF by SHA-256, records its build
-recipe, lists binary-bound critical instruction identities and stores explicit
-`po/rf/co/fr` assignments. The oracle stores source herd outcome and
-contract-lowered target outcome as separate values.
+The manifest uses `schema`, `corpus_name`, `corpus_revision` and `cases`. Every case
+binds the original `.litmus` and generated ELF by SHA-256, records its build recipe,
+lists binary-bound critical instruction identities and stores explicit `po/rf/co/fr`
+assignments. Plain stores carry their source immediate value so a target exporter
+cannot silently replace a `2` with a guessed `1`. The oracle stores source herd
+outcome and contract-lowered target outcome as separate values.
 
 Case IDs, source labels and function names are evaluation metadata. They must not
 select BMoCheck proof rules, event removal or verdicts. A malformed, stale or
@@ -24,9 +25,10 @@ option. A manifest record is valid only after the implementation phase has recor
 the corpus revision and final ELF hash.
 
 An oracle record may include the original `exists` or final-state expression in
-`outcome`. This text explains what herd evaluates; it never selects BMoCheck proof
-rules. Until herd is refreshed, `source_outcome` and `target_outcome` must remain
-`Unsupported` with an explicit not-run provenance rather than guessed results.
+`outcome`, and a separately written `target_condition` for the contract-lowered
+RISC-V registers. These texts explain what herd evaluates; neither selects BMoCheck
+proof rules. Until herd is refreshed, `source_outcome` and `target_outcome` must
+remain `Unsupported` with an explicit not-run provenance rather than guessed results.
 
 The external profile is opt-in because the generated corpus is kept outside this
 repository. From WSL, run the normal static application path with:

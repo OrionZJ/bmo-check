@@ -49,8 +49,11 @@ class HerdOutcome(StrEnum):
 class ExecutionLegality(StrEnum):
     """BMoCheck facade 对一个固定关系赋值的底层结果。"""
 
+    # source/target 模型允许该固定关系继续存在。
     ALLOWED = "Allowed"
+    # 该固定关系触发模型约束，不能作为合法执行。
     FORBIDDEN = "Forbidden"
+    # 输入或求解边界未闭合，不能把“未找到”解释成任一方向。
     UNKNOWN = "Unknown"
 
 
@@ -106,6 +109,10 @@ class CriticalEvent(_StrictModel):
     kind: FixtureEventKind = Field(description="x86 critical operation 种类")
     object_label: str | None = Field(default=None, description="事件访问的抽象对象标签")
     width: int | None = Field(default=None, description="访存宽度，单位为字节")
+    value: int | None = Field(
+        default=None,
+        description="store 写入的显式值；缺失时 target oracle 不能猜测 lowering",
+    )
     instruction_pc: int | None = Field(default=None, description="ELF 中指令 PC")
     operand_index: int | None = Field(default=None, description="指令内 memory operand 编号")
     thread_entry_pc: int | None = Field(
@@ -128,8 +135,12 @@ class CriticalEvent(_StrictModel):
                 raise ValueError("memory critical events need a 1/2/4/8-byte width")
             if self.object_label is None or not self.object_label:
                 raise ValueError("memory critical events need an object label")
+            if self.kind is not FixtureEventKind.STORE and self.value is not None:
+                raise ValueError("only plain store critical events can carry a value")
         elif self.width is not None or self.object_label is not None:
             raise ValueError("fence critical events cannot carry memory object fields")
+        elif self.value is not None:
+            raise ValueError("fence critical events cannot carry a value")
         if self.instruction_pc is not None and self.instruction_pc < 0:
             raise ValueError("instruction_pc must be non-negative")
         if self.operand_index is not None and self.operand_index < 0:
@@ -244,6 +255,10 @@ class HerdOracleRecord(_StrictModel):
         default=None,
         description="原始 litmus 的 exists/final-state 谓词，供报告解释",
     )
+    target_condition: str | None = Field(
+        default=None,
+        description="contract-lowered target 输入的 outcome；不能复用 x86 寄存器名",
+    )
     source_outcome: HerdOutcome = Field(description="source 模型对 outcome 的判断")
     target_outcome: HerdOutcome = Field(description="target 模型对 outcome 的判断")
     source_input_sha256: str = Field(description="source herd 输入的 SHA-256")
@@ -259,6 +274,8 @@ class HerdOracleRecord(_StrictModel):
             raise ValueError("herd version and model names must be non-empty")
         if self.outcome is not None and not self.outcome:
             raise ValueError("oracle outcome must be non-empty when present")
+        if self.target_condition is not None and not self.target_condition:
+            raise ValueError("target oracle condition must be non-empty when present")
         if not self.contract_version:
             raise ValueError("contract_version must be non-empty")
         for value in (
@@ -289,6 +306,11 @@ class LitmusCase(_StrictModel):
         labels = [event.label for event in self.critical_events]
         if len(labels) != len(set(labels)):
             raise ValueError("critical event labels must be unique")
+        ordinals = [
+            (event.thread, event.ordinal) for event in self.critical_events
+        ]
+        if len(ordinals) != len(set(ordinals)):
+            raise ValueError("critical event ordinals must be unique within a thread")
         known = set(labels)
         for edge in self.program_order:
             if edge.source not in known or edge.target not in known:

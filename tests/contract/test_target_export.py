@@ -31,7 +31,7 @@ def test_target_export_maps_plain_operations_and_fence_through_contract() -> Non
     assert "sd x5,0(x6)" in text
     assert "fence rw,rw" in text
     assert "ld x10,0(x6)" in text or "ld x10,0(x7)" in text
-    assert "exists (1:rax=1 /\\ 1:rbx=0)" in text
+    assert "exists (1:x10=1 /\\ 1:x11=0)" in text
 
 
 def test_target_export_rejects_noncanonical_contract() -> None:
@@ -48,3 +48,51 @@ def test_target_export_rejects_noncanonical_contract() -> None:
     )
     with pytest.raises(TargetExportError):
         export_contract_target(manifest.cases[0], bad)
+
+
+def test_target_export_rejects_missing_store_value() -> None:
+    manifest = load_manifest(
+        Path(__file__).resolve().parents[2]
+        / "specs"
+        / "litmus"
+        / "e2-5-representative.yaml"
+    )
+    case = manifest.cases[0].model_copy(
+        update={
+            "critical_events": tuple(
+                event.model_copy(update={"value": None})
+                if event.kind.value == "Store"
+                else event
+                for event in manifest.cases[0].critical_events
+            )
+        }
+    )
+    with pytest.raises(TargetExportError):
+        export_contract_target(case, _contract())
+
+
+@pytest.mark.parametrize(
+    ("case_id", "condition"),
+    [
+        ("SB", "exists (0:x10=0 /\\ 1:x10=0)"),
+        ("MP", "exists (1:x10=1 /\\ 1:x11=0)"),
+        ("LB", "exists (0:x10=1 /\\ 1:x10=1)"),
+        ("2+2W", "exists (x=2 /\\ y=2)"),
+        ("CoWW", "exists (not (x=2))"),
+        ("MP+mfence+po", "exists (1:x10=1 /\\ 1:x11=0)"),
+    ],
+)
+def test_each_representative_target_condition_is_explicit(
+    case_id: str, condition: str
+) -> None:
+    manifest = load_manifest(
+        Path(__file__).resolve().parents[2]
+        / "specs"
+        / "litmus"
+        / "e2-5-representative.yaml"
+    )
+    case = next(item for item in manifest.cases if item.case_id == case_id)
+    text = export_contract_target(case, _contract())
+    assert condition in text
+    if case_id in {"2+2W", "CoWW"}:
+        assert "addi x5,x0,2" in text

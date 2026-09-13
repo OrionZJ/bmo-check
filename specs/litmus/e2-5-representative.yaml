@@ -11,9 +11,9 @@ cases:
       corpus_revision: a6dadced36343b9c21f00a173950a23e90068cd0
       build_recipe: litmus-tests-x86/build_all_elf.sh
     critical_events:
-      - {label: p0-w-x, thread: 0, ordinal: 0, kind: Store, object_label: x, width: 8, instruction_pc: 32879, thread_entry_pc: 32784}
+      - {label: p0-w-x, thread: 0, ordinal: 0, kind: Store, object_label: x, width: 8, value: 1, instruction_pc: 32879, thread_entry_pc: 32784}
       - {label: p0-r-y, thread: 0, ordinal: 1, kind: Load, object_label: y, width: 8, instruction_pc: 32887, thread_entry_pc: 32784}
-      - {label: p1-w-y, thread: 1, ordinal: 0, kind: Store, object_label: y, width: 8, instruction_pc: 33039, thread_entry_pc: 32944}
+      - {label: p1-w-y, thread: 1, ordinal: 0, kind: Store, object_label: y, width: 8, value: 1, instruction_pc: 33039, thread_entry_pc: 32944}
       - {label: p1-r-x, thread: 1, ordinal: 1, kind: Load, object_label: x, width: 8, instruction_pc: 33047, thread_entry_pc: 32944}
     program_order:
       - {source: p0-w-x, target: p0-r-y}
@@ -30,6 +30,7 @@ cases:
       source_model: x86.cat
       target_model: riscv.cat
       outcome: exists (0:rax=0 /\ 1:rbx=0)
+      target_condition: exists (0:x10=0 /\ 1:x10=0)
       source_outcome: Unsupported
       target_outcome: Unsupported
       source_input_sha256: 959a87a22fc14a122ea1b940adae49c2ea2b7659a80261c50bf90b04f5e880b4
@@ -48,8 +49,8 @@ cases:
       corpus_revision: a6dadced36343b9c21f00a173950a23e90068cd0
       build_recipe: litmus-tests-x86/build_all_elf.sh
     critical_events:
-      - {label: p0-w-x, thread: 0, ordinal: 0, kind: Store, object_label: x, width: 8, instruction_pc: 33053, thread_entry_pc: 32960}
-      - {label: p0-w-y, thread: 0, ordinal: 1, kind: Store, object_label: y, width: 8, instruction_pc: 33061, thread_entry_pc: 32960}
+      - {label: p0-w-x, thread: 0, ordinal: 0, kind: Store, object_label: x, width: 8, value: 1, instruction_pc: 33053, thread_entry_pc: 32960}
+      - {label: p0-w-y, thread: 0, ordinal: 1, kind: Store, object_label: y, width: 8, value: 1, instruction_pc: 33061, thread_entry_pc: 32960}
       - {label: p1-r-y, thread: 1, ordinal: 0, kind: Load, object_label: y, width: 8, instruction_pc: 32897, thread_entry_pc: 32800}
       - {label: p1-r-x, thread: 1, ordinal: 1, kind: Load, object_label: x, width: 8, instruction_pc: 32901, thread_entry_pc: 32800}
     program_order:
@@ -67,6 +68,7 @@ cases:
       source_model: x86.cat
       target_model: riscv.cat
       outcome: exists (1:rax=1 /\ 1:rbx=0)
+      target_condition: exists (1:x10=1 /\ 1:x11=0)
       source_outcome: Unsupported
       target_outcome: Unsupported
       source_input_sha256: 7e629847b6f8a5f6e26fedcf68e9032829e7a914dda31fac2408fd926eb257ed
@@ -86,9 +88,9 @@ cases:
       build_recipe: litmus-tests-x86/build_all_elf.sh
     critical_events:
       - {label: p0-r-x, thread: 0, ordinal: 0, kind: Load, object_label: x, width: 8, instruction_pc: 32895, thread_entry_pc: 32800}
-      - {label: p0-w-y, thread: 0, ordinal: 1, kind: Store, object_label: y, width: 8, instruction_pc: 32899, thread_entry_pc: 32800}
+      - {label: p0-w-y, thread: 0, ordinal: 1, kind: Store, object_label: y, width: 8, value: 1, instruction_pc: 32899, thread_entry_pc: 32800}
       - {label: p1-r-y, thread: 1, ordinal: 0, kind: Load, object_label: y, width: 8, instruction_pc: 33055, thread_entry_pc: 32960}
-      - {label: p1-w-x, thread: 1, ordinal: 1, kind: Store, object_label: x, width: 8, instruction_pc: 33059, thread_entry_pc: 32960}
+      - {label: p1-w-x, thread: 1, ordinal: 1, kind: Store, object_label: x, width: 8, value: 1, instruction_pc: 33059, thread_entry_pc: 32960}
     program_order:
       - {source: p0-r-x, target: p0-w-y}
       - {source: p1-r-y, target: p1-w-x}
@@ -103,6 +105,7 @@ cases:
       source_model: x86.cat
       target_model: riscv.cat
       outcome: exists (0:rax=1 /\ 1:rax=1)
+      target_condition: exists (0:x10=1 /\ 1:x10=1)
       source_outcome: Unsupported
       target_outcome: Unsupported
       source_input_sha256: 7ac71b095a218eb4e245dbac0f4264e0866fab45f6e2faa31c053bde32b44492
@@ -121,10 +124,10 @@ cases:
       corpus_revision: a6dadced36343b9c21f00a173950a23e90068cd0
       build_recipe: litmus-tests-x86/build_all_elf.sh
     critical_events:
-      - {label: p0-w-x, thread: 0, ordinal: 0, kind: Store, object_label: x, width: 8, instruction_pc: 33629, thread_entry_pc: 33536}
-      - {label: p0-w-y, thread: 0, ordinal: 1, kind: Store, object_label: y, width: 8, instruction_pc: 33637, thread_entry_pc: 33536}
-      - {label: p1-w-y, thread: 1, ordinal: 0, kind: Store, object_label: y, width: 8, instruction_pc: 33789, thread_entry_pc: 33696}
-      - {label: p1-w-x, thread: 1, ordinal: 1, kind: Store, object_label: x, width: 8, instruction_pc: 33797, thread_entry_pc: 33696}
+      - {label: p0-w-x, thread: 0, ordinal: 0, kind: Store, object_label: x, width: 8, value: 2, instruction_pc: 33629, thread_entry_pc: 33536}
+      - {label: p0-w-y, thread: 0, ordinal: 1, kind: Store, object_label: y, width: 8, value: 1, instruction_pc: 33637, thread_entry_pc: 33536}
+      - {label: p1-w-y, thread: 1, ordinal: 0, kind: Store, object_label: y, width: 8, value: 2, instruction_pc: 33789, thread_entry_pc: 33696}
+      - {label: p1-w-x, thread: 1, ordinal: 1, kind: Store, object_label: x, width: 8, value: 1, instruction_pc: 33797, thread_entry_pc: 33696}
     program_order:
       - {source: p0-w-x, target: p0-w-y}
       - {source: p1-w-y, target: p1-w-x}
@@ -140,6 +143,7 @@ cases:
       source_model: x86.cat
       target_model: riscv.cat
       outcome: exists (x=2 /\ y=2)
+      target_condition: exists (x=2 /\ y=2)
       source_outcome: Unsupported
       target_outcome: Unsupported
       source_input_sha256: 4802f22c27366f625d23b60abcd4e22c18fab03e5dcdfd5a9306d510cd949c16
@@ -158,8 +162,8 @@ cases:
       corpus_revision: a6dadced36343b9c21f00a173950a23e90068cd0
       build_recipe: litmus-tests-x86/build_all_elf.sh
     critical_events:
-      - {label: p0-w1-x, thread: 0, ordinal: 0, kind: Store, object_label: x, width: 8, instruction_pc: 32522, thread_entry_pc: 32320}
-      - {label: p0-w2-x, thread: 0, ordinal: 1, kind: Store, object_label: x, width: 8, instruction_pc: 32530, thread_entry_pc: 32320}
+      - {label: p0-w1-x, thread: 0, ordinal: 0, kind: Store, object_label: x, width: 8, value: 1, instruction_pc: 32522, thread_entry_pc: 32320}
+      - {label: p0-w2-x, thread: 0, ordinal: 1, kind: Store, object_label: x, width: 8, value: 2, instruction_pc: 32530, thread_entry_pc: 32320}
     program_order:
       - {source: p0-w1-x, target: p0-w2-x}
     executions:
@@ -173,6 +177,7 @@ cases:
       source_model: x86.cat
       target_model: riscv.cat
       outcome: exists (not (x=2))
+      target_condition: exists (not (x=2))
       source_outcome: Unsupported
       target_outcome: Unsupported
       source_input_sha256: db4870f6c06638cd7c1a3b76171bb5cad5376fab53bbd24d8560f10cecf682b9
@@ -191,9 +196,9 @@ cases:
       corpus_revision: a6dadced36343b9c21f00a173950a23e90068cd0
       build_recipe: litmus-tests-x86/build_all_elf.sh
     critical_events:
-      - {label: p0-w-x, thread: 0, ordinal: 0, kind: Store, object_label: x, width: 8, instruction_pc: 33053, thread_entry_pc: 32960}
+      - {label: p0-w-x, thread: 0, ordinal: 0, kind: Store, object_label: x, width: 8, value: 1, instruction_pc: 33053, thread_entry_pc: 32960}
       - {label: p0-mfence, thread: 0, ordinal: 1, kind: MFENCE, thread_entry_pc: 32960, instruction_pc: 33061}
-      - {label: p0-w-y, thread: 0, ordinal: 2, kind: Store, object_label: y, width: 8, instruction_pc: 33064, thread_entry_pc: 32960}
+      - {label: p0-w-y, thread: 0, ordinal: 2, kind: Store, object_label: y, width: 8, value: 1, instruction_pc: 33064, thread_entry_pc: 32960}
       - {label: p1-r-y, thread: 1, ordinal: 0, kind: Load, object_label: y, width: 8, instruction_pc: 32897, thread_entry_pc: 32800}
       - {label: p1-r-x, thread: 1, ordinal: 1, kind: Load, object_label: x, width: 8, instruction_pc: 32901, thread_entry_pc: 32800}
     program_order:
@@ -212,6 +217,7 @@ cases:
       source_model: x86.cat
       target_model: riscv.cat
       outcome: exists (1:rax=1 /\ 1:rbx=0)
+      target_condition: exists (1:x10=1 /\ 1:x11=0)
       source_outcome: Unsupported
       target_outcome: Unsupported
       source_input_sha256: b4df4ea43b1227f21067f1be12d26a0ea7cb4d137884d1253f4aed7bdeb640b8

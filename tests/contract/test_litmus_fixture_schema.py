@@ -60,6 +60,7 @@ def _payload() -> dict[str, object]:
                     "herd_version": "herd7-test",
                     "source_model": "x86.cat",
                     "target_model": "riscv.cat",
+                    "target_condition": "exists (1:x10=1)",
                     "source_outcome": "Allowed",
                     "target_outcome": "Allowed",
                     "source_input_sha256": HASH,
@@ -83,7 +84,9 @@ def test_manifest_round_trip_and_enum_types(tmp_path) -> None:
     assert isinstance(manifest, LitmusManifest)
     assert manifest.schema_version == 1
     assert manifest.cases[0].critical_events[0].kind is FixtureEventKind.STORE
+    assert manifest.cases[0].critical_events[0].value is None
     assert manifest.cases[0].oracle.source_outcome is HerdOutcome.ALLOWED
+    assert manifest.cases[0].oracle.target_condition == "exists (1:x10=1)"
 
 
 @pytest.mark.parametrize(
@@ -93,6 +96,16 @@ def test_manifest_round_trip_and_enum_types(tmp_path) -> None:
         lambda payload: payload["cases"][0]["binding"].update({"elf_relative_path": "../SB.exe"}),
         lambda payload: payload["cases"][0]["oracle"].update({"elf_sha256": "b" * 64}),
         lambda payload: payload["cases"][0]["executions"].clear(),
+        lambda payload: payload["cases"][0]["critical_events"].append(
+            {
+                "label": "duplicate-ordinal",
+                "thread": 0,
+                "ordinal": 0,
+                "kind": "Load",
+                "object_label": "x",
+                "width": 4,
+            }
+        ),
     ],
 )
 def test_invalid_manifest_is_rejected(tmp_path, mutator) -> None:

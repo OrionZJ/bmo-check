@@ -2,7 +2,8 @@
 
 这不是 `.litmus` 编译器，也不读取生成 ELF。它只消费已经审核过的 typed
 fixture，把其中支持的 load/store/fence/atomic operation 映射成 herd 能理解的
-RISC-V 指令文本，供外部 oracle 使用。输出仍属于 evaluation artifact。
+RISC-V 指令文本，供外部 oracle 使用。输出仍属于 evaluation artifact；缺少
+store 值或 target-specific outcome 时直接拒绝，避免把 x86 观察猜成 target 语义。
 """
 
 from __future__ import annotations
@@ -40,8 +41,8 @@ def _registers(case: LitmusCase) -> dict[tuple[int, str], str]:
     result: dict[tuple[int, str], str] = {}
     for thread in sorted({event.thread for event in case.critical_events}):
         for index, object_label in enumerate(objects):
-            # x6..x15 are caller-saved integer registers accepted by herd's RISC-V
-            # parser; each thread gets the same symbolic object register layout.
+            # x6..x15 是 herd RISC-V parser 接受的临时寄存器；每个线程使用
+            # 相同的对象布局，target condition 可据此稳定引用 load 结果。
             result[thread, object_label] = f"x{6 + index}"
     return result
 
@@ -71,6 +72,7 @@ def _event_instruction(
     kind: FixtureEventKind,
     *,
     width: int | None,
+    value: int | None,
     object_register: str | None,
     destination: str,
     contract: MemoryOrderContract,
@@ -81,7 +83,13 @@ def _event_instruction(
         mnemonic = _load_store(kind, width)
         if kind is FixtureEventKind.LOAD:
             return (f"{mnemonic} {destination},0({object_register})",)
-        return ("ori x5,x0,1", f"{mnemonic} x5,0({object_register})")
+        if value is None:
+            raise TargetExportError("plain target store needs an explicit value")
+        if not -2048 <= value <= 2047:
+            raise TargetExportError(
+                "target oracle exporter only supports signed 12-bit store values"
+            )
+        return (f"addi x5,x0,{value}", f"{mnemonic} x5,0({object_register})")
     if kind is FixtureEventKind.ATOMIC_RMW:
         if width not in {4, 8} or object_register is None:
             raise TargetExportError("target atomic oracle supports only 4/8-byte AMO")
@@ -112,6 +120,8 @@ def export_contract_target(
     by_thread: dict[int, list] = defaultdict(list)
     for event in sorted(case.critical_events, key=lambda item: (item.thread, item.ordinal)):
         by_thread[event.thread].append(event)
+    if not by_thread:
+        raise TargetExportError("target oracle export needs at least one critical event")
 
     lines = [f"RISCV {case_name}", "{"]
     objects = sorted(
@@ -144,6 +154,7 @@ def export_contract_target(
                 _event_instruction(
                     event.kind,
                     width=event.width,
+                    value=event.value,
                     object_register=object_register,
                     destination=destination,
                     contract=contract,
@@ -154,7 +165,7 @@ def export_contract_target(
     for row in range(max(len(program) for program in programs)):
         columns = [program[row] if row < len(program) else "" for program in programs]
         lines.append(" | ".join(columns) + " ;")
-    selected_outcome = (outcome or case.oracle.outcome or "").strip()
+    selected_outcome = (outcome or case.oracle.target_condition or "").strip()
     if selected_outcome:
         lines.append(
             selected_outcome
@@ -162,7 +173,9 @@ def export_contract_target(
             else f"exists {selected_outcome}"
         )
     else:
-        raise TargetExportError("target oracle export requires an outcome expression")
+        raise TargetExportError(
+            "target oracle export requires a target-specific outcome expression"
+        )
     return "\n".join(lines) + "\n"
 
 
