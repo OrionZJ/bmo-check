@@ -20,6 +20,15 @@ def test_representative_manifest_pins_real_elf_dimensions_without_vendoring_corp
     }
     assert all(case.binding.elf_relative_path.startswith("elf-tests/") for case in manifest.cases)
     assert all(
+        case.oracle.target_condition
+        and all(
+            event.value is not None
+            for event in case.critical_events
+            if event.kind.value == "Store"
+        )
+        for case in manifest.cases
+    )
+    assert all(
         case.oracle.source_outcome is HerdOutcome.UNSUPPORTED
         and case.oracle.target_outcome is HerdOutcome.UNSUPPORTED
         and case.oracle.herd_version == "not-run-local-herd"
