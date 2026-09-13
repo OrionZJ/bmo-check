@@ -6,11 +6,15 @@ from pathlib import Path
 
 import pytest
 
+from bmo_check_core import ProofFact
 from bmo_check_static.binary.dependency_closure import build_program_manifest
 from bmo_check_static.binary.angr_backend import load_cfg
 from bmo_check_static.controlflow import recover_control_flow
 from bmo_check_static.model import ExecutionScope, UnknownKind
-from bmo_check_static.threading import discover_pthread_threads
+from bmo_check_static.threading import (
+    discover_pthread_threads,
+    discover_pthread_threads_with_evidence,
+)
 from bmo_check_static.threading.callback import (
     resolve_argument_locations,
     resolve_callback_targets,
@@ -251,6 +255,18 @@ def test_multiple_wrapper_calls_map_join_handles_to_distinct_roles(
             UnknownKind.UNKNOWN_JOIN_RELATION,
         }
         for item in report.unknowns
+    )
+
+    evidence = discover_pthread_threads_with_evidence(
+        manifest.executable,
+        manifest,
+        control_flow,
+    )
+    assert evidence.report == report
+    assert evidence.proof_ids
+    assert all(
+        isinstance(evidence.ledger.get(item), ProofFact)
+        for item in evidence.proof_ids
     )
 
 
