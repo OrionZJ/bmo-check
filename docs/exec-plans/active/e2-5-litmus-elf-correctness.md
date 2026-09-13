@@ -1,7 +1,8 @@
 # E2.5 — Real litmus ELF correctness baseline
 
-Status: implementation in progress; representative ELF profile is passing; external
-herd oracle refresh remains pending
+Status: repository implementation complete for the checked-in baseline; the
+representative ELF profile passes; refreshing the independent herd oracle remains
+environment-dependent and pending until a local herd7 executable is available.
 
 ### Implementation checkpoint (2026-09-13)
 
@@ -14,6 +15,9 @@ The first correctness baseline is now present on `dev`:
   dynamic execution-legality facades, a differential comparison classification, an
   evaluation-only critical-event projection, and a contract-aware herd invocation /
   replay report. None of these APIs constructs a SAFE certificate.
+- Critical store values and target-specific outcome expressions are explicit in the
+  fixture. The target exporter rejects either omission instead of reusing x86
+  register names or inventing a store value.
 - Critical roles can be correlated by recovered callback entry PC. A matched critical
   instruction can therefore be checked even when its abstract object identity is
   still unresolved; the case itself remains `UNKNOWN` until all recovery obligations
@@ -30,7 +34,21 @@ The first correctness baseline is now present on `dev`:
 The profile currently leaves object-provenance gaps visible for some generated
 workers (notably MP and the MFENCE variant). Their lower fixed-execution records are
 useful characterization evidence, but they do not change the ordinary static
-verdict or prove the full ELF safe.
+verdict or prove the full ELF safe. Each case report now also records that unchanged
+full-slice static verdict and checker conclusion separately from the projection.
+
+### Implementation mapping
+
+The repository-local implementation is split into bisectable commits: the typed
+fixture and contract binding (`1427b75`, `42ff370`), route-local fixed legality and
+static/dynamic differential checks (`fd92848`, `1a671a0`, `5f7350a`), real ELF
+conformance and callback recovery (`838ded1`, `bf303c1`, `2579a82`, `ee647ed`,
+`302eafb`), and the contract-aware herd/export/replay and expectation gates
+(`3e12492`, `34f11c2`, `1a222b7`, `dab4668`, plus the follow-up boundary hardening).
+The remaining external step is to install/build herd7, generate a target input with
+the contract exporter, refresh the six oracle records, and review the resulting
+source/target outcome comparison. No guessed outcome is checked in while that tool
+is unavailable.
 
 ## 1. Intent
 
@@ -243,7 +261,7 @@ differential inventory. They are not automatically declared bugs:
 The differential suite compares only the declared common subset. Every excluded
 difference must have a typed reason instead of being ignored.
 
-### 4.5 DBT contract gap found by this audit
+### 4.5 DBT contract binding boundary
 
 The canonical contract requires:
 
@@ -257,16 +275,16 @@ MFENCE            -> fence rw,rw
 syscall           -> unknown
 ```
 
-The dynamic route validates all these fields before checking. The static application
-currently calls `load_contract_version`, which validates only the presence of
-`contract_version`; `_event_ordering` then assigns the values above directly in code.
-Consequently, a static report is version-bound but is not yet field-by-field bound to
-the canonical lowering interpretation.
+The dynamic route validates all these fields before checking. The general static
+application keeps its legacy `load_contract_version` path for existing CLI behavior,
+but the E2.5 conformance service first loads `load_canonical_contract`, checks every
+field and hash, and refuses to enter recovery on an unsupported or mismatched
+contract. This is the deliberate E2.5 binding boundary; it does not silently claim
+that every older static entry point has become a parameterized lowering engine.
 
-Before E2.5 claims contract-aware target validation, a dedicated atomic commit must
-make static loading pass through the canonical contract and reject unsupported or
-mismatched fields. Characterization tests come first so this correction is not hidden
-inside a litmus change.
+The accepted first contract remains exactly `dbt6-mo-off-v2`. A future change to make
+the ordinary static CLI consume the typed contract must add its own characterization
+and certificate-binding commit rather than changing this corpus profile implicitly.
 
 ## 5. What existing tests prove, and what is missing
 
@@ -349,7 +367,7 @@ source execution is illegal, and the full static ELF analysis may still correctl
 
 ### 7.1 Evaluation owns the corpus and oracle
 
-Add a future `bmo_check_evaluation.litmus` subsystem for:
+The implemented `bmo_check_evaluation.litmus` subsystem owns:
 
 - versioned corpus manifests;
 - external-tool invocation used only to refresh oracle records;
@@ -436,8 +454,9 @@ The external oracle has two steps and two independently stored results:
 
 The contract-aware exporter is evaluation-only. For the first corpus it supports only
 plain aligned loads/stores and LFENCE/SFENCE/MFENCE mappings that the canonical
-contract understands. Unsupported operations produce `Unsupported`, not a guessed
-translation.
+contract understands. Store immediates and the target register outcome are explicit
+fixture fields; missing values produce an exporter error rather than a guessed
+translation. Unsupported operations produce `Unsupported`, not a guessed lowering.
 
 Default tests replay small reviewed oracle records and do not require herd. An explicit
 refresh command runs herd into a temporary or `.experiments/` directory, records:
@@ -923,9 +942,10 @@ suite. The intended WSL command shape is:
 | 10 | `uv run pytest` followed by the required `litmus-elf` profile |
 
 The optional oracle refresh is a separate explicit evaluation command. The target
-input is intentionally an explicit argument: it must already represent the
-canonical DBT lowering, and this tool will not invent a target translation. For
-example:
+input is intentionally an explicit argument: it must already represent the canonical
+DBT lowering. The evaluation-only exporter can produce a small target fixture, but it
+still requires target-specific outcome text and will not reuse an x86 register
+predicate. For example:
 
 ```text
 uv run python -m bmo_check_evaluation.litmus.oracle refresh \
