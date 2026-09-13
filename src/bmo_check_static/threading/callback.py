@@ -297,7 +297,6 @@ def _value_from_operand(
     # 槽位地址。这个 token 仍指向同一个槽位，但不会与“指向槽位”的
     # stack token 混淆，未知的非栈句柄仍然无法被映射。
     return frozenset((_Token("stack_value", displacement, base),))
-    return None
 
 
 def _vector_from_operand(
@@ -456,8 +455,7 @@ def _local_argument_value(
                     # token 也保留同一相对坐标，因此栈指针调整不能再次
                     # 改写它，否则 create 的 &slot 与 join 的 [slot]
                     # 会被误判成两个对象。
-                    if registers.get("rsp") is None:
-                        registers.pop("rsp", None)
+                    pass
                 elif _is_vector(destination_name):
                     if mnemonic in {"movaps", "movdqa", "movdqu"} and source is not None:
                         vectors[destination_name] = _vector_from_operand(
