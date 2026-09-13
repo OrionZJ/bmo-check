@@ -20,8 +20,11 @@ class _ExecutionResult(Protocol):
 
 
 class OracleComparisonStatus(StrEnum):
+    # 两个模型层都能解析，并且 execution 与 herd 的方向完全相同。
     MATCH = "MATCH"
+    # source/target execution 与 herd outcome 至少有一项不相同。
     MISMATCH = "MISMATCH"
+    # herd 未覆盖或 BMoCheck 固定执行仍为 Unknown，不能判定差异。
     INCOMPLETE = "INCOMPLETE"
 
 
@@ -29,11 +32,17 @@ class OracleComparisonStatus(StrEnum):
 class OracleLegalityComparison:
     """固定 execution 与 external oracle 的逐层比较结果。"""
 
+    # 三层对照的状态，不是 static/dynamic 的最终 verdict。
     status: OracleComparisonStatus
+    # BMoCheck source facade 对固定关系的实际输出。
     source_execution: str
+    # BMoCheck target facade 对固定关系的实际输出。
     target_execution: str
+    # herd 对原始 x86 模型的独立观察。
     source_oracle: HerdOutcome
+    # herd 对 contract-lowered target 模型的独立观察。
     target_oracle: HerdOutcome
+    # 每个未匹配或未闭合方向的可读原因。
     differences: tuple[str, ...] = ()
 
 

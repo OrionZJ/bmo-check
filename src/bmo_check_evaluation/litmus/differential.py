@@ -30,10 +30,15 @@ class DifferentialStatus(StrEnum):
 class DifferentialClassification(StrEnum):
     """对 route 比较结果的审计分类，而不是最终 verdict。"""
 
+    # 两条 facade 对同一固定关系给出相同的 source/target 结果。
     EQUIVALENT = "EQUIVALENT"
+    # 差异已由既有 route 支持边界明确豁免，仍需保留原因。
     INTENDED_ROUTE_DIFFERENCE = "INTENDED_ROUTE_DIFFERENCE"
+    # 差异尚未解释，后续 checker 修改必须先处理或重新分类。
     UNRESOLVED_MODEL_DRIFT = "UNRESOLVED_MODEL_DRIFT"
+    # static facade 没有能力表示该固定关系。
     UNSUPPORTED_BY_STATIC = "UNSUPPORTED_BY_STATIC"
+    # dynamic facade 没有能力表示该固定关系。
     UNSUPPORTED_BY_DYNAMIC = "UNSUPPORTED_BY_DYNAMIC"
 
 
@@ -47,7 +52,9 @@ class DifferentialComparison:
     target_static: str
     target_dynamic: str
     mismatches: tuple[str, ...] = ()
+    # classification 描述 route 差异，不会改变任一 facade 的结果。
     classification: DifferentialClassification = DifferentialClassification.EQUIVALENT
+    # 记录为何允许该分类，避免用无上下文的 magic string 豁免回归。
     classification_reason: str = ""
 
 

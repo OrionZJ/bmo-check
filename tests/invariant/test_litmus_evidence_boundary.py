@@ -43,3 +43,18 @@ def test_fixture_schema_has_no_verdict_or_proof_fields() -> None:
     ).read_text(encoding="utf-8")
     assert "ProofFact" not in source
     assert "Verdict" not in source
+
+
+def test_proof_routes_do_not_depend_on_litmus_evaluation() -> None:
+    source_root = Path(__file__).resolve().parents[2] / "src"
+    proof_files = (
+        *(source_root / "bmo_check_static" / "proof").glob("*.py"),
+        *(source_root / "bmo_check_dynamic" / "proof").glob("*.py"),
+        *(source_root / "bmo_check_core").rglob("*.py"),
+    )
+    for path in proof_files:
+        imports = _imports(path)
+        assert all(
+            not imported.startswith("bmo_check_evaluation.litmus")
+            for imported in imports
+        ), path
