@@ -32,8 +32,10 @@ Affine diagnostic workstream:
   see `e2-5-litmus-elf-correctness.md`
 - E3 generic static precision improvement — not started
 
-Latest WSL2 validation after the Phase C closure (2026-09-12): DynamoRIO native
-capture tests `10 passed`; full suite `316 passed, 0 skipped, 0 failed` with
-`DYNAMORIO_HOME=/home/hezhj/.local/opt/dynamorio` exported for the test process.
+Latest WSL2 validation (2026-09-13): the E2.5 herd7 refresh and real-ELF profile
+completed; the repository suite passes `374 passed, 10 skipped, 0 failed`.
+The opt-in real-ELF profile separately passes `1 passed` against the pinned
+litmus corpus and `x86lib`. Native-capture and external-ELF checks remain
+skipped in the default suite unless their environment/profile is requested.
 
 每个阶段都以“不完整证据只能产生 UNKNOWN”为共同验收条件。

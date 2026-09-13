@@ -83,6 +83,12 @@ observation event. This is an intentionally visible model boundary. It is not
 converted to `SAFE`, and it is not hidden as an expected pass. A future generic
 final-state relation capability may close it; that work is outside this baseline.
 
+The repository regression suite passes with `374 passed, 10 skipped` after the
+herd parser, static RVWMO ordering, oracle fixtures, and litmus service fixture
+updates. The skipped tests are the opt-in DynamoRIO/native-capture checks and the
+external real-ELF profile; the latter was run separately and passed with one
+profile test.
+
 ## 1. Intent
 
 E2.5 sits between the completed dynamic-assisted diagnosis work and E3 static
