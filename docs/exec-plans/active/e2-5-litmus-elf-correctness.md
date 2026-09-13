@@ -1,8 +1,9 @@
 # E2.5 — Real litmus ELF correctness baseline
 
 Status: repository implementation complete for the checked-in baseline; the
-representative ELF profile passes; refreshing the independent herd oracle remains
-environment-dependent and pending until a local herd7 executable is available.
+representative ELF profile and independent herd oracle refresh both run in the
+configured WSL environment. The fixed CoWW final-state query remains an explicit
+execution-model boundary, not a silently accepted proof.
 
 ### Implementation checkpoint (2026-09-13)
 
@@ -29,10 +30,10 @@ The first correctness baseline is now present on `dev`:
   `x86lib` for SB, MP, LB, 2+2W, CoWW and MP+mfence+po. The profile observed harness
   events and checked critical PC/thread/order alignment plus fixed source/target
   legality without deleting harness events from the production slice.
-- Local `herd7` is not installed in the current WSL image. The checked-in oracle
-  records therefore explicitly use `Unsupported` and `not-run-local-herd`; no source
-  or target outcome is guessed. A later refresh must provide a pre-generated
-  contract-lowered target input and record the actual herd version/model hashes.
+- WSL `herd7` 7.58 (Rev: exported) has refreshed all six source/target records. The
+  source model is the installed X86_64-compatible `x86tso-mixed.cat`; target inputs
+  use `riscv.cat`. The generated target files and raw reports stay under
+  `.experiments/`; only their reviewed hashes and outcomes are checked in.
 
 The profile currently leaves object-provenance gaps visible for some generated
 workers (notably MP and the MFENCE variant). Their lower fixed-execution records are
@@ -52,10 +53,10 @@ static/dynamic differential checks (`fd92848`, `1a671a0`, `5f7350a`), real ELF
 conformance and callback recovery (`838ded1`, `bf303c1`, `2579a82`, `ee647ed`,
 `302eafb`), and the contract-aware herd/export/replay and expectation gates
 (`3e12492`, `34f11c2`, `1a222b7`, `dab4668`, plus the follow-up boundary hardening).
-The remaining external step is to install/build herd7, generate a target input with
-the contract exporter, refresh the six oracle records, and review the resulting
-source/target outcome comparison. No guessed outcome is checked in while that tool
-is unavailable.
+The external oracle step is now recorded with the installed herd version and the
+reviewed source/target outcomes. Future contract or corpus changes must regenerate
+the target input and refresh these hashes; a missing or unparseable result remains
+`Unsupported` rather than reusing the old record.
 
 ## 1. Intent
 
@@ -470,6 +471,9 @@ contract understands. Store immediates and the target register outcome are expli
 fixture fields; missing values produce an exporter error rather than a guessed
 translation. Unsupported operations produce `Unsupported`, not a guessed lowering.
 
+The parser uses the unique `Positive:` witness count for the `exists(...)` result;
+the `Test ... Allowed` line only reports that herd completed the test. A zero
+positive count is `Forbidden`, while a missing or duplicated count is `Unsupported`.
 Default tests replay small reviewed oracle records and do not require herd. An explicit
 refresh command runs herd into a temporary or `.experiments/` directory, records:
 
@@ -969,7 +973,7 @@ uv run python -m bmo_check_evaluation.litmus.oracle export-target \
 uv run python -m bmo_check_evaluation.litmus.oracle refresh \
   --source-input <case>.litmus \
   --target-input <contract-lowered-case>.litmus \
-  --source-model x86.cat \
+  --source-model x86tso-mixed.cat \
   --target-model riscv.cat \
   --contract-version dbt6-mo-off-v2 \
   --contract-sha256 <contract-sha256> \

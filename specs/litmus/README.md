@@ -31,8 +31,13 @@ atomic cases stay in route-local characterization until their lowering is explic
 An oracle record may include the original `exists` or final-state expression in
 `outcome`, and a separately written `target_condition` for the contract-lowered
 RISC-V registers. These texts explain what herd evaluates; neither selects BMoCheck
-proof rules. Until herd is refreshed, `source_outcome` and `target_outcome` must
-remain `Unsupported` with an explicit not-run provenance rather than guessed results.
+proof rules. The checked-in representative records were refreshed with WSL herd7
+7.58 (`x86tso-mixed.cat` and `riscv.cat`); a future refresh must replace the bound
+input and raw-output hashes together with the recorded outcomes.
+
+The herd `Test ... Allowed` header is not the selected outcome. The adapter reads the
+unique `Positive:` witness count, treating zero as `Forbidden` and missing or
+duplicated counts as `Unsupported`.
 
 After installing herdtools7, generate a target input into an ignored experiment
 directory with `python -m bmo_check_evaluation.litmus.oracle export-target`; the

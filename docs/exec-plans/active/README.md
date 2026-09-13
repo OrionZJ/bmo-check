@@ -27,8 +27,8 @@ Affine diagnostic workstream:
 - E1 bounded `ObservedAffinePattern` summaries — complete
 - E2 canneal validation and static-verdict preservation — complete
 - E2.5 real litmus ELF and memory-model correctness baseline — repository
-  implementation complete; representative profile and route differential baseline
-  are present; external herd refresh remains environment-dependent;
+  implementation complete; representative profile, route differential baseline and
+  WSL herd7 7.58 source/target oracle records are present;
   see `e2-5-litmus-elf-correctness.md`
 - E3 generic static precision improvement — not started
 
