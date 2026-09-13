@@ -157,9 +157,12 @@ def parse_herd_outcome(output: str) -> HerdOutcome:
 
     if not isinstance(output, str) or not output.strip():
         return HerdOutcome.UNSUPPORTED
-    header = _HEADER_RE.search(output)
-    if header is not None:
-        return HerdOutcome(header.group(1).capitalize())
+    headers = _HEADER_RE.findall(output)
+    if len(headers) == 1:
+        return HerdOutcome(headers[0].capitalize())
+    if len(headers) > 1:
+        # 一次 oracle 只绑定一个输入；批量输出不能任选第一项作为结果。
+        return HerdOutcome.UNSUPPORTED
     confirmations = _CONDITION_RE.findall(output)
     if len(confirmations) == 1:
         return HerdOutcome.FORBIDDEN if confirmations[0] else HerdOutcome.ALLOWED

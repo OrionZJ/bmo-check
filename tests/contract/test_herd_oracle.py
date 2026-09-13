@@ -57,6 +57,13 @@ def test_parser_keeps_allowed_forbidden_and_unsupported_distinct() -> None:
     assert parse_herd_outcome("herd crashed") is HerdOutcome.UNSUPPORTED
 
 
+def test_parser_rejects_multiple_test_summaries() -> None:
+    # 批量输出没有唯一的输入绑定；任选一个结果会把错误的 oracle 记到当前 case。
+    output = "Test SB Allowed\nTest MP Forbidden\n"
+
+    assert parse_herd_outcome(output) is HerdOutcome.UNSUPPORTED
+
+
 def test_run_binds_both_inputs_and_preserves_raw_observations(
     tmp_path: Path, monkeypatch
 ) -> None:
