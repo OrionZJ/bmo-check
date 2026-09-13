@@ -188,14 +188,9 @@ def _ordering_edges(
         elif _is_memory(before) and _is_memory(after):
             if _object_id(before) == _object_id(after):
                 edges.add((before_id, after_id, "RVWMO same-address order"))
-            elif (
-                _is_read(before)
-                and _is_write(after)
-                and not bool(after.provenance.get("dependencies_complete"))
-            ):
-                # RISC-V 会保留 load 到后续 store 的 data/address/control 依赖。
-                # 依赖恢复未闭合时先保留这条边，防止 checker 制造伪反例。
-                edges.add((before_id, after_id, "conservative unresolved dependency"))
+            # 跨对象的 Load→Store 只有在下方拿到明确依赖事件时才排序。
+            # 依赖分析未闭合不能凭空加边，否则会把 RVWMO 允许的执行删掉，
+            # 让 target facade 与实际 lowering 产生错误的 Forbidden 结果。
 
     for event in shared_slice.events:
         dependencies = event.provenance.get("dependencies", ())

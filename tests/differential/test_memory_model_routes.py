@@ -176,6 +176,29 @@ def test_message_passing_target_only_execution_matches_both_routes() -> None:
     assert (comparison.source_static, comparison.target_static) == ("forbidden", "allowed")
 
 
+def test_static_rvwmo_does_not_invent_cross_object_load_store_order() -> None:
+    # 未证明依赖时，跨对象 Load→Store 不属于 RVWMO 固定顺序；否则会把
+    # LB 的 target-only 执行错误地删掉，掩盖 source/target 模型差异。
+    static = _static_slice(
+        (
+            (
+                _static_event("r-x", "t0", 0x10, StaticEventKind.LOAD, "x"),
+                _static_event("w-y", "t0", 0x14, StaticEventKind.STORE, "y"),
+            ),
+            (
+                _static_event("r-y", "t1", 0x20, StaticEventKind.LOAD, "y"),
+                _static_event("w-x", "t1", 0x24, StaticEventKind.STORE, "x"),
+            ),
+        )
+    )
+    result = check_static(
+        static,
+        read_from={"r-x": "w-x", "r-y": "w-y"},
+    )
+
+    assert (result.source.status, result.target.status) == ("forbidden", "allowed")
+
+
 @pytest.mark.parametrize(
     ("dynamic_fence", "ordering"),
     [

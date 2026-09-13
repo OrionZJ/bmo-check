@@ -30,6 +30,10 @@ The first correctness baseline is now present on `dev`:
   `x86lib` for SB, MP, LB, 2+2W, CoWW and MP+mfence+po. The profile observed harness
   events and checked critical PC/thread/order alignment plus fixed source/target
   legality without deleting harness events from the production slice.
+- The LB oracle exposed and fixed a generic static-model error: an unresolved
+  cross-object Load→Store dependency no longer creates a fabricated RVWMO edge.
+  Only explicit dependency evidence may add that order; the route regression now
+  matches herd's `Forbidden/Allowed` source/target result.
 - WSL `herd7` 7.58 (Rev: exported) has refreshed all six source/target records. The
   source model is the installed X86_64-compatible `x86tso-mixed.cat`; target inputs
   use `riscv.cat`. The generated target files and raw reports stay under
@@ -265,6 +269,12 @@ differential inventory. They are not automatically declared bugs:
    certificate currently states that ordinary dependencies are omitted.
 6. Static finite exhaustion stays `UNKNOWN`; a complete supported dynamic trace window
    may contribute to `TRACE_SAFE`.
+
+The earlier static fallback that added a cross-object Load→Store edge when dependency
+recovery was incomplete is no longer part of the model. An unresolved dependency is
+not evidence of ordering; retaining it would under-approximate RVWMO and could hide a
+target-only execution. A future proof-capable dependency pass may add an edge only for
+an explicit dependency fact.
 
 The differential suite compares only the declared common subset. Every excluded
 difference must have a typed reason instead of being ignored.
