@@ -52,6 +52,13 @@ class CallbackResolution:
     # contexts 记录每个 callback 是由哪个本 ELF caller 传入 wrapper。
     # 父线程角色需要这条上下文边，不能只看 pthread_create 所在 wrapper。
     contexts: tuple[tuple[int, int], ...] = ()
+    # call_contexts 在旧的 caller/function 对之外保留实际传参 call site。
+    # 同一个 wrapper 被多个调用点复用时，后续生命周期分析不能把这些路径合并。
+    call_contexts: tuple[tuple[int, int, int | None], ...] = ()
+    # locations 是已闭合的栈槽身份；pthread_t 句柄和 callback 参数共用这套传播。
+    locations: tuple[str, ...] = ()
+    # location_contexts 把栈槽绑定到传参 caller/call site，避免不同调用点的同偏移混淆。
+    location_contexts: tuple[tuple[str, int, int | None], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,6 +67,8 @@ class _Token:
     kind: str
     # value 是函数 PC 或 SysV 整数形参下标。
     value: int
+    # stack token 用 base 保存 rsp/rbp；其它 token 不需要该字段。
+    base: str | None = None
 
 
 _Value = frozenset[_Token] | None
@@ -212,6 +221,17 @@ def _lea_pointer(
     return frozenset((token,)) if token is not None else frozenset()
 
 
+def _stack_pointer(instruction: object, operand: object) -> _Value:
+    """把栈上的地址保留为槽位身份，而不是把它误判成未知整数。"""
+
+    if operand.type != X86_OP_MEM:
+        return None
+    base = instruction.reg_name(operand.mem.base)
+    if base not in {"rsp", "rbp"} or operand.mem.index != 0:
+        return None
+    return frozenset((_Token("stack", int(operand.mem.disp), base),))
+
+
 def _memory_key(instruction: object, operand: object) -> tuple[str, int] | None:
     if operand.type != X86_OP_MEM:
         return None
@@ -242,6 +262,19 @@ def _value_from_operand(
         return None
     if instruction.reg_name(operand.mem.base) == "rip":
         return _load_static_pointer(context, module, instruction, operand)
+    base_register = instruction.reg_name(operand.mem.base)
+    if base_register not in {"rsp", "rbp"}:
+        # join wrapper 常执行 mov rdi,[rdi]。这里保留“形参指向的槽位”
+        # 而不是把一次未建模的间接内存读取伪装成普通 callback 值。
+        base_value = registers.get(_root(base_register) or "")
+        if base_value:
+            dereferenced = {
+                _Token("param_deref", token.value)
+                for token in base_value
+                if token.kind == "param"
+            }
+            if dereferenced:
+                return frozenset(dereferenced)
     key = _memory_key(instruction, operand)
     if key is None:
         return None
@@ -257,6 +290,56 @@ def _value_from_operand(
         lane = 1 if displacement - stored_offset >= 8 else 0
         return lanes[lane]
     return None
+
+
+def _vector_from_operand(
+    context: object,
+    module: ModuleFingerprint,
+    instruction: object,
+    operand: object,
+    registers: dict[str, _Value],
+    vectors: dict[str, _VectorValue],
+    stack: dict[tuple[str, int], _VectorValue],
+) -> _VectorValue:
+    """读取 128 位 callback 表时保留两个 64 位 lane。"""
+
+    if operand.type == X86_OP_REG:
+        register = instruction.reg_name(operand.reg)
+        if _is_vector(register):
+            return vectors.get(register, (None, None))
+    if operand.type == X86_OP_MEM:
+        key = _memory_key(instruction, operand)
+        if key is not None:
+            exact = stack.get(key)
+            if exact is not None:
+                return exact
+            base, displacement = key
+            for (stored_base, stored_offset), lanes in stack.items():
+                if (
+                    stored_base == base
+                    and stored_offset <= displacement < stored_offset + 16
+                ):
+                    lane = 1 if displacement - stored_offset >= 8 else 0
+                    return (lanes[lane], None)
+        if int(getattr(operand, "size", 0) or 0) >= 16:
+            address = _effective_address(context, instruction, operand)
+            if address is not None:
+                lanes: list[_Value] = []
+                for lane in (0, 1):
+                    try:
+                        raw = context.project.loader.memory.load(address + lane * 8, 8)
+                        value = int.from_bytes(bytes(raw), "little", signed=False)
+                    except Exception:
+                        return (None, None)
+                    token = _pc_token(context, module, value)
+                    lanes.append(frozenset((token,)) if token is not None else frozenset())
+                return lanes[0], lanes[1]
+    return (
+        _value_from_operand(
+            context, module, instruction, operand, registers, vectors, stack
+        ),
+        None,
+    )
 
 
 def _set_destination(
@@ -332,6 +415,14 @@ def _local_argument_value(
         for instruction in instructions
     )
     if has_entry:
+        # rsp/rbp 是当前函数栈帧的稳定锚点。若丢掉它们，编译器常见的
+        # ``mov rdi,rsp`` 就会把 pthread_t 槽位错误降成 Unknown。
+        registers.update(
+            {
+                "rsp": frozenset((_Token("stack", 0, "rsp"),)),
+                "rbp": frozenset((_Token("stack", 0, "rbp"),)),
+            }
+        )
         registers.update(
             {
                 argument: frozenset((_Token("param", index),))
@@ -345,26 +436,39 @@ def _local_argument_value(
             source = operands[1] if len(operands) > 1 else None
             if destination.type == X86_OP_REG:
                 destination_name = instruction.reg_name(destination.reg)
-                if _is_vector(destination_name):
-                    mnemonic = instruction.mnemonic.lower()
+                destination_root = _root(destination_name) or destination_name
+                mnemonic = instruction.mnemonic.lower()
+                if (
+                    destination_root == "rsp"
+                    and mnemonic in {"add", "sub"}
+                    and source is not None
+                    and source.type == X86_OP_IMM
+                ):
+                    current = registers.get("rsp")
+                    delta = int(source.imm)
+                    if mnemonic == "sub":
+                        delta = -delta
+                    registers["rsp"] = (
+                        frozenset(
+                            _Token("stack", token.value + delta, token.base)
+                            if token.kind == "stack"
+                            else token
+                            for token in current
+                        )
+                        if current is not None
+                        else None
+                    )
+                elif _is_vector(destination_name):
                     if mnemonic in {"movaps", "movdqa", "movdqu"} and source is not None:
-                        if source.type == X86_OP_REG:
-                            vectors[destination_name] = vectors.get(
-                                instruction.reg_name(source.reg), (None, None)
-                            )
-                        else:
-                            vectors[destination_name] = (
-                                _value_from_operand(
-                                    context,
-                                    module,
-                                    instruction,
-                                    source,
-                                    registers,
-                                    vectors,
-                                    stack,
-                                ),
-                                None,
-                            )
+                        vectors[destination_name] = _vector_from_operand(
+                            context,
+                            module,
+                            instruction,
+                            source,
+                            registers,
+                            vectors,
+                            stack,
+                        )
                     elif mnemonic == "punpcklqdq" and source is not None:
                         right = (
                             vectors.get(instruction.reg_name(source.reg), (None, None))
@@ -396,11 +500,15 @@ def _local_argument_value(
                     "movsxd",
                     "lea",
                 } and source is not None:
-                    registers[_root(destination_name) or destination_name] = (
+                    registers[destination_root] = (
                         _lea_pointer(context, module, instruction, source)
                         if instruction.mnemonic.lower() == "lea"
                         and source.type == X86_OP_MEM
                         and instruction.reg_name(source.mem.base) == "rip"
+                        else _stack_pointer(instruction, source)
+                        if instruction.mnemonic.lower() == "lea"
+                        and source.type == X86_OP_MEM
+                        and instruction.reg_name(source.mem.base) in {"rsp", "rbp"}
                         else _value_from_operand(
                             context,
                             module,
@@ -412,7 +520,7 @@ def _local_argument_value(
                         )
                     )
                 else:
-                    registers.pop(_root(destination_name) or destination_name, None)
+                    registers.pop(destination_root, None)
             elif destination.type == X86_OP_MEM:
                 value = (
                     _value_from_operand(
@@ -456,18 +564,40 @@ def _resolve_tokens(
     tokens: _Value,
     function_pc: int,
     stack: tuple[tuple[int, int], ...],
+    current_call_pc: int | None,
 ) -> CallbackResolution:
     if tokens is None:
         return CallbackResolution(reason="callback value is not recoverable")
     pcs = sorted(token.value for token in tokens if token.kind == "pc")
-    params = sorted({token.value for token in tokens if token.kind == "param"})
+    locations = [
+        f"frame@0x{function_pc:x}:{token.base or 'unknown'}:{token.value}"
+        for token in tokens
+        if token.kind == "stack"
+    ]
+    params = sorted(
+        {
+            (token.value, token.kind == "param_deref")
+            for token in tokens
+            if token.kind in {"param", "param_deref"}
+        }
+    )
     if not params:
-        if pcs:
+        if pcs or locations:
+            unique_pcs = tuple(dict.fromkeys(pcs))
+            unique_locations = tuple(dict.fromkeys(locations))
             return CallbackResolution(
-                targets=tuple(dict.fromkeys(pcs)),
+                targets=unique_pcs,
                 complete=True,
                 origin="closed ELF callback value",
-                contexts=tuple((pc, function_pc) for pc in dict.fromkeys(pcs)),
+                contexts=tuple((pc, function_pc) for pc in unique_pcs),
+                call_contexts=tuple(
+                    (pc, function_pc, current_call_pc) for pc in unique_pcs
+                ),
+                locations=unique_locations,
+                location_contexts=tuple(
+                    (location, function_pc, current_call_pc)
+                    for location in unique_locations
+                ),
             )
         return CallbackResolution(reason="callback value is not an executable address")
     if len(stack) >= _MAX_RECURSION:
@@ -475,12 +605,32 @@ def _resolve_tokens(
             targets=tuple(dict.fromkeys(pcs)),
             reason="callback argument propagation exceeded recursion bound",
             contexts=tuple((pc, function_pc) for pc in dict.fromkeys(pcs)),
+            call_contexts=tuple(
+                (pc, function_pc, current_call_pc) for pc in dict.fromkeys(pcs)
+            ),
+            locations=tuple(dict.fromkeys(locations)),
+            location_contexts=tuple(
+                (location, function_pc, current_call_pc)
+                for location in dict.fromkeys(locations)
+            ),
         )
-    if any(function_pc == current and parameter in params for current, parameter in stack):
+    if any(
+        function_pc == current
+        and any(parameter == candidate for candidate, _ in params)
+        for current, parameter in stack
+    ):
         return CallbackResolution(
             targets=tuple(dict.fromkeys(pcs)),
             reason="callback argument propagation encountered a recursive call path",
             contexts=tuple((pc, function_pc) for pc in dict.fromkeys(pcs)),
+            call_contexts=tuple(
+                (pc, function_pc, current_call_pc) for pc in dict.fromkeys(pcs)
+            ),
+            locations=tuple(dict.fromkeys(locations)),
+            location_contexts=tuple(
+                (location, function_pc, current_call_pc)
+                for location in dict.fromkeys(locations)
+            ),
         )
     # 当前 token 来自一个函数形参。找到所有已封闭的本 ELF caller，
     # 只有每个 caller 都能给出同一参数的闭合集合时才继续声明 complete。
@@ -490,11 +640,21 @@ def _resolve_tokens(
             targets=tuple(dict.fromkeys(pcs)),
             reason="callback parameter has no closed local caller",
             contexts=tuple((pc, function_pc) for pc in dict.fromkeys(pcs)),
+            call_contexts=tuple(
+                (pc, function_pc, current_call_pc) for pc in dict.fromkeys(pcs)
+            ),
+            locations=tuple(dict.fromkeys(locations)),
+            location_contexts=tuple(
+                (location, function_pc, current_call_pc)
+                for location in dict.fromkeys(locations)
+            ),
         )
     all_complete = True
     origins: list[str] = []
     context_pairs: list[tuple[int, int]] = []
-    for parameter in params:
+    call_contexts: list[tuple[int, int, int | None]] = []
+    location_contexts: list[tuple[str, int, int | None]] = []
+    for parameter, dereferenced in params:
         if parameter >= len(_ARGUMENT_REGISTERS):
             all_complete = False
             continue
@@ -509,6 +669,12 @@ def _resolve_tokens(
             if not local_complete:
                 all_complete = False
                 continue
+            if dereferenced and (
+                value is None
+                or any(token.kind != "stack" for token in value)
+            ):
+                all_complete = False
+                continue
             nested = _resolve_tokens(
                 context,
                 module,
@@ -516,24 +682,36 @@ def _resolve_tokens(
                 value,
                 caller.containing_function_pc,
                 (*stack, (function_pc, parameter)),
+                caller.location.pc,
             )
             pcs.extend(nested.targets)
             # nested contexts already identify the immediate caller; keeping
             # those pairs preserves distinct main/worker wrapper paths.
             context_pairs.extend(nested.contexts)
+            call_contexts.extend(nested.call_contexts)
+            locations.extend(nested.locations)
+            location_contexts.extend(nested.location_contexts)
             origins.append(nested.origin or nested.reason or "unknown callback edge")
             all_complete = all_complete and nested.complete
     unique = tuple(dict.fromkeys(pcs))
     context_pairs = tuple(dict.fromkeys(context_pairs))
+    unique_locations = tuple(dict.fromkeys(locations))
     return CallbackResolution(
         targets=unique,
-        complete=all_complete and bool(unique),
+        complete=all_complete and bool(unique or unique_locations),
         origin=(
             "interprocedural SysV callback argument propagation"
             + ("; " + "; ".join(dict.fromkeys(origins)) if origins else "")
         ),
-        reason=None if all_complete and unique else "one or more callback caller arguments are incomplete",
+        reason=(
+            None
+            if all_complete and (unique or unique_locations)
+            else "one or more callback caller arguments are incomplete"
+        ),
         contexts=context_pairs,
+        call_contexts=tuple(dict.fromkeys(call_contexts)),
+        locations=unique_locations,
+        location_contexts=tuple(dict.fromkeys(location_contexts)),
     )
 
 
@@ -558,6 +736,32 @@ def resolve_callback_targets(
         value,
         call.containing_function_pc,
         (),
+        call.location.pc,
+    )
+
+
+def resolve_argument_locations(
+    context: object,
+    module: ModuleFingerprint,
+    control_flow: ControlFlowReport,
+    call: CallSite,
+    register: str,
+) -> CallbackResolution:
+    """沿同一条闭合调用链恢复指针实参所指向的栈槽身份。"""
+
+    value, _origin, local_complete = _local_argument_value(
+        context, module, control_flow, call, register
+    )
+    if not local_complete:
+        return CallbackResolution(reason="argument is not in a closed function-entry block")
+    return _resolve_tokens(
+        context,
+        module,
+        control_flow,
+        value,
+        call.containing_function_pc,
+        (),
+        call.location.pc,
     )
 
 
@@ -578,6 +782,7 @@ def target_set_from_resolution(
 
 __all__ = [
     "CallbackResolution",
+    "resolve_argument_locations",
     "resolve_callback_targets",
     "target_set_from_resolution",
 ]

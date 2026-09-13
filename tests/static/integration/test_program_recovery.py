@@ -7,9 +7,14 @@ from pathlib import Path
 import pytest
 
 from bmo_check_static.binary.dependency_closure import build_program_manifest
+from bmo_check_static.binary.angr_backend import load_cfg
 from bmo_check_static.controlflow import recover_control_flow
 from bmo_check_static.model import ExecutionScope, UnknownKind
 from bmo_check_static.threading import discover_pthread_threads
+from bmo_check_static.threading.callback import (
+    resolve_argument_locations,
+    resolve_callback_targets,
+)
 
 
 def _compile_recovery_app(tmp_path: Path) -> Path:
@@ -161,3 +166,22 @@ def test_parameterized_pthread_wrapper_recovers_closed_callback(tmp_path: Path) 
     assert report.creates[0].start_targets.known_targets[0].symbol == "worker"
     assert report.creates[0].parent_role == "main"
     assert not any(item.kind == UnknownKind.UNKNOWN_THREAD_ENTRY for item in report.unknowns)
+
+    # 回调和 pthread_t 槽位必须沿同一条 wrapper 调用链恢复；只恢复函数地址
+    # 会让 join 仍然依赖“恰好只有一个 child”的不安全猜测。
+    create_call = next(
+        call
+        for call in control_flow.call_sites
+        if call.target_symbol == "pthread_create"
+    )
+    context = load_cfg(manifest.executable)
+    callback = resolve_callback_targets(
+        context, manifest.executable, control_flow, create_call, "rdx"
+    )
+    handle = resolve_argument_locations(
+        context, manifest.executable, control_flow, create_call, "rdi"
+    )
+    assert callback.complete
+    assert callback.call_contexts
+    assert handle.complete
+    assert handle.locations
