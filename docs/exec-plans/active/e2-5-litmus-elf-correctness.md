@@ -159,12 +159,14 @@ Each case directory also contains generated C, a compact `.t` listing, a Makefil
 build/run scripts, and generated utility, output and random-number sources/objects.
 The main repository must not copy this full generated tree.
 
-### 3.3 Full-corpus execution plan
+### 3.3 Full-corpus measurement (E3 pre-work)
 
-The six-case profile above is the checked-in correctness baseline; it is not a
-claim that all generated ELF have already passed the end-to-end service. The
-local corpus expansion is tracked separately so a partial run cannot be mistaken
-for an E2.5 completion:
+The six-case profile above is the checked-in correctness baseline. A complete
+corpus sweep is useful for selecting the next static-precision capability, but
+its per-ELF `UNKNOWN` results are measurements for E3, not additional E2.5
+correctness obligations. E2.5 is frozen once the baseline and regression oracle
+are green; the corpus measurement is tracked separately so a static precision
+gap cannot be mistaken for a model-correctness failure:
 
 - A source-only herd7 sweep has completed for all 2,595 `.litmus` files. It uses
   the installed `x86tso-mixed.cat` model and records only one compact JSONL row per
@@ -180,13 +182,17 @@ for an E2.5 completion:
   output and logs belong in the user-authorized `E:\bmo-check-e2-5-full` directory.
   The generated corpus itself remains in its existing location and is not copied.
 - A completed source oracle row does not substitute for ELF recovery or target
-  legality. Until every ELF has a result row (or an explicit bounded failure),
-  the full-corpus E2.5 status remains `INCOMPLETE`; individual static
-  `UNKNOWN` results are preserved as findings, not converted to passes.
+  legality. The E3 measurement records whether the ordinary service reached its
+  checker and preserves every typed `UNKNOWN`; it never converts a static
+  `UNKNOWN` into a pass or feeds an observation into proof closure. The exact
+  coverage and root-blocker counts are recorded in
+  `e3-corpus-measurement.md`.
 
-The first full-corpus run was started with the bounded settings documented by the
-script (`scope=application`, provenance limit 32, 24-event checker bound, one
-worker). Its partial rows are temporary E-drive evidence and are not committed.
+The completed measurement used the bounded settings documented by the script
+(`scope=application`, provenance limit 32, 24-event checker bound, 128 execution
+bound, 1,000 ms timeout and two workers). Its compact JSONL and summary remain
+external E-drive evidence and are not committed. They measure the unchanged
+static analyzer; they do not expand the E2.5 correctness claim.
 
 ### 3.1 Confirmed generated-program shape
 
@@ -1085,7 +1091,9 @@ Each admitted real ELF must answer all of the following in one reviewable report
 
 ## 15. E2.5 exit criteria
 
-E2.5 is complete only when:
+Status: **complete and frozen (2026-09-13)**. The following criteria define the
+correctness baseline; they do not require every generated ELF to obtain a closed
+static proof:
 
 - at least one case from each selected dimension—plain PPO, target-only candidate,
   coherence and MFENCE—passes the independent execution-legality comparison;
@@ -1119,8 +1127,9 @@ Remaining risks and environment-dependent validation:
 - same-address PPO currently differs between static and dynamic implementations;
 - the general legacy static CLI still reads only the contract version; the E2.5
   conformance service itself is field-by-field bound to the canonical contract;
-- the evaluation-only target exporter models the supported contract, but actual herd
-  source/target outcomes still need a local herd7 installation and reviewed inputs;
+- the evaluation-only target exporter models the supported contract, and the
+  reviewed representative source/target outcomes have been replayed with the local
+  herd7 installation;
 - generated-code licensing and compiler/runtime reproducibility may rule out vendoring
   ELFs.
 
@@ -1131,13 +1140,15 @@ Deferred beyond E2.5:
 - DBT6 machine-code-to-contract conformance checking;
 - automatic litmus compilation;
 - E3 PHI/induction/canneal precision improvements;
-- broad execution of all 2,595 corpus cases.
+- static proof closure for all 2,595 corpus cases; the completed corpus measurement
+  is recorded separately as E3 pre-work, not as an E2.5 exit condition.
 
 ## 17. This planning pass
 
 The initial planning pass was produced by reading repository source, existing tests,
 generated C, `.t` summaries, corpus scripts and current architecture/specification
-documents without executing BMoCheck, herd or the generated ELFs. The subsequent
-implementation checkpoint ran the opt-in recovery profile against the pinned local
-corpus; facts that still require an external herd binary or fresh corpus build remain
-explicitly marked as pending above.
+documents. The implementation checkpoint and the subsequent full corpus measurement
+ran the ordinary static service against the pinned local ELF corpus; the compact
+measurement and root-blocker analysis are recorded in
+`e3-corpus-measurement.md`. Those observations do not enter proof closure or change
+the frozen E2.5 verdict boundary.

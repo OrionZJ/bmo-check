@@ -26,12 +26,14 @@ Affine diagnostic workstream:
 
 - E1 bounded `ObservedAffinePattern` summaries — complete
 - E2 canneal validation and static-verdict preservation — complete
-- E2.5 real litmus ELF and memory-model correctness baseline — the six-case
-  representative implementation and all-2,595 source herd7 sweep are complete;
-  the resumable full-ELF static sweep is an explicitly tracked in-progress
-  expansion and must finish before the corpus-wide phase is called complete;
-  see `e2-5-litmus-elf-correctness.md`
-- E3 generic static precision improvement — not started
+- E2.5 real litmus ELF and memory-model correctness baseline — frozen and
+  complete. The six-case representative profile, all-2,595 source herd7 sweep,
+  real-ELF recovery profile, and static/dynamic characterization are the
+  correctness baseline; see `e2-5-litmus-elf-correctness.md`.
+- E3 corpus measurement and generic static precision improvement — the full
+  2,595-ELF measurement is complete. Its `UNKNOWN` distribution and the first
+  E3.1 recommendation are recorded in `e3-corpus-measurement.md`; no analyzer
+  precision fix has started.
 
 Latest WSL2 validation (2026-09-13): the E2.5 herd7 refresh and real-ELF profile
 completed; the repository suite passes `374 passed, 10 skipped, 0 failed`.

@@ -88,7 +88,18 @@ def discover_cases(corpus_root: Path) -> tuple[CorpusCase, ...]:
     return tuple(cases)
 
 
+def _counts(unknowns: Iterable[Any]) -> dict[str, int]:
+    """Count typed facts without retaining their potentially large payloads."""
+
+    counts = Counter(
+        getattr(item.kind, "value", str(item.kind)) for item in unknowns
+    )
+    return dict(sorted(counts.items()))
+
+
 def _unknown_counts(report: Any) -> dict[str, int]:
+    """Count every producer layer for compatibility with the v1 rows."""
+
     unknowns: list[Any] = list(report.unknowns)
     recovery = report.recovery
     unknowns.extend(recovery.manifest.unknowns)
@@ -97,10 +108,7 @@ def _unknown_counts(report: Any) -> dict[str, int]:
         unknowns.extend(report.memory_events.unknowns)
     if report.shared_slice is not None:
         unknowns.extend(report.shared_slice.unknowns)
-    counts = Counter(
-        getattr(item.kind, "value", str(item.kind)) for item in unknowns
-    )
-    return dict(sorted(counts.items()))
+    return _counts(unknowns)
 
 
 def _install_sync_cache() -> None:
@@ -186,7 +194,11 @@ def _analyze_case(payload: tuple[CorpusCase, SweepConfig]) -> dict[str, Any]:
                 "memory_events": len(memory_events),
                 "shared_events": len(shared_events),
                 "thread_roles": len(roles),
+                # ``unknowns`` is the producer-layer union kept for v1
+                # comparisons.  ``relevant_unknowns`` is the exact set that
+                # verify_portability allowed to block this certificate.
                 "unknowns": _unknown_counts(report),
+                "relevant_unknowns": _counts(checker.relevant_unknowns),
                 "source_sha256": _sha256(case.source),
                 "elf_sha256": _sha256(case.elf),
             }
@@ -226,6 +238,7 @@ def _summary(output: Path, *, total: int, skipped: int) -> dict[str, Any]:
     statuses: Counter[str] = Counter()
     verdicts: Counter[str] = Counter()
     unknowns: Counter[str] = Counter()
+    relevant_unknowns: Counter[str] = Counter()
     elapsed = 0.0
     processed = 0
     with output.open(encoding="utf-8") as stream:
@@ -242,6 +255,8 @@ def _summary(output: Path, *, total: int, skipped: int) -> dict[str, Any]:
                 verdicts[str(payload["verdict"])] += 1
             for kind, count in (payload.get("unknowns") or {}).items():
                 unknowns[str(kind)] += int(count)
+            for kind, count in (payload.get("relevant_unknowns") or {}).items():
+                relevant_unknowns[str(kind)] += int(count)
             elapsed += float(payload.get("elapsed_seconds", 0.0))
     return {
         "schema": "e2.5-static-corpus-sweep-v1",
@@ -251,6 +266,7 @@ def _summary(output: Path, *, total: int, skipped: int) -> dict[str, Any]:
         "statuses": dict(sorted(statuses.items())),
         "verdicts": dict(sorted(verdicts.items())),
         "unknown_kinds": dict(sorted(unknowns.items())),
+        "relevant_unknown_kinds": dict(sorted(relevant_unknowns.items())),
         "sum_case_seconds": round(elapsed, 3),
     }
 
