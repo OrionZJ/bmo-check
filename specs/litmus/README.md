@@ -39,6 +39,12 @@ The herd `Test ... Allowed` header is not the selected outcome. The adapter read
 unique `Positive:` witness count, treating zero as `Forbidden` and missing or
 duplicated counts as `Unsupported`.
 
+The current reviewed oracle outcomes are SB `Allowed/Allowed`, MP `Forbidden/Allowed`,
+LB `Forbidden/Allowed`, 2+2W `Forbidden/Allowed`, CoWW `Forbidden/Forbidden`, and
+MP+mfence+po `Forbidden/Allowed` (source/target order). The CoWW comparison remains
+explicitly incomplete because its final-state predicate is not represented by the
+relation-only fixed execution; this does not affect the static certificate path.
+
 After installing herdtools7, generate a target input into an ignored experiment
 directory with `python -m bmo_check_evaluation.litmus.oracle export-target`; the
 command verifies the case's contract version and SHA-256 before writing it. Then use

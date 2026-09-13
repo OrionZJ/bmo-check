@@ -62,6 +62,27 @@ reviewed source/target outcomes. Future contract or corpus changes must regenera
 the target input and refresh these hashes; a missing or unparseable result remains
 `Unsupported` rather than reusing the old record.
 
+### Oracle/conformance validation (WSL, 2026-09-13)
+
+All six refreshed reports replay successfully with herd7 `7.58, Rev: exported`.
+The selected exists outcomes are:
+
+| Case | x86-TSO (`x86tso-mixed.cat`) | contract-lowered RVWMO (`riscv.cat`) | fixed-execution comparison |
+|---|---|---|---|
+| SB | Allowed | Allowed | MATCH |
+| MP | Forbidden | Allowed | MATCH |
+| LB | Forbidden | Allowed | MATCH after `b26bdf1` |
+| 2+2W | Forbidden | Allowed | MATCH |
+| CoWW | Forbidden | Forbidden | explicit mismatch: final-state predicate is outside fixed `po/co` |
+| MP+mfence+po | Forbidden | Allowed | MATCH |
+
+The normal ELF conformance report remains `UNKNOWN` overall. MP and the MFENCE
+variant retain object-provenance errors, and CoWW's `exists(not x=2)` cannot be
+compared to a relation-only assignment: the current facade has no final-state
+observation event. This is an intentionally visible model boundary. It is not
+converted to `SAFE`, and it is not hidden as an expected pass. A future generic
+final-state relation capability may close it; that work is outside this baseline.
+
 ## 1. Intent
 
 E2.5 sits between the completed dynamic-assisted diagnosis work and E3 static
