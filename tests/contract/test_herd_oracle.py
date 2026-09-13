@@ -17,6 +17,7 @@ from bmo_check_evaluation.litmus import (
 )
 from bmo_check_evaluation.litmus.oracle import (
     ORACLE_REPORT_SCHEMA,
+    main as oracle_main,
     oracle_record_from_run,
     replay_report,
     report_payload,
@@ -186,3 +187,32 @@ def test_oracle_replay_detects_herd_version_drift(tmp_path: Path, monkeypatch) -
 
     assert status is HerdReplayStatus.UNKNOWN
     assert "herd version does not match the oracle record" in differences
+
+
+def test_export_target_cli_uses_the_case_contract_and_target_condition(
+    tmp_path: Path,
+) -> None:
+    repository = Path(__file__).resolve().parents[2]
+    manifest = repository / "specs" / "litmus" / "e2-5-representative.yaml"
+    contract = repository / "specs" / "static" / "dbt6-mo-off.yaml"
+    output = tmp_path / "target.litmus"
+
+    result = oracle_main(
+        [
+            "export-target",
+            "--manifest",
+            str(manifest),
+            "--case-id",
+            "SB",
+            "--dbt-contract",
+            str(contract),
+            "--output",
+            str(output),
+        ]
+    )
+
+    assert result == 0
+    text = output.read_text(encoding="utf-8")
+    assert text.startswith("RISCV SB\n")
+    assert "sd x5,0(x6)" in text
+    assert "exists (0:x10=0 /\\ 1:x10=0)" in text

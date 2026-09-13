@@ -34,6 +34,12 @@ RISC-V registers. These texts explain what herd evaluates; neither selects BMoCh
 proof rules. Until herd is refreshed, `source_outcome` and `target_outcome` must
 remain `Unsupported` with an explicit not-run provenance rather than guessed results.
 
+After installing herdtools7, generate a target input into an ignored experiment
+directory with `python -m bmo_check_evaluation.litmus.oracle export-target`; the
+command verifies the case's contract version and SHA-256 before writing it. Then use
+the separate `refresh` command to run source and target herd models and record their
+raw-output digest.
+
 The external profile is opt-in because the generated corpus is kept outside this
 repository. From WSL, run the normal static application path with:
 

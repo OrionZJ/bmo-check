@@ -1,7 +1,8 @@
 """显式刷新和重放 E2.5 herd oracle。
 
-该模块只运行外部 herd 并保存可审计的观察结果。target 输入必须由调用者
-依据 canonical DBT contract 预先生成；这里不把 x86 指令名直接翻译成 RISC-V，
+该模块只运行外部 herd 并保存可审计的观察结果。target 输入必须已经依据
+canonical DBT contract 生成；``export-target`` 提供受约束的生成入口，但这里
+不把 x86 指令名直接翻译成 RISC-V，
 也不把 oracle 结果送入 static proof 或最终 verdict。
 """
 
@@ -13,8 +14,17 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from .herd import HerdOracleRequest, HerdOracleRun, HerdReplayStatus, replay_herd_oracle, run_herd_oracle
-from .model import HerdOracleRecord
+from bmo_check_static.config import load_canonical_contract
+
+from .herd import (
+    HerdOracleRequest,
+    HerdOracleRun,
+    HerdReplayStatus,
+    replay_herd_oracle,
+    run_herd_oracle,
+)
+from .model import HerdOracleRecord, LitmusFixtureError, load_manifest
+from .target import TargetExportError, export_contract_target
 
 
 ORACLE_REPORT_SCHEMA = "e2.5-herd-oracle-run-v1"
@@ -147,6 +157,46 @@ def _refresh(args: argparse.Namespace) -> int:
     return 0 if run.complete else 2
 
 
+def _export_target(args: argparse.Namespace) -> int:
+    """从 manifest 生成一个绑定 canonical contract 的 target 输入。"""
+
+    try:
+        manifest = load_manifest(args.manifest)
+        case = next(
+            (item for item in manifest.cases if item.case_id == args.case_id),
+            None,
+        )
+    except LitmusFixtureError as error:
+        raise OracleToolError(str(error)) from error
+    if case is None:
+        raise OracleToolError(
+            f"manifest has no case with case_id {args.case_id!r}"
+        )
+
+    contract = load_canonical_contract(args.dbt_contract)
+    if contract.unknown is not None or contract.canonical is None:
+        reason = (
+            contract.unknown.reason
+            if contract.unknown is not None
+            else "missing canonical contract"
+        )
+        raise OracleToolError(reason)
+    if (
+        case.oracle.contract_version != contract.version
+        or case.oracle.contract_sha256 != contract.sha256
+    ):
+        raise OracleToolError(
+            "case oracle is bound to a different DBT lowering contract"
+        )
+    try:
+        text = export_contract_target(case, contract.canonical)
+    except TargetExportError as error:
+        raise OracleToolError(str(error)) from error
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(text, encoding="utf-8")
+    return 0
+
+
 def _replay(args: argparse.Namespace) -> int:
     status, differences = replay_report(args.report)
     if differences:
@@ -178,6 +228,16 @@ def build_parser() -> argparse.ArgumentParser:
     refresh.add_argument("--herd-arg", action="append", default=[])
     refresh.add_argument("--output", type=Path, required=True)
     refresh.set_defaults(handler=_refresh)
+
+    export_target = subcommands.add_parser(
+        "export-target",
+        help="export one manifest case through the canonical DBT contract",
+    )
+    export_target.add_argument("--manifest", type=Path, required=True)
+    export_target.add_argument("--case-id", required=True)
+    export_target.add_argument("--dbt-contract", type=Path, required=True)
+    export_target.add_argument("--output", type=Path, required=True)
+    export_target.set_defaults(handler=_export_target)
 
     replay = subcommands.add_parser(
         "replay", help="rerun an oracle report and compare all bound hashes/results"

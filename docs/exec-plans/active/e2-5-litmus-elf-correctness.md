@@ -960,6 +960,12 @@ still requires target-specific outcome text and will not reuse an x86 register
 predicate. For example:
 
 ```text
+uv run python -m bmo_check_evaluation.litmus.oracle export-target \
+  --manifest specs/litmus/e2-5-representative.yaml \
+  --case-id SB \
+  --dbt-contract specs/static/dbt6-mo-off.yaml \
+  --output .experiments/SB.riscv.litmus
+
 uv run python -m bmo_check_evaluation.litmus.oracle refresh \
   --source-input <case>.litmus \
   --target-input <contract-lowered-case>.litmus \
