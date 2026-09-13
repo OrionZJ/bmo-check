@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from bmo_check_core import EvidenceId, EvidenceLedger, UnknownFact
+from bmo_check_core import EvidenceId, EvidenceLedger, ProofFact, UnknownFact
 from bmo_check_static.model import (
     ControlFlowReport,
     ModuleFingerprint,
@@ -30,6 +30,21 @@ class StaticThreadEvidence:
                     node.id
                     for node in self.ledger.nodes()
                     if isinstance(node, UnknownFact)
+                },
+                key=lambda item: item.value,
+            )
+        )
+
+    @property
+    def proof_ids(self) -> tuple[EvidenceId, ...]:
+        """返回已闭合线程/句柄事实，避免调用者把 Unknown 当成证明。"""
+
+        return tuple(
+            sorted(
+                {
+                    node.id
+                    for node in self.ledger.nodes()
+                    if isinstance(node, ProofFact)
                 },
                 key=lambda item: item.value,
             )

@@ -289,6 +289,10 @@ def _value_from_operand(
             continue
         lane = 1 if displacement - stored_offset >= 8 else 0
         return lanes[lane]
+    # 直接 pthread_join 常把 pthread_t 从栈槽加载到 rdi，而不是传入
+    # 槽位地址。这个 token 仍指向同一个槽位，但不会与“指向槽位”的
+    # stack token 混淆，未知的非栈句柄仍然无法被映射。
+    return frozenset((_Token("stack_value", displacement, base),))
     return None
 
 
@@ -444,20 +448,12 @@ def _local_argument_value(
                     and source is not None
                     and source.type == X86_OP_IMM
                 ):
-                    current = registers.get("rsp")
-                    delta = int(source.imm)
-                    if mnemonic == "sub":
-                        delta = -delta
-                    registers["rsp"] = (
-                        frozenset(
-                            _Token("stack", token.value + delta, token.base)
-                            if token.kind == "stack"
-                            else token
-                            for token in current
-                        )
-                        if current is not None
-                        else None
-                    )
+                    # _memory_key 使用当前机器码中的 rsp/rbp 位移；槽位
+                    # token 也保留同一相对坐标，因此栈指针调整不能再次
+                    # 改写它，否则 create 的 &slot 与 join 的 [slot]
+                    # 会被误判成两个对象。
+                    if registers.get("rsp") is None:
+                        registers.pop("rsp", None)
                 elif _is_vector(destination_name):
                     if mnemonic in {"movaps", "movdqa", "movdqu"} and source is not None:
                         vectors[destination_name] = _vector_from_operand(
@@ -572,7 +568,7 @@ def _resolve_tokens(
     locations = [
         f"frame@0x{function_pc:x}:{token.base or 'unknown'}:{token.value}"
         for token in tokens
-        if token.kind == "stack"
+        if token.kind in {"stack", "stack_value"}
     ]
     params = sorted(
         {
@@ -671,7 +667,7 @@ def _resolve_tokens(
                 continue
             if dereferenced and (
                 value is None
-                or any(token.kind != "stack" for token in value)
+                or any(token.kind not in {"stack", "stack_value"} for token in value)
             ):
                 all_complete = False
                 continue

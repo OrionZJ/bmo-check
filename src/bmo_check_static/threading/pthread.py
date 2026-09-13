@@ -4,7 +4,7 @@ from pathlib import Path
 
 from capstone.x86 import X86_OP_IMM, X86_OP_MEM, X86_OP_REG
 
-from bmo_check_core import EvidenceLedger
+from bmo_check_core import EvidenceLedger, ProofFact, ProducerId, ThreadRoleId
 from bmo_check_static.binary.angr_backend import AngrBackendError, load_cfg
 from bmo_check_static.binary.evidence import emit_static_unknown
 from bmo_check_static.binary.elf import executable_segments
@@ -24,7 +24,7 @@ from bmo_check_static.model import (
     UnknownKind,
 )
 
-from .callback import resolve_callback_targets
+from .callback import resolve_argument_locations, resolve_callback_targets
 
 
 # GCC OpenMP lowering把并行函数地址作为 GOMP_parallel 的第一个参数传入。
@@ -75,6 +75,28 @@ def _unknown(
         details=details,
         canonical_ledger=canonical_ledger,
         canonical_scope=canonical_scope,
+    )
+
+
+def _thread_proof(
+    ledger: EvidenceLedger | None,
+    module: ModuleFingerprint,
+    scope: str,
+    subject: str,
+    rule: str,
+) -> None:
+    """把闭合的线程事实写入 canonical ledger，供证书回放追溯。"""
+
+    if ledger is None:
+        return
+    ledger.add(
+        ProofFact.create(
+            schema_version="static-threading-1",
+            producer=ProducerId("bmo_check_static.threading", "e3.1"),
+            subject=ThreadRoleId.from_legacy(subject),
+            rule=rule,
+            scope=scope,
+        )
     )
 
 
@@ -257,8 +279,13 @@ def discover_pthread_threads(
     ]
     creates: list[ThreadCreateFact] = []
     unknowns: list[UnknownFact] = []
-    recovered_creates: list[tuple[object, str, IndirectTargetSet, str | None]] = []
-    callback_contexts: dict[int, tuple[tuple[int, int], ...]] = {}
+    recovered_creates: list[
+        tuple[object, str, IndirectTargetSet, str | None, tuple[str, ...]]
+    ] = []
+    # 每条 API 调用分别保存 callback/handle 的传参上下文；不能把同一个
+    # wrapper 的多个 caller 压成一个 function 集合，否则父子角色会混淆。
+    callback_contexts: dict[int, tuple[tuple[int, int, int | None], ...]] = {}
+    handle_contexts: dict[int, tuple[tuple[str, int, int | None], ...]] = {}
 
     main_reachable, main_call_graph_closed = _main_reachability(
         control_flow, main_function.pc
@@ -278,6 +305,10 @@ def discover_pthread_threads(
         else all_create_calls
     )
     for call in create_calls:
+        handle_resolution = resolve_argument_locations(
+            context, module, control_flow, call, "rdi"
+        )
+        handle_contexts[call.location.pc] = handle_resolution.location_contexts
         callback_pc, _, constant = _definition_before_call(
             context, call.block_pc, call.location.pc, "rdx"
         )
@@ -319,11 +350,11 @@ def discover_pthread_threads(
                 ),
             )
             if callback_resolution is not None:
-                callback_contexts[call.location.pc] = callback_resolution.contexts
+                callback_contexts[call.location.pc] = callback_resolution.call_contexts
                 argument_origin = callback_resolution.origin
             elif callback_pc is not None:
                 callback_contexts[call.location.pc] = (
-                    (callback_pc, call.containing_function_pc),
+                    (callback_pc, call.containing_function_pc, call.location.pc),
                 )
         else:
             targets = IndirectTargetSet(
@@ -344,7 +375,7 @@ def discover_pthread_threads(
                 ),
             )
             if callback_resolution is not None:
-                callback_contexts[call.location.pc] = callback_resolution.contexts
+                callback_contexts[call.location.pc] = callback_resolution.call_contexts
                 argument_origin = callback_resolution.origin
             unknowns.append(
                 _unknown(
@@ -359,7 +390,20 @@ def discover_pthread_threads(
                 )
             )
         role_id = f"pthread@{call.location.pc:x}"
-        recovered_creates.append((call, role_id, targets, argument_origin))
+        recovered_creates.append(
+            (
+                call,
+                role_id,
+                targets,
+                argument_origin,
+                tuple(
+                    dict.fromkeys(
+                        location
+                        for location, _, _ in handle_contexts[call.location.pc]
+                    )
+                ),
+            )
+        )
 
     # OpenMP worker 没有可供 join 的 pthread handle。这里只恢复实际传给
     # runtime 的 callback；角色按并行区入口分开，后面的隐式 barrier 才能
@@ -456,12 +500,26 @@ def discover_pthread_threads(
     # 不同 worker 的事件混在一起。只有 callback 集合和 caller 上下文都
     # 闭合时才按目标拆 role；普通单目标 pthread_create 保持旧 ID。
     role_entries: list[
-        tuple[object, str, IndirectTargetSet, str | None, int | None]
+        tuple[object, str, IndirectTargetSet, str | None, int | None, tuple[str, ...]]
     ] = []
-    for call, role_id, targets, argument_origin in recovered_creates:
+    for call, role_id, targets, argument_origin, all_handles in recovered_creates:
         contexts = callback_contexts.get(call.location.pc, ())
         if targets.complete and len(targets.known_targets) > 1 and contexts:
             for target in targets.known_targets:
+                target_contexts = {
+                    (caller, caller_call)
+                    for callback, caller, caller_call in contexts
+                    if callback == target.pc
+                }
+                target_handles = tuple(
+                    dict.fromkeys(
+                        location
+                        for location, caller, caller_call in handle_contexts.get(
+                            call.location.pc, ()
+                        )
+                        if (caller, caller_call) in target_contexts
+                    )
+                )
                 single = IndirectTargetSet(
                     known_targets=(target,),
                     complete=True,
@@ -474,13 +532,16 @@ def discover_pthread_threads(
                         single,
                         argument_origin,
                         target.pc,
+                        target_handles,
                     )
                 )
         else:
-            role_entries.append((call, role_id, targets, argument_origin, None))
+            role_entries.append(
+                (call, role_id, targets, argument_origin, None, all_handles)
+            )
 
     role_roots: dict[str, tuple[int, ...]] = {"main": (main_function.pc,)}
-    for _, role_id, targets, _, _ in role_entries:
+    for _, role_id, targets, _, _, _ in role_entries:
         role_roots[role_id] = tuple(item.pc for item in targets.known_targets)
     for _, role_id, targets, _ in openmp_entries:
         # role_id 按 call site 区分并行阶段；这里仍用 setdefault 保留该
@@ -503,14 +564,15 @@ def discover_pthread_threads(
             return candidates[0], True
         return _containing_role(reachability, function_pc)
 
-    for call, role_id, targets, argument_origin, target_pc in role_entries:
+    role_handle_locations: dict[str, tuple[str, ...]] = {}
+    for call, role_id, targets, argument_origin, target_pc, handle_locations in role_entries:
         contexts = callback_contexts.get(call.location.pc, ())
         parent_candidates: set[str] = set()
         parent_complete = True
         if target_pc is not None:
             caller_functions = {
                 caller
-                for callback, caller in contexts
+                for callback, caller, _ in contexts
                 if callback == target_pc
             }
             if not caller_functions:
@@ -551,9 +613,19 @@ def discover_pthread_threads(
                 create_site=call.location,
                 start_targets=targets,
                 argument_origin=argument_origin,
+                handle_locations=handle_locations,
                 complete=targets.complete and parent_complete,
             )
         )
+        if targets.complete and parent_complete:
+            _thread_proof(
+                canonical_ledger,
+                module,
+                canonical_scope,
+                role_id,
+                "pthread create callback and parent are closed",
+            )
+        role_handle_locations[role_id] = handle_locations
         creates.append(
             ThreadCreateFact(
                 call_site=call.location,
@@ -561,6 +633,7 @@ def discover_pthread_threads(
                 child_role=role_id,
                 start_targets=targets,
                 argument_origin=argument_origin,
+                handle_locations=handle_locations,
             )
         )
 
@@ -638,6 +711,10 @@ def discover_pthread_threads(
         for item in roles
         if item.id != "main" and item.id.startswith("pthread@")
     )
+    handles_to_roles: dict[str, set[str]] = {}
+    for role_id, locations in role_handle_locations.items():
+        for location in locations:
+            handles_to_roles.setdefault(location, set()).add(role_id)
     joins: list[ThreadJoinFact] = []
     all_join_calls = [
         call
@@ -654,37 +731,119 @@ def discover_pthread_threads(
         else all_join_calls
     )
     for call in join_calls:
+        handle_resolution = resolve_argument_locations(
+            context, module, control_flow, call, "rdi"
+        )
+        contexts = tuple(dict.fromkeys(handle_resolution.location_contexts))
+        if contexts:
+            # 一个 join wrapper 可能被 main 和 worker 多次调用。每个已闭合
+            # 的 caller/call-site 单独形成事实，避免把不同栈槽合成一个假句柄。
+            for location, caller_function, caller_call in contexts:
+                parent, parent_complete = parent_from_callback_context(caller_function)
+                candidates = tuple(
+                    sorted(handles_to_roles.get(location, ()))
+                )
+                complete = parent_complete and len(candidates) == 1
+                reason = None
+                if not parent_complete:
+                    reason = "join caller is reachable from zero or multiple thread roles"
+                elif not candidates:
+                    reason = "join handle does not match a recovered pthread_create slot"
+                elif len(candidates) > 1:
+                    reason = "join handle may refer to multiple recovered thread roles"
+                context_id = (
+                    f"{module.sha256}:join:{call.location.pc:x}:"
+                    f"caller:{caller_function:x}:call:{caller_call if caller_call is not None else 'none'}:"
+                    f"slot:{location}"
+                )
+                joins.append(
+                    ThreadJoinFact(
+                        call_site=call.location,
+                        parent_role=parent,
+                        candidate_child_roles=(candidates if candidates else child_roles),
+                        handle_locations=(location,),
+                        context_id=context_id,
+                        complete=complete,
+                        reason=reason,
+                    )
+                )
+                if complete:
+                    _thread_proof(
+                        canonical_ledger,
+                        module,
+                        canonical_scope,
+                        context_id,
+                        "pthread join handle and caller are closed",
+                    )
+                if not complete:
+                    unknowns.append(
+                        _unknown(
+                            UnknownKind.UNKNOWN_JOIN_RELATION,
+                            reason or "join relation is unknown",
+                            "thread lifetime ordering cannot be closed",
+                            module=module.path,
+                            pc=call.location.pc,
+                            details={
+                                "api": "pthread_join",
+                                "handle_location": location,
+                                "caller_function_pc": caller_function,
+                                "caller_call_pc": caller_call,
+                            },
+                            canonical_ledger=canonical_ledger,
+                            canonical_scope=canonical_scope,
+                        )
+                    )
+            if not handle_resolution.complete:
+                # 已知 caller 的事实可以独立使用；另一些 caller 仍未闭合
+                # 时追加 Unknown，不能因为部分成功就丢掉未证明路径。
+                unknowns.append(
+                    _unknown(
+                        UnknownKind.UNKNOWN_JOIN_RELATION,
+                        handle_resolution.reason
+                        or "one or more join caller paths are incomplete",
+                        "thread lifetime ordering cannot be closed for every caller",
+                        module=module.path,
+                        pc=call.location.pc,
+                        details={"api": "pthread_join", "partial_contexts": len(contexts)},
+                        canonical_ledger=canonical_ledger,
+                        canonical_scope=canonical_scope,
+                    )
+                )
+            continue
+
         parent, parent_complete = _containing_role(
             reachability, call.containing_function_pc
         )
-        complete = parent_complete and len(child_roles) == 1
         reason = (
-            None
-            if complete
-            else "join caller or handle cannot be mapped to one recovered thread role"
+            handle_resolution.reason
+            or "join caller or handle cannot be mapped to one recovered thread role"
         )
         joins.append(
             ThreadJoinFact(
                 call_site=call.location,
                 parent_role=parent,
                 candidate_child_roles=child_roles,
-                complete=complete,
+                handle_locations=handle_resolution.locations,
+                context_id=(
+                    f"{module.sha256}:join:{call.location.pc:x}:"
+                    f"caller:{call.containing_function_pc:x}"
+                ),
+                complete=False,
                 reason=reason,
             )
         )
-        if not complete:
-            unknowns.append(
-                _unknown(
-                    UnknownKind.UNKNOWN_JOIN_RELATION,
-                    reason or "join relation is unknown",
-                    "thread lifetime ordering cannot be closed",
-                    module=module.path,
-                    pc=call.location.pc,
-                    details={"api": "pthread_join"},
-                    canonical_ledger=canonical_ledger,
-                    canonical_scope=canonical_scope,
-                )
+        unknowns.append(
+            _unknown(
+                UnknownKind.UNKNOWN_JOIN_RELATION,
+                reason,
+                "thread lifetime ordering cannot be closed",
+                module=module.path,
+                pc=call.location.pc,
+                details={"api": "pthread_join"},
+                canonical_ledger=canonical_ledger,
+                canonical_scope=canonical_scope,
             )
+        )
 
     return ThreadDiscoveryReport(
         roles=tuple(roles),

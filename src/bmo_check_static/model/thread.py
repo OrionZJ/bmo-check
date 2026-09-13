@@ -18,6 +18,9 @@ class ThreadRole(StrictModel):
     start_targets: IndirectTargetSet
     # argument_origin 解释第四实参来自哪条块内定义。
     argument_origin: str | None = None
+    # handle_locations 保存由同一静态 create 上下文写入的 pthread_t 槽位。
+    # 没有封闭槽位时 join 关系仍必须保持 Unknown。
+    handle_locations: tuple[str, ...] = ()
     # complete 同时要求线程入口和角色归属没有未决缺口。
     complete: bool = False
 
@@ -33,6 +36,9 @@ class ThreadCreateFact(StrictModel):
     start_targets: IndirectTargetSet
     # argument_origin 仅用于解释，不证明参数指向私有内存。
     argument_origin: str | None = None
+    # handle_locations 把 child role 绑定到可回查的 pthread_t 存储槽位。
+    # 该绑定只来自静态地址传播，不能由运行时观察补上。
+    handle_locations: tuple[str, ...] = ()
 
 
 class ThreadJoinFact(StrictModel):
@@ -42,6 +48,10 @@ class ThreadJoinFact(StrictModel):
     parent_role: str
     # candidate_child_roles 允许过近似，不能漏掉可能被 join 的线程。
     candidate_child_roles: tuple[str, ...] = ()
+    # handle_locations 是本次 join 实际读取的句柄槽位身份。
+    handle_locations: tuple[str, ...] = ()
+    # context_id 区分同一 wrapper 内不同 caller/call-site 的生命周期事实。
+    context_id: str | None = None
     # complete 表示 handle 到角色的映射已经封闭。
     complete: bool
     # 映射不完整时记录阻止后续 lifetime 证明的原因。
