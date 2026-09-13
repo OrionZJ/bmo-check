@@ -44,8 +44,15 @@ def _request(tmp_path: Path) -> HerdOracleRequest:
 
 
 def test_parser_keeps_allowed_forbidden_and_unsupported_distinct() -> None:
-    assert parse_herd_outcome("Test SB Allowed\n") is HerdOutcome.ALLOWED
-    assert parse_herd_outcome("Test SB Forbidden\n") is HerdOutcome.FORBIDDEN
+    assert (
+        parse_herd_outcome("Test SB Allowed\nPositive: 1 Negative: 3\n")
+        is HerdOutcome.ALLOWED
+    )
+    assert (
+        parse_herd_outcome("Test MP Allowed\nPositive: 0 Negative: 3\n")
+        is HerdOutcome.FORBIDDEN
+    )
+    assert parse_herd_outcome("Test SB Allowed\n") is HerdOutcome.UNSUPPORTED
     assert (
         parse_herd_outcome("Condition exists (0:r1=0) is confirmed")
         is HerdOutcome.ALLOWED
@@ -60,6 +67,13 @@ def test_parser_keeps_allowed_forbidden_and_unsupported_distinct() -> None:
 def test_parser_rejects_multiple_test_summaries() -> None:
     # 批量输出没有唯一的输入绑定；任选一个结果会把错误的 oracle 记到当前 case。
     output = "Test SB Allowed\nTest MP Forbidden\n"
+
+    assert parse_herd_outcome(output) is HerdOutcome.UNSUPPORTED
+
+
+def test_parser_rejects_multiple_positive_summaries() -> None:
+    # 一个输入只能有一个 exists 计数；批量摘要不能合并成一个 outcome。
+    output = "Positive: 1 Negative: 0\nPositive: 0 Negative: 1\n"
 
     assert parse_herd_outcome(output) is HerdOutcome.UNSUPPORTED
 

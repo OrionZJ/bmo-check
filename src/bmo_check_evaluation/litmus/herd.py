@@ -147,6 +147,7 @@ class HerdReplayResult:
 _HEADER_RE = re.compile(
     r"^\s*Test\s+.+?\s+(Allowed|Forbidden)\s*$", re.IGNORECASE | re.MULTILINE
 )
+_POSITIVE_RE = re.compile(r"^\s*Positive:\s*(\d+)\b", re.IGNORECASE | re.MULTILINE)
 _CONDITION_RE = re.compile(
     r"\b(?:is\s+)?(not\s+)?confirmed\b", re.IGNORECASE
 )
@@ -158,11 +159,17 @@ def parse_herd_outcome(output: str) -> HerdOutcome:
     if not isinstance(output, str) or not output.strip():
         return HerdOutcome.UNSUPPORTED
     headers = _HEADER_RE.findall(output)
-    if len(headers) == 1:
-        return HerdOutcome(headers[0].capitalize())
     if len(headers) > 1:
         # 一次 oracle 只绑定一个输入；批量输出不能任选第一项作为结果。
         return HerdOutcome.UNSUPPORTED
+    positives = _POSITIVE_RE.findall(output)
+    if len(positives) > 1:
+        # 多个 Witnesses 摘要没有唯一的 exists outcome 可绑定。
+        return HerdOutcome.UNSUPPORTED
+    if len(positives) == 1:
+        # ``Test ... Allowed`` 只说明模型完成了测试；真正的 exists 结果由
+        # Positive 计数决定，0 表示该 outcome 没有合法 witness。
+        return HerdOutcome.ALLOWED if int(positives[0]) > 0 else HerdOutcome.FORBIDDEN
     confirmations = _CONDITION_RE.findall(output)
     if len(confirmations) == 1:
         return HerdOutcome.FORBIDDEN if confirmations[0] else HerdOutcome.ALLOWED
