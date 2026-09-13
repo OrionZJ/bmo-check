@@ -27,6 +27,7 @@ from bmo_check_static.model import (
 from bmo_check_static.proof.characterization import (
     check_fixed_execution as check_static,
 )
+from bmo_check_static.proof.encoding import _object_id
 
 
 HASH = "a" * 64
@@ -38,6 +39,9 @@ def _static_event(
     pc: int,
     kind: StaticEventKind,
     object_label: str | None = None,
+    *,
+    source_ordering: Ordering | None = None,
+    target_ordering: Ordering | None = None,
 ) -> MemoryEvent:
     address = None
     size = None
@@ -52,8 +56,16 @@ def _static_event(
         kind=kind,
         address=address,
         size=size,
-        source_ordering=Ordering.FULL if kind == StaticEventKind.FENCE else Ordering.TSO,
-        target_ordering=Ordering.FULL if kind == StaticEventKind.FENCE else Ordering.RELAXED,
+        source_ordering=(
+            source_ordering
+            if source_ordering is not None
+            else (Ordering.FULL if kind == StaticEventKind.FENCE else Ordering.TSO)
+        ),
+        target_ordering=(
+            target_ordering
+            if target_ordering is not None
+            else (Ordering.FULL if kind == StaticEventKind.FENCE else Ordering.RELAXED)
+        ),
         thread_role=role,
     )
 
@@ -162,6 +174,135 @@ def test_message_passing_target_only_execution_matches_both_routes() -> None:
     assert comparison.status is DifferentialStatus.MATCH
     assert comparison.classification is DifferentialClassification.EQUIVALENT
     assert (comparison.source_static, comparison.target_static) == ("forbidden", "allowed")
+
+
+@pytest.mark.parametrize(
+    ("dynamic_fence", "ordering"),
+    [
+        (DynamicEventKind.LFENCE, Ordering.FENCE_RR),
+        (DynamicEventKind.SFENCE, Ordering.FENCE_WW),
+        (DynamicEventKind.MFENCE, Ordering.FULL),
+    ],
+)
+def test_explicit_fences_have_matching_route_legality(
+    dynamic_fence: DynamicEventKind, ordering: Ordering
+) -> None:
+    static = _static_slice(
+        (
+            (
+                _static_event(
+                    "fence",
+                    "t0",
+                    0x10,
+                    StaticEventKind.FENCE,
+                    source_ordering=ordering,
+                    target_ordering=ordering,
+                ),
+            ),
+        )
+    )
+    static_result = check_static(static, read_from={})
+    dynamic = _dynamic_window((((dynamic_fence, 0),),))
+    dynamic_result = check_dynamic(dynamic, read_from={})
+
+    comparison = compare_fixed_execution(static_result, dynamic_result)
+
+    assert comparison.status is DifferentialStatus.MATCH
+    assert (comparison.source_static, comparison.target_static) == (
+        "allowed",
+        "allowed",
+    )
+
+
+def test_acq_rel_atomic_boundary_has_matching_route_legality() -> None:
+    static = _static_slice(
+        (
+            (
+                _static_event(
+                    "rmw-0",
+                    "t0",
+                    0x10,
+                    StaticEventKind.ATOMIC_RMW,
+                    "x",
+                    target_ordering=Ordering.ACQ_REL,
+                ),
+            ),
+            (
+                _static_event(
+                    "rmw-1",
+                    "t1",
+                    0x20,
+                    StaticEventKind.ATOMIC_RMW,
+                    "x",
+                    target_ordering=Ordering.ACQ_REL,
+                ),
+            ),
+        )
+    )
+    static_object = _object_id(static.events[0])
+    static_result = check_static(
+        static,
+        read_from={"rmw-0": None, "rmw-1": "rmw-0"},
+        coherence=((static_object, "rmw-0", "rmw-1"),),
+    )
+    dynamic = _dynamic_window(
+        (
+            ((DynamicEventKind.ATOMIC_RMW, 0x1000),),
+            ((DynamicEventKind.ATOMIC_RMW, 0x1000),),
+        )
+    )
+    dynamic_result = check_dynamic(
+        dynamic,
+        read_from={"t1:e1": None, "t2:e1": "t1:e1"},
+        coherence=(("x", "t1:e1", "t2:e1"),),
+        object_locations={"x": (0x1000, 4)},
+    )
+
+    comparison = compare_fixed_execution(static_result, dynamic_result)
+
+    assert comparison.status is DifferentialStatus.MATCH
+    assert (comparison.source_static, comparison.target_static) == (
+        "allowed",
+        "allowed",
+    )
+
+
+def test_same_address_store_load_difference_is_explicitly_route_specific() -> None:
+    static = _static_slice(
+        (
+            (
+                _static_event("store", "t0", 0x10, StaticEventKind.STORE, "x"),
+                _static_event("load", "t0", 0x14, StaticEventKind.LOAD, "x"),
+            ),
+        )
+    )
+    static_result = check_static(static, read_from={"load": None})
+    dynamic = _dynamic_window(
+        (
+            ((DynamicEventKind.STORE, 0x1000), (DynamicEventKind.LOAD, 0x1000)),
+        )
+    )
+    dynamic_result = check_dynamic(
+        dynamic,
+        read_from={"t1:e2": None},
+        object_locations={"x": (0x1000, 4)},
+    )
+
+    comparison = compare_fixed_execution(
+        static_result,
+        dynamic_result,
+        expected=DifferentialClassification.INTENDED_ROUTE_DIFFERENCE,
+        expected_reason=(
+            "static and dynamic facades intentionally model same-address "
+            "Store-to-Load forwarding at different abstraction levels"
+        ),
+    )
+
+    assert comparison.status is DifferentialStatus.MISMATCH
+    assert (comparison.source_static, comparison.source_dynamic) == (
+        "allowed",
+        "forbidden",
+    )
 
 
 def test_dynamic_facade_accepts_explicit_from_read_for_the_same_execution() -> None:

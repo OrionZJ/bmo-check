@@ -268,6 +268,11 @@ differential inventory. They are not automatically declared bugs:
 The differential suite compares only the declared common subset. Every excluded
 difference must have a typed reason instead of being ignored.
 
+The checked-in route matrix now freezes all three explicit Fence kinds and an
+AcqRel two-event atomic boundary. It also exercises the known same-address
+Store-to-Load abstraction difference with an explicit route-specific classification;
+the test does not hide that difference by forcing the two facades to agree.
+
 ### 4.5 DBT contract binding boundary
 
 The canonical contract requires:
