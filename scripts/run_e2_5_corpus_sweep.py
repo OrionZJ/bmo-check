@@ -10,7 +10,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
+import random
 import time
 from collections import Counter
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -86,6 +86,28 @@ def discover_cases(corpus_root: Path) -> tuple[CorpusCase, ...]:
             )
         )
     return tuple(cases)
+
+
+def select_cases(
+    cases: Iterable[CorpusCase],
+    *,
+    sample_size: int | None = None,
+    sample_seed: int = 0,
+) -> tuple[CorpusCase, ...]:
+    """选择可复现的子集；不传 ``sample_size`` 时保持原始完整顺序。"""
+
+    materialized = tuple(cases)
+    if sample_size is None:
+        return materialized
+    if sample_size < 1 or sample_size > len(materialized):
+        raise ValueError(
+            f"sample_size must be between 1 and {len(materialized)}"
+        )
+    # 先按原始排序抽样，再恢复索引顺序，避免 worker 完成顺序影响输入集合。
+    selected = set(
+        random.Random(sample_seed).sample(range(len(materialized)), sample_size)
+    )
+    return tuple(case for index, case in enumerate(materialized) if index in selected)
 
 
 def _counts(unknowns: Iterable[Any]) -> dict[str, int]:
@@ -234,7 +256,13 @@ def _write_record(stream: Any, record: dict[str, Any]) -> None:
     stream.flush()
 
 
-def _summary(output: Path, *, total: int, skipped: int) -> dict[str, Any]:
+def _summary(
+    output: Path,
+    *,
+    total: int,
+    skipped: int,
+    selection: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     statuses: Counter[str] = Counter()
     verdicts: Counter[str] = Counter()
     unknowns: Counter[str] = Counter()
@@ -268,6 +296,7 @@ def _summary(output: Path, *, total: int, skipped: int) -> dict[str, Any]:
         "unknown_kinds": dict(sorted(unknowns.items())),
         "relevant_unknown_kinds": dict(sorted(relevant_unknowns.items())),
         "sum_case_seconds": round(elapsed, 3),
+        "selection": selection or {"mode": "all"},
     }
 
 
@@ -278,6 +307,7 @@ def run_sweep(
     *,
     workers: int,
     resume: bool,
+    selection: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     cases = tuple(cases)
     if workers < 1 or workers > 2:
@@ -299,7 +329,12 @@ def run_sweep(
                 for future in futures:
                     future.cancel()
                 raise
-    summary = _summary(output, total=len(cases), skipped=skipped)
+    summary = _summary(
+        output,
+        total=len(cases),
+        skipped=skipped,
+        selection=selection,
+    )
     summary_path = output.with_suffix(output.suffix + ".summary.json")
     summary_path.write_text(
         json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
@@ -331,6 +366,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-executions", type=int, default=128)
     parser.add_argument("--timeout-ms", type=int, default=1000)
     parser.add_argument("--workers", type=int, default=1)
+    parser.add_argument(
+        "--sample-size",
+        type=int,
+        help="分析一个可复现的随机子集；缺省时处理全部 ELF",
+    )
+    parser.add_argument(
+        "--sample-seed",
+        type=int,
+        default=0,
+        help="随机子集的稳定 seed（与 --sample-size 一起使用）",
+    )
     parser.add_argument("--no-resume", action="store_true")
     return parser
 
@@ -352,13 +398,24 @@ def main(argv: list[str] | None = None) -> int:
         max_executions=args.max_executions,
         timeout_ms=args.timeout_ms,
     )
-    cases = discover_cases(args.corpus_root.resolve())
+    all_cases = discover_cases(args.corpus_root.resolve())
+    cases = select_cases(
+        all_cases,
+        sample_size=args.sample_size,
+        sample_seed=args.sample_seed,
+    )
+    selection = (
+        {"mode": "sample", "size": len(cases), "seed": args.sample_seed}
+        if args.sample_size is not None
+        else {"mode": "all"}
+    )
     summary = run_sweep(
         cases,
         config,
         args.output.resolve(),
         workers=args.workers,
         resume=not args.no_resume,
+        selection=selection,
     )
     print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
     return 0
@@ -368,4 +425,10 @@ if __name__ == "__main__":
     raise SystemExit(main())
 
 
-__all__ = ["CorpusCase", "SweepConfig", "discover_cases", "run_sweep"]
+__all__ = [
+    "CorpusCase",
+    "SweepConfig",
+    "discover_cases",
+    "run_sweep",
+    "select_cases",
+]
