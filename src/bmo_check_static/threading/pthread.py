@@ -417,7 +417,15 @@ def discover_pthread_threads(
     # OpenMP worker 没有可供 join 的 pthread handle。这里只恢复实际传给
     # runtime 的 callback；角色按并行区入口分开，后面的隐式 barrier 才能
     # 只连接本阶段的 worker 事件。
-    openmp_entries: list[tuple[object, str, IndirectTargetSet, str | None]] = []
+    openmp_entries: list[
+        tuple[
+            object,
+            str,
+            IndirectTargetSet,
+            str | None,
+            tuple[tuple[int, int, int | None], ...],
+        ]
+    ] = []
     all_openmp_calls = [
         call
         for call in control_flow.call_sites
@@ -449,6 +457,14 @@ def discover_pthread_threads(
             )
             if callback_resolution.targets:
                 callback_valid = callback_resolution.complete
+        else:
+            # 直接常量 callback 也要保留 wrapper 的 caller 上下文；同一
+            # OpenMP 入口可能从不同线程角色进入，不能把它们合成一个阶段。
+            enriched = resolve_callback_targets(
+                context, module, control_flow, call, "rdi"
+            )
+            if enriched.complete and callback_pc in enriched.targets:
+                callback_resolution = enriched
         if callback_valid:
             resolved_pcs = (
                 callback_resolution.targets
@@ -470,6 +486,13 @@ def discover_pthread_threads(
             )
             if callback_resolution is not None:
                 argument_origin = callback_resolution.origin
+                callback_contexts_for_call = callback_resolution.call_contexts
+            elif callback_pc is not None:
+                callback_contexts_for_call = (
+                    (callback_pc, call.containing_function_pc, call.location.pc),
+                )
+            else:
+                callback_contexts_for_call = ()
             # 角色按并行区入口而不是 callback 地址命名；同一 callback
             # 在两个阶段复用时，两个阶段不能共享同一组事件边界。
             role_id = f"openmp@{call.location.pc:x}"
@@ -489,6 +512,11 @@ def discover_pthread_threads(
                         "OpenMP parallel callback is not a proven executable constant"),
             )
             role_id = f"openmp@{call.location.pc:x}"
+            callback_contexts_for_call = (
+                callback_resolution.call_contexts
+                if callback_resolution is not None
+                else ()
+            )
             unknowns.append(
                 _unknown(
                     UnknownKind.UNKNOWN_THREAD_ENTRY,
@@ -501,8 +529,55 @@ def discover_pthread_threads(
                     canonical_scope=canonical_scope,
                 )
             )
-        entry = (call, role_id, targets, argument_origin)
+        entry = (call, role_id, targets, argument_origin, callback_contexts_for_call)
         openmp_entries.append(entry)
+
+    normalized_openmp_entries: list[
+        tuple[
+            object,
+            str,
+            IndirectTargetSet,
+            str | None,
+            tuple[int, int, int | None] | None,
+        ]
+    ] = []
+    for call, role_id, targets, argument_origin, contexts in openmp_entries:
+        context_keys = tuple(dict.fromkeys(contexts))
+        split_contexts = targets.complete and bool(context_keys) and (
+            len(targets.known_targets) > 1 or len(context_keys) > 1
+        )
+        if split_contexts:
+            for target_pc, caller_function, caller_call in context_keys:
+                target = next(
+                    (item for item in targets.known_targets if item.pc == target_pc),
+                    None,
+                )
+                if target is None:
+                    continue
+                suffix = f"#{target.pc:x}"
+                if len(context_keys) > 1:
+                    suffix += (
+                        f"@caller:{caller_function:x}:call:"
+                        f"{caller_call if caller_call is not None else 'none'}"
+                    )
+                normalized_openmp_entries.append(
+                    (
+                        call,
+                        f"{role_id}{suffix}",
+                        IndirectTargetSet(
+                            known_targets=(target,),
+                            complete=True,
+                            evidence=targets.evidence,
+                        ),
+                        argument_origin,
+                        (target_pc, caller_function, caller_call),
+                    )
+                )
+        else:
+            normalized_openmp_entries.append(
+                (call, role_id, targets, argument_origin, None)
+            )
+    openmp_entries = normalized_openmp_entries
 
     # 一个 wrapper 可能在 main 和 worker 两条调用上下文中复用；把它的
     # 多个 callback 合并成一个 role 会让父线程永远变成 unknown，并把
@@ -580,7 +655,7 @@ def discover_pthread_threads(
     role_roots: dict[str, tuple[int, ...]] = {"main": (main_function.pc,)}
     for _, role_id, targets, _, _, _, _ in role_entries:
         role_roots[role_id] = tuple(item.pc for item in targets.known_targets)
-    for _, role_id, targets, _ in openmp_entries:
+    for _, role_id, targets, _, _ in openmp_entries:
         # role_id 按 call site 区分并行阶段；这里仍用 setdefault 保留该
         # 阶段 callback 的单一入口。
         role_roots.setdefault(
@@ -692,10 +767,15 @@ def discover_pthread_threads(
     # pthread_join 会错误地要求它们存在一个可 join 的角色。
     openmp_roles: dict[str, list[tuple[str, bool]]] = {}
     parallel_regions: list[ThreadParallelFact] = []
-    for call, role_id, targets, argument_origin in openmp_entries:
-        parent, parent_complete = _containing_role(
-            reachability, call.containing_function_pc
-        )
+    for call, role_id, targets, argument_origin, selected_context in openmp_entries:
+        if selected_context is not None:
+            parent, parent_complete = parent_from_callback_context(
+                selected_context[1]
+            )
+        else:
+            parent, parent_complete = _containing_role(
+                reachability, call.containing_function_pc
+            )
         openmp_roles.setdefault(role_id, []).append((parent, parent_complete))
         if call.target_symbol == "GOMP_parallel":
             # 只有合并式 GOMP_parallel 在同一个调用返回前完成隐式 join。
@@ -710,6 +790,14 @@ def discover_pthread_threads(
                     complete=targets.complete and parent_complete,
                 )
             )
+            if targets.complete and parent_complete:
+                _thread_proof(
+                    canonical_ledger,
+                    module,
+                    canonical_scope,
+                    role_id,
+                    "OpenMP callback and parent are closed",
+                )
         if not parent_complete:
             unknowns.append(
                 _unknown(

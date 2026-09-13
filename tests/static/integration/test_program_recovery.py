@@ -339,3 +339,62 @@ def test_wrapper_called_from_main_and_worker_keeps_lifecycle_contexts(
         }
         for item in report.unknowns
     )
+
+
+def test_openmp_wrapper_keeps_parallel_contexts_per_caller(tmp_path: Path) -> None:
+    """OpenMP callback 也按调用点区分 main 与 worker 的并行阶段。"""
+
+    gcc = shutil.which("gcc")
+    assert gcc is not None
+    source = tmp_path / "openmp-wrapper.c"
+    source.write_text(
+        "#include <pthread.h>\n"
+        "static volatile int sink;\n"
+        "static __attribute__((noinline)) void run_parallel(void) {\n"
+        "  #pragma omp parallel\n"
+        "  { sink += 1; }\n"
+        "}\n"
+        "static __attribute__((noinline)) void *parent(void *arg) {\n"
+        "  run_parallel(); return arg;\n"
+        "}\n"
+        "int main(void) {\n"
+        "  pthread_t outer; pthread_create(&outer, 0, parent, 0);\n"
+        "  run_parallel(); pthread_join(outer, 0);\n"
+        "  return sink == 0;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    executable = tmp_path / "openmp-wrapper"
+    subprocess.run(
+        [
+            gcc,
+            "-O0",
+            "-fno-omit-frame-pointer",
+            "-fopenmp",
+            "-o",
+            str(executable),
+            str(source),
+            "-pthread",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    manifest = _manifest(executable)
+    assert manifest.executable is not None
+    control_flow = recover_control_flow(manifest.executable, manifest)
+    report = discover_pthread_threads(manifest.executable, manifest, control_flow)
+
+    assert len(report.creates) == 1
+    assert report.creates[0].parent_role == "main"
+    assert report.creates[0].start_targets.complete
+    assert len(report.parallel_regions) == 2
+    assert all(region.complete for region in report.parallel_regions)
+    assert not any(
+        item.kind
+        in {
+            UnknownKind.REACHING_DEFINITION_FAILURE,
+            UnknownKind.UNKNOWN_THREAD_ENTRY,
+        }
+        for item in report.unknowns
+    )
