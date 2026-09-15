@@ -479,22 +479,34 @@ scope and may not consume litmus names, source markers or corpus expectations.
 The detailed implementation sequence and exit criteria are in
 `docs/exec-plans/active/e2-5-litmus-elf-correctness.md`.
 
-### E3 — Improve one generic static capability
+### E3 — Complete the integrated static/dynamic/diagnostics workflow
 
-Choose the most frequent diagnosed root cause, then implement a generic static
-analysis improvement with synthetic positive, negative and Unknown tests. Candidate
-first capabilities are:
+The current E3 order is to finish the hybrid workflow before adding static precision.
+The 2,595-ELF corpus measurement and E2.5 correctness suite are frozen inputs, not
+targets to improve during this phase. H0–H6 characterize, compose and expose the
+existing services; H7 validates the one-workload path on a small set of real inputs.
+The active plan and per-commit acceptance criteria are in
+`docs/exec-plans/active/e3-hybrid-workflow.md`.
 
-- PHI recurrence recovery;
-- induction-variable bound propagation;
-- caller argument provenance;
-- field-sensitive heap provenance.
+The workflow report must retain independent static and trace-bound dynamic verdicts,
+identify the still-blocking static Unknowns, correlate observations as
+Exact/Ambiguous/Unmatched, and label root-cause suggestions as diagnostic rather than
+causal proof when provenance does not support a causal edge. It must not add a combined
+verdict or let dynamic data alter static proof closure.
 
-Only a new static `ProofFact` may discharge the corresponding Unknown. Rerun the pure
-static analyzer without loading any trace. If closure succeeds, the verdict may change;
-otherwise it remains `UNKNOWN`.
+After H7 is reviewed, choose one or two generic static precision capabilities from the
+hybrid diagnostics, canneal evidence and frozen corpus measurement. Do not assume
+thread/lifecycle or affine analysis is first. The selection and its soundness contract
+must be reviewed before implementation.
 
-Commit intent must name the generic capability, not canneal.
+### E3 static-precision follow-up — One selected generic capability
+
+For each selected capability, add synthetic positive, negative and Unknown tests.
+Only a newly generated static `ProofFact` may discharge the corresponding Unknown.
+Rerun the pure static analyzer without loading any trace. If closure succeeds, the
+static verdict may change; otherwise it remains `UNKNOWN`.
+
+Commit intent must name the generic capability, not a benchmark or litmus name.
 
 ### E4 — Broader evaluation
 
@@ -512,14 +524,16 @@ reviewed for version control.
 
 ### Phase E exit criteria
 
-- canneal diagnostics identify actionable static gaps without changing the original
-  static verdict;
+- a one-workload CLI emits one versioned report plus separate static and dynamic route
+  certificates, with static and trace-bound verdicts kept independent;
+- real canneal, representative litmus and a distinct PARSEC workload exercise the
+  integrated path without benchmark-specific proof semantics;
 - representative real litmus ELFs validate recovery and execution legality without
   allowing external oracle data to enter proof closure;
 - static and dynamic memory-model drift has no unclassified case in their declared
   common support set;
-- at least one generic static capability is justified by synthetic tests and produces
-  static ProofFacts independently of traces;
+- later-selected generic static capabilities are justified by diagnostics and
+  synthetic tests, and produce static ProofFacts independently of traces;
 - every changed static verdict is replayable from a proof-closed certificate;
 - no benchmark-specific semantic branch exists.
 

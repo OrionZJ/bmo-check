@@ -18,6 +18,17 @@ from .report import (
     load_hybrid_workflow_report,
     save_hybrid_workflow_report,
 )
+from .manifest import (
+    DynamicAnalysisSpec,
+    DynamicWorkflowSpec,
+    HybridWorkloadManifest,
+    StaticWorkflowSpec,
+    WorkloadManifestError,
+    WorkloadSpec,
+    load_workload_manifest,
+    validate_output_layout,
+    validate_request_inputs,
+)
 
 __all__ = [
     "DiagnosticProducts",
@@ -34,4 +45,13 @@ __all__ = [
     "hybrid_report_from_json",
     "load_hybrid_workflow_report",
     "save_hybrid_workflow_report",
+    "DynamicAnalysisSpec",
+    "DynamicWorkflowSpec",
+    "HybridWorkloadManifest",
+    "StaticWorkflowSpec",
+    "WorkloadManifestError",
+    "WorkloadSpec",
+    "load_workload_manifest",
+    "validate_output_layout",
+    "validate_request_inputs",
 ]

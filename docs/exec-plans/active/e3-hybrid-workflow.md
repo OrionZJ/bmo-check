@@ -1,6 +1,6 @@
 # E3 — 先完成动静结合诊断工作流
 
-状态：active implementation；H0–H5 complete，H6 active。分析器、真实 workload 与 frozen corpus baseline 均未改变。
+状态：active implementation；H0–H6 complete，H7 real-workload validation pending。分析器、真实 workload 与 frozen corpus baseline 均未改变。
 
 ## 阶段边界
 
@@ -79,7 +79,7 @@ D5 分类器根据 `UnknownKind`、reason/context 和 correlation status 选择 
 | E3-H3 | `Bind dynamic certificate to trace observations` | 增加单一 typed bridge，核对 `DynamicCertificate`、manifest、trace digest、executable/libraries、DBT contract 与 snapshot；显式映射 manifest trace ID 和诊断 `TraceId`，不复制证据模型。增加通用 `CorrelationBinding`，让 diagnostics 能接收 binary、translation policy、analysis scope 的逐项比对。 | 完成。动态 bridge 只从原 trace 重建 snapshot，并核对 certificate 的 manifest ID、内容 digest、模块闭包、命令、工作目录和 contract hash；跨路由不兼容会输出 `Unmatched`，缺材料会降为 `Ambiguous`。H4 将从两条 route 的 application result 生成实际比对项。实现记录见 `e3-h3-trace-binding.md`。 |
 | E3-H4 | `Compose existing route services` | 新增一个 model-free workflow application service，组合 `StaticRequest`/`analyze_with_evidence`、dynamic capture/analyze、现有 adapters、D4 和 E1。只新增编排 request/result；不实现新 MemoryEvent、solver、correlator、certificate 或 evidence ledger。 | 用隔离服务测试验证顺序和 artifact binding。分析边界内的 incomplete/unsupported/resource limit 使用该 route 已有的 typed Unknown；配置、I/O 或工具启动失败则保留明确 workflow error，不伪造一张分析证书，也不静默跳过失败的一侧。 |
 | E3-H5 | `Emit one versioned hybrid report` | 完成。`bmo_check_workflow.report` 把 static verdict/未闭合 obligations、dynamic verdict/trace scope、D4 correlation/hints、E1 affine observations、root-cause candidate/confidence/causal status 放进 `hybrid-workflow-report-v2`。D4/E1 子 schema 原样保留，DynamicCertificate 不进入 diagnostics evidence。 | 完成 typed JSON round-trip、未知 schema/字段拒绝、trace/closure/evidence reference 检查、静态 proof-closure 与动态 observation/hint 隔离、静态/动态 argv 与环境摘要核对、DBT hash 与动态预算记录。没有 combined verdict；记录见 `e3-h5-hybrid-report.md`。 |
-| E3-H6 | `Expose one-workload CLI` | 增加薄 CLI 子命令和 versioned generic workload manifest。CLI 只解析/渲染，调用 H4 service 与 H5 report builder；保留现有 snapshot-based `diagnose`、static/dynamic 独立命令。 | CLI integration tests 检查普通输入、无效 manifest、缺失 DBT binding、DynamoRIO 不可用、trace incomplete、输出路径失败；结果 JSON 仍分别显示两种 verdict。 |
+| E3-H6 | `Expose one-workload CLI` | 完成。`bmo-check hybrid --workload ... --output-dir ...` 通过严格 `hybrid-workload-v1` manifest 调用 H4 service/H5 report builder；保留 snapshot-based `diagnose` 和 static/dynamic 独立命令。 | contract tests 覆盖相对路径、未知/重复字段、缺失 DBT revision 的 static-Unknown 输入、缺 DynamoRIO 时不分配输出目录、拒绝覆盖、分别写 route certificate/report、workflow exit code 不代表 combined verdict，并保留失败后的 trace。测试 mock H4，不运行 workload。实现记录见 `e3-h6-workload-cli.md`。 |
 | E3-H7 | `Validate hybrid workflow on real workloads` | 用少量真实 ELF/应用验证同一输入身份、观察相关、harness 事件可见、产物预算和可复现命令；只记录结果和限制，不按 workload 名改变语义。 | 先跑 canneal 和 E2.5 代表 ELF，再选一个已有动态完整 trace 的 PARSEC workload。若 trace 过大、依赖缺失、closure mismatch 或过预算，结果如实为 `UNKNOWN`/unmatched；不通过过滤 harness 获得成功。 |
 
 ### Workflow service 的归属决策
@@ -90,13 +90,13 @@ D5 分类器根据 `UnknownKind`、reason/context 和 correlation status 选择 
 
 ## 5. 完成后用户如何运行、看到什么
 
-建议的单 workload 入口（命令名和 YAML 字段在 H0 定稿）：
+H6 的单 workload 入口和 manifest schema 已定稿：
 
 ```text
 bmo-check hybrid --workload workload.yaml --output-dir E:/bmo-check-e3-hybrid/run-001
 ```
 
-manifest 提供同一程序的 executable 与 argv、working directory、environment、library roots、静态 DBT/function-effect/pthread 契约与 revision、static scope/checker limits、动态 DynamoRIO/client/trace limits，以及输出位置。动态命令必须由 executable+argv 形成，不经 shell 拼接。大 trace、DuckDB 和临时物留在用户指定的 E 盘目录，不复制进仓库或 D 盘。
+manifest 提供同一程序的 executable 与 argv、working directory、environment、library roots、静态 DBT/function-effect/pthread 契约与 revision、static scope/checker limits、动态 DynamoRIO/client/trace limits。输出目录由 `--output-dir` 单独指定。动态命令必须由 executable+argv 形成，不经 shell 拼接。大 trace 和 DuckDB 留在用户选择的输出目录，不复制进仓库。
 
 workflow 复用现有分析路径：先取得 static `StaticAnalysisResult` 和 canonical snapshot；再 capture 一次 workload、分析同一 trace 得到 `DynamicCertificate`，从该 trace 建立 dynamic snapshot；核对绑定后调用现有 D4 correlator 和 E1 affine builder。
 

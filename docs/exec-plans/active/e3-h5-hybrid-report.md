@@ -66,8 +66,8 @@ report = load_hybrid_workflow_report(output_path)
 ```
 
 `hybrid_report_from_dict` and `hybrid_report_from_json` provide the same strict
-validation for in-memory input. H6 will expose the H4/H5 path through a generic
-one-workload CLI; H5 itself does not launch a workload.
+validation for in-memory input. H6 exposes the H4/H5 path through the generic
+`bmo-check hybrid` one-workload CLI; H5 itself does not launch a workload.
 
 ## Tests and validation
 

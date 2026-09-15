@@ -229,6 +229,14 @@ def _diagnose(args: argparse.Namespace) -> int:
     return run_diagnose(args)
 
 
+def _hybrid(args: argparse.Namespace) -> int:
+    """单 workload 编排交给 CLI package，dynamic route 不反向依赖 workflow。"""
+
+    from bmo_check_cli.hybrid import run_hybrid
+
+    return run_hybrid(args)
+
+
 def _add_capture_options(parser: argparse.ArgumentParser) -> None:
     default_home = Path(os.environ.get("DYNAMORIO_HOME", "/opt/dynamorio"))
     parser.add_argument("--dynamorio-home", type=Path, default=default_home)
@@ -353,6 +361,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="limit the report to this static EvidenceId (repeatable)",
     )
     diagnose.set_defaults(handler=_diagnose)
+
+    hybrid = subparsers.add_parser(
+        "hybrid",
+        help="run static and dynamic analysis for one workload and write one report",
+    )
+    hybrid.add_argument("--workload", type=Path, required=True, help="versioned YAML workload manifest")
+    hybrid.add_argument("--output-dir", type=Path, required=True)
+    hybrid.add_argument(
+        "--dynamorio-home",
+        type=Path,
+        help="override the manifest's DynamoRIO root (or DYNAMORIO_HOME default)",
+    )
+    hybrid.add_argument(
+        "--client",
+        type=Path,
+        help="override the manifest's native client path",
+    )
+    hybrid.set_defaults(handler=_hybrid)
     return parser
 
 

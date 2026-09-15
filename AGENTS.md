@@ -129,14 +129,17 @@ reproduction path and a reviewed reason that a synthetic fixture is insufficient
 ## Current commands
 
 ```text
-bmo-check capture|analyze|run|campaign|explain|locate|diagnose
+bmo-check capture|analyze|run|campaign|explain|locate|diagnose|hybrid
 bmo-check-static fingerprint|recover|slice|analyze|explain|evaluate
 ```
 
 The H4 Python workflow API is `bmo_check_workflow.analyze_workload`. H5 adds
 `build_hybrid_workflow_report`, `save_hybrid_workflow_report`, and
-`load_hybrid_workflow_report`; H6 will expose the same workflow through a one-workload
-CLI. The H5 report has no combined verdict and rejects unknown schema versions.
+`load_hybrid_workflow_report`; H6 exposes the same workflow through the one-workload
+`bmo-check hybrid` CLI. The report keeps route verdicts separate and rejects unknown
+schema versions. The CLI preflights its inputs, refuses an existing output directory,
+and stores both route certificates, the report, trace and DuckDB file under the chosen
+output directory. Its exit code reports workflow completion, not a combined verdict.
 
 `diagnose` consumes only typed static/dynamic snapshots and writes a versioned
 diagnostic report. It may correlate observations and create hints, but must not attach

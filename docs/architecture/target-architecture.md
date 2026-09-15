@@ -1,6 +1,6 @@
 # Target Architecture
 
-Status: accepted design; Phase C evidence/provenance foundation and E3-H5 workflow report implemented
+Status: accepted design; Phase C evidence/provenance foundation and E3-H6 hybrid workflow implemented
 
 Applies after: repository baseline `3375b5f`
 
@@ -63,6 +63,7 @@ src/
 │   └── report/             diagnostic report schema and explanation
 ├── bmo_check_workflow/
 │   ├── application.py      one-workload orchestration over existing route services
+│   ├── manifest.py         strict versioned workload input adapter
 │   └── report.py           strict versioned projection; no combined verdict
 ├── bmo_check_evaluation/
 │   ├── parsec.py           typed PARSEC harness and aggregation service
@@ -71,6 +72,7 @@ src/
     ├── dynamic.py          capture, analyze, run and campaign commands
     ├── static.py           recover, slice and static analyze commands
     ├── diagnose.py         correlation and diagnostic reporting
+    ├── hybrid.py           one-workload workflow adapter
     └── explain.py          certificate/report explanation
 ```
 
@@ -119,6 +121,14 @@ before and after static analysis and checks the cross-route policy binding again
 dynamic certificate digest. This report is not a certificate and does not replace
 route certificate replay. It also checks static/dynamic argv and environment hashes,
 and records the dynamic solver budgets and trace-directory locator.
+
+E3-H6 exposes the H4/H5 path as `bmo-check hybrid`. A strict, versioned workload
+manifest maps to the existing static and dynamic request models; the CLI adds no
+analysis semantics. It preflights inputs, creates a new user-selected output directory
+exclusively, saves both route certificates and the H5 report separately, and preserves
+trace artifacts after a later output failure. Its exit code reports workflow
+completion, not a combined safety verdict. H6 tests mock the workflow service; actual
+workload validation remains in H7.
 
 Phase C closure is now part of the static application path: when a DBT revision is
 bound, `bmo_check_static.application.analyze_with_evidence` converts the legacy

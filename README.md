@@ -103,8 +103,44 @@ E1 affine observations 和 D5 root-cause 候选。报告也核对静态/动态 a
 proof closure、消除 Unknown 或把 static `UNKNOWN` 升成 `SAFE`。D5 候选的
 `causal_relation_unresolved` 表示当前没有可证明的因果边。报告保留启动命令与工作目录，
 环境变量只记录名称和值的摘要；原始环境仍留在 trace manifest，大型 trace 仍留在
-独立 trace 目录。H6 会再提供
-面向普通 workload 的单命令 CLI；目前可通过 `bmo_check_workflow` Python API 调用。
+独立 trace 目录。
+
+H6 提供普通 workload 的单命令入口：
+
+```bash
+bmo-check hybrid --workload workload.yaml --output-dir /mnt/e/bmo-check/run-001
+```
+
+清单是 `hybrid-workload-v1` YAML；相对输入路径以清单文件所在目录为基准，
+相对 DuckDB 路径以 `--output-dir` 为基准。清单不经 shell 展开，也不会把
+程序名用于分析分支。例如：
+
+```yaml
+schema_version: hybrid-workload-v1
+workload:
+  executable: ./app
+  argv: [--input, ./case.dat]
+  working_directory: .
+  environment:
+    WORKERS: "4"
+static:
+  dbt_contract: ./dbt6-mo-off.yaml
+  pthread_spec: ./pthread-api.yaml
+  function_effects: ./library-effects.yaml
+  dbt_revision: 0123456789abcdef0123456789abcdef01234567
+  scope: full
+dynamic:
+  dynamorio_home: /home/user/.local/opt/dynamorio
+  client_path: /path/to/libbmo_trace.so
+  analysis:
+    database_path: dynamic-analysis.duckdb
+```
+
+命令先检查输入和输出布局，再独占创建输出目录；已有输出目录不会被覆盖。
+成功运行会分别保存 `static-certificate.json`、`dynamic-certificate.json` 和
+`hybrid-workflow-report.json`，trace 保存在 `trace/`。退出码 `0` 表示两条路线
+和报告生成完成，不代表任一 verdict 为 SAFE；输入、工具或 I/O 错误返回 `3`。
+static 和 dynamic verdict 只看各自的证书，workflow 不定义 combined verdict。
 
 多轮实验使用 `bmo-check campaign manifest.yaml --output results`。总体 `TRACE_SAFE` 只表示清单中的每条轨迹都为 `TRACE_SAFE`。
 
