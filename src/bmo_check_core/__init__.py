@@ -58,6 +58,10 @@ from .certificate import (
     verify_trace_certificate,
 )
 from .diagnostics import (
+    BindingCheck,
+    BindingDimension,
+    BindingStatus,
+    CorrelationBinding,
     DynamicDiagnosticSnapshot,
     EvidenceSnapshot,
     SnapshotError,
@@ -110,6 +114,10 @@ __all__ = [
     "TraceVerdict",
     "verify_static_certificate",
     "verify_trace_certificate",
+    "BindingCheck",
+    "BindingDimension",
+    "BindingStatus",
+    "CorrelationBinding",
     "DynamicDiagnosticSnapshot",
     "EvidenceSnapshot",
     "SnapshotError",

@@ -17,6 +17,7 @@ from bmo_check_core import (
     AbstractObjectId,
     BasicBlockId,
     BinaryClosureId,
+    CorrelationBinding,
     DiagnosticHint,
     DynamicDiagnosticSnapshot,
     EvidenceAttribute,
@@ -486,6 +487,7 @@ def _correlation_payload(
         "static_verdict": correlation.static_verdict.value,
         "trace_id": correlation.trace_id.value,
         "trace_complete": correlation.trace_complete,
+        "binding": _binding_payload(correlation.binding),
         "records": [
             {
                 "unknown_id": item.unknown_id.value,
@@ -495,6 +497,22 @@ def _correlation_payload(
                 "reason": item.reason,
             }
             for item in correlation.records
+        ],
+    }
+
+
+def _binding_payload(binding: CorrelationBinding | None) -> dict[str, Any] | None:
+    if binding is None:
+        return None
+    return {
+        "status": binding.status.value,
+        "checks": [
+            {
+                "dimension": item.dimension.value,
+                "status": item.status.value,
+                "reason": item.reason,
+            }
+            for item in binding.checks
         ],
     }
 

@@ -14,6 +14,7 @@ from typing import Final
 
 from bmo_check_core import (
     BinaryClosureId,
+    CorrelationBinding,
     CertificateVerdict,
     DiagnosticHint,
     DynamicDiagnosticSnapshot,
@@ -39,7 +40,7 @@ class DiagnosticReportError(ValueError):
     """报告输入不满足身份或 evidence 引用约束时抛出的错误。"""
 
 
-_REPORT_SCHEMA: Final[str] = "diagnostic-report-v2"
+_REPORT_SCHEMA: Final[str] = "diagnostic-report-v3"
 _HINT_SCHEMA: Final[str] = "diagnostic-hint-v1"
 _HINT_PRODUCER: Final[ProducerId] = ProducerId("bmo-check-diagnostics", "d4")
 _NO_PROOF_CHANGE: Final[str] = (
@@ -434,6 +435,7 @@ def _selected_records(
         records=tuple(
             record for record in correlation.records if record.unknown_id in selected_ids
         ),
+        binding=correlation.binding,
     )
 
 
@@ -496,6 +498,7 @@ def build_diagnostic_report(
     static_certificate_sha256: str | None = None,
     trace_certificate_sha256: str | None = None,
     selected_unknown_ids: Iterable[EvidenceId] | None = None,
+    correlation_binding: CorrelationBinding | None = None,
 ) -> DiagnosticReport:
     """从两个 snapshot 生成诊断报告，且保留原始 static verdict。"""
 
@@ -504,7 +507,11 @@ def build_diagnostic_report(
     if not isinstance(dynamic, DynamicDiagnosticSnapshot):
         raise DiagnosticReportError("dynamic input is not a DynamicDiagnosticSnapshot")
     try:
-        correlation = correlate_unknowns(static, dynamic)
+        correlation = correlate_unknowns(
+            static,
+            dynamic,
+            binding=correlation_binding,
+        )
     except CorrelationError as error:
         raise DiagnosticReportError(f"cannot correlate diagnostic snapshots: {error}") from error
 

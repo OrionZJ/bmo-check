@@ -5,8 +5,12 @@ import json
 from pathlib import Path
 
 from bmo_check_core import (
+    BindingCheck,
+    BindingDimension,
+    BindingStatus,
     BinaryClosureId,
     CertificateVerdict,
+    CorrelationBinding,
     DiagnosticHint,
     DynamicDiagnosticSnapshot,
     EvidenceSnapshot,
@@ -154,7 +158,7 @@ def test_diagnose_cli_writes_versioned_report_without_upgrading_unknown(
 
     assert result == 2
     payload = json.loads(output.read_text(encoding="utf-8"))
-    assert payload["schema_version"] == "diagnostic-report-v2"
+    assert payload["schema_version"] == "diagnostic-report-v3"
     assert payload["static_verdict"] == "UNKNOWN"
     assert payload["static_proof_unchanged"] is True
     assert payload["coverage"]["exact_count"] == 1
@@ -176,6 +180,42 @@ def test_report_payload_keeps_observation_separate_from_static_unknown() -> None
     assert payload["observed_facts"][0]["id"] == observed.id.value
     assert payload["static_verdict"] == "UNKNOWN"
     assert payload["trace_id"] == dynamic.trace_id.value
+
+
+def test_report_serializes_incompatible_cross_route_binding() -> None:
+    static, dynamic, _unknown, _observed = _snapshots()
+    binding = CorrelationBinding(
+        checks=(
+            BindingCheck(
+                BindingDimension.BINARY_CLOSURE,
+                BindingStatus.MATCH,
+                "binary closures match",
+            ),
+            BindingCheck(
+                BindingDimension.TRANSLATION_POLICY,
+                BindingStatus.MISMATCH,
+                "DBT contract bytes differ",
+            ),
+            BindingCheck(
+                BindingDimension.ANALYSIS_SCOPE,
+                BindingStatus.MATCH,
+                "analysis scopes match",
+            ),
+        )
+    )
+
+    report = build_diagnostic_report(
+        static,
+        dynamic,
+        correlation_binding=binding,
+    )
+    payload = report.to_dict()
+
+    assert report.static_verdict == CertificateVerdict.UNKNOWN
+    assert report.records[0].status.value == "Unmatched"
+    assert report.records[0].observed_ids == ()
+    assert payload["correlations"]["binding"]["status"] == "mismatch"
+    assert payload["correlations"]["records"][0]["key"] == "cross_route_binding"
 
 
 def test_selected_unknowns_are_explicit_and_missing_id_is_rejected() -> None:

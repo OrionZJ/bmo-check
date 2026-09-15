@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 from bmo_check_core import (
+    BindingCheck,
+    BindingDimension,
+    BindingStatus,
     BinaryClosureId,
     CertificateVerdict,
+    CorrelationBinding,
     DynamicDiagnosticSnapshot,
     EvidenceAttribute,
     EvidenceSnapshot,
@@ -335,3 +339,89 @@ def test_call_site_location_can_correlate_an_indirect_target_observation() -> No
 
     assert record.status == CorrelationStatus.EXACT
     assert record.key == CorrelationKey.INSTRUCTION
+
+
+def _binding(
+    *,
+    binary: BindingStatus = BindingStatus.MATCH,
+    policy: BindingStatus = BindingStatus.MATCH,
+    scope: BindingStatus = BindingStatus.MATCH,
+) -> CorrelationBinding:
+    return CorrelationBinding(
+        checks=(
+            BindingCheck(
+                BindingDimension.BINARY_CLOSURE,
+                binary,
+                "static and dynamic ELF/library closures were compared",
+            ),
+            BindingCheck(
+                BindingDimension.TRANSLATION_POLICY,
+                policy,
+                "the same DBT6 mo-off contract bytes were used",
+            ),
+            BindingCheck(
+                BindingDimension.ANALYSIS_SCOPE,
+                scope,
+                "static and dynamic coverage scopes were compared",
+            ),
+        )
+    )
+
+
+def test_policy_or_scope_mismatch_prevents_cross_route_correlation() -> None:
+    static, dynamic, unknown, _observed = _snapshots()
+
+    report = correlate_unknowns(
+        static,
+        dynamic,
+        binding=_binding(policy=BindingStatus.MISMATCH),
+    )
+
+    record = report.records[0]
+    assert report.static_verdict == CertificateVerdict.UNKNOWN
+    assert report.binding is not None
+    assert report.binding.status == BindingStatus.MISMATCH
+    assert record.unknown_id == unknown.id
+    assert record.status == CorrelationStatus.UNMATCHED
+    assert record.key == CorrelationKey.BINDING
+    assert record.observed_ids == ()
+    assert "translation_policy" in record.reason
+
+
+def test_analysis_scope_mismatch_prevents_cross_route_correlation() -> None:
+    static, dynamic, _unknown, _observed = _snapshots()
+
+    record = correlate_unknowns(
+        static,
+        dynamic,
+        binding=_binding(scope=BindingStatus.MISMATCH),
+    ).records[0]
+
+    assert record.status == CorrelationStatus.UNMATCHED
+    assert record.key == CorrelationKey.BINDING
+    assert "analysis_scope" in record.reason
+
+
+def test_unverified_cross_route_binding_downgrades_exact_to_ambiguous() -> None:
+    static, dynamic, _unknown, observed = _snapshots()
+
+    report = correlate_unknowns(
+        static,
+        dynamic,
+        binding=_binding(scope=BindingStatus.UNVERIFIED),
+    )
+
+    assert report.records[0].status == CorrelationStatus.AMBIGUOUS
+    assert report.records[0].observed_ids == (observed.id,)
+    assert "analysis_scope" in report.records[0].reason
+
+
+def test_binding_must_agree_with_snapshot_binary_closures() -> None:
+    static, dynamic, _unknown, _observed = _snapshots(same_closure=False)
+
+    try:
+        correlate_unknowns(static, dynamic, binding=_binding())
+    except ValueError as error:
+        assert "conflicts with diagnostic snapshots" in str(error)
+    else:
+        raise AssertionError("contradictory binary binding must be rejected")

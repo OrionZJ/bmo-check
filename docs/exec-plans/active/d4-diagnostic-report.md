@@ -29,8 +29,10 @@ edge fails closed. Certificate-replayed static snapshots use
 `schema_version: static-diagnostic-v2` and carry the unresolved blocker IDs. Legacy
 v1 snapshots remain readable, but without a replayed blocker partition the report
 conservatively treats every static Unknown as a candidate blocker. Report files use
-`schema_version: diagnostic-report-v2` and separately list `blocking_unknowns`,
-`selected_unknowns`, and `discharged_unknowns`.
+`schema_version: diagnostic-report-v3` and separately list `blocking_unknowns`,
+`selected_unknowns`, and `discharged_unknowns`. Correlation reports can also carry a
+typed cross-route binding assessment; mismatches force `Unmatched`, while missing
+binding material prevents `Exact`.
 
 ## CLI
 

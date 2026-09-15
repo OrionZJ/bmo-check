@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import StrEnum
 
 from ..certificate import CertificateVerdict
 from ..evidence import (
@@ -19,6 +20,81 @@ from ..identity import BinaryClosureId, EvidenceId, StableId, TraceId
 
 class SnapshotError(ValueError):
     """snapshot 混入错误证据类别、scope 或 trace 时抛出的错误。"""
+
+
+class BindingDimension(StrEnum):
+    # BINARY_CLOSURE 比较静态分析与 trace 覆盖的 ELF/库内容闭包。
+    BINARY_CLOSURE = "binary_closure"
+    # TRANSLATION_POLICY 比较两条分析使用的 lowering/order contract。
+    TRANSLATION_POLICY = "translation_policy"
+    # ANALYSIS_SCOPE 比较 full/application 等实际分析范围。
+    ANALYSIS_SCOPE = "analysis_scope"
+
+
+class BindingStatus(StrEnum):
+    # MATCH 表示调用方已核对这一维绑定。
+    MATCH = "match"
+    # MISMATCH 表示两侧绑定不相容，不能跨侧关联观察。
+    MISMATCH = "mismatch"
+    # UNVERIFIED 表示缺少材料；有候选时也不能标成 Exact。
+    UNVERIFIED = "unverified"
+
+
+@dataclass(frozen=True, slots=True)
+class BindingCheck:
+    """一个跨静态/动态关联维度的 typed 比较结果。"""
+
+    # dimension 指明 binary、translation policy 或分析范围中的比较项。
+    dimension: BindingDimension
+    # status 区分确认匹配、确认不匹配和证据不足。
+    status: BindingStatus
+    # reason 记录可供报告复核的来源或缺失原因。
+    reason: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.dimension, BindingDimension):
+            raise SnapshotError("binding dimension is invalid")
+        if not isinstance(self.status, BindingStatus):
+            raise SnapshotError("binding status is invalid")
+        _non_empty("binding reason", self.reason)
+
+
+@dataclass(frozen=True, slots=True)
+class CorrelationBinding:
+    """决定 static Unknown 与 dynamic observation 能否跨路由关联。"""
+
+    # checks 对三项都给出结论；缺材料必须显式写成 UNVERIFIED。
+    checks: tuple[BindingCheck, ...]
+
+    def __post_init__(self) -> None:
+        checks = tuple(self.checks)
+        if any(not isinstance(item, BindingCheck) for item in checks):
+            raise SnapshotError("correlation binding must contain BindingCheck values")
+        dimensions = tuple(item.dimension for item in checks)
+        if set(dimensions) != set(BindingDimension) or len(dimensions) != len(
+            BindingDimension
+        ):
+            raise SnapshotError("correlation binding must check each dimension exactly once")
+        object.__setattr__(
+            self,
+            "checks",
+            tuple(sorted(checks, key=lambda item: item.dimension.value)),
+        )
+
+    @property
+    def status(self) -> BindingStatus:
+        if any(item.status == BindingStatus.MISMATCH for item in self.checks):
+            return BindingStatus.MISMATCH
+        if any(item.status == BindingStatus.UNVERIFIED for item in self.checks):
+            return BindingStatus.UNVERIFIED
+        return BindingStatus.MATCH
+
+    def check(self, dimension: BindingDimension) -> BindingCheck:
+        return next(item for item in self.checks if item.dimension == dimension)
+
+    @property
+    def reasons(self) -> tuple[str, ...]:
+        return tuple(item.reason for item in self.checks)
 
 
 def _non_empty(name: str, value: str) -> None:
@@ -248,6 +324,10 @@ class DynamicDiagnosticSnapshot:
 
 
 __all__ = [
+    "BindingCheck",
+    "BindingDimension",
+    "BindingStatus",
+    "CorrelationBinding",
     "DynamicDiagnosticSnapshot",
     "EvidenceSnapshot",
     "SnapshotError",

@@ -23,6 +23,19 @@ module map 中没有闭包 fingerprint 的映射、坏记录、丢事件、缺�
 同一站点有多个静态候选是 `Ambiguous`。相关结果只生成 `DiagnosticHint`，不
 创建 `ProofFact`、不关闭 Unknown，也不改变静态 verdict。
 
+完整 workflow 使用 `bind_dynamic_certificate_to_trace` 生成
+`BoundDynamicEvidence`。它从同一个 trace 目录重建动态 snapshot，并核对 manifest
+trace ID、trace 内容 digest、executable/library fingerprints、命令、工作目录和
+DBT contract 文件 hash。启动器字符串 ID 与内容派生的 `TraceId` 分开保存；不能
+直接比较两者是否相等。一次 workflow 只绑定一个 trace；多 trace campaign 仍由
+独立 campaign service 管理。
+
+跨静态/动态关联可以附带 typed `CorrelationBinding`。它分别记录 binary closure、
+translation policy 和 analysis scope 的 `Match`、`Mismatch` 或 `Unverified`：任一
+项不匹配时所有跨路由候选为 `Unmatched`；缺少材料时最多 `Ambiguous`；只有三个
+维度都核对通过且 site 身份唯一时才是 `Exact`。snapshot-only 旧调用没有该对象，
+因此结果只表示 site identity，不证明两边的 workload/policy/scope 相容。
+
 ```text
 validated trace
     -> bounded DynamicDiagnosticSnapshot
@@ -61,7 +74,7 @@ provenance 含有模块/PC，适配器会以这些位置作为 `site_filter`。�
 ledger 的 unresolved Unknown 集。快照仍保留所有 `UnknownFact` 和 discharge；
 它不会删除历史节点。
 
-D4 `diagnostic-report-v2` 分开输出：
+D4 `diagnostic-report-v3` 分开输出：
 
 - `blocking_unknowns`：当前仍未闭合的全部静态 obligation；
 - `selected_unknowns`：本次实际做动态关联的 blocker 子集，默认等于全部 blocker；

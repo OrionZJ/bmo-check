@@ -8,8 +8,11 @@ from enum import StrEnum
 from typing import Final
 
 from bmo_check_core import (
+    BindingDimension,
+    BindingStatus,
     BinaryClosureId,
     CertificateVerdict,
+    CorrelationBinding,
     DynamicDiagnosticSnapshot,
     EvidenceId,
     ObservedFact,
@@ -24,7 +27,7 @@ class CorrelationError(ValueError):
 
 
 class CorrelationStatus(StrEnum):
-    # EXACT 只表示 stable subject 和 binary closure 都能唯一绑定。
+    # EXACT 表示 site 唯一，且调用方提供的跨路由绑定（若有）全部通过。
     EXACT = "Exact"
     # AMBIGUOUS 表示有候选但缺少足够身份材料，不能任选一个。
     AMBIGUOUS = "Ambiguous"
@@ -41,6 +44,8 @@ class CorrelationKey(StrEnum):
     BINARY_CLOSURE = "binary_closure"
     # NONE 表示静态 Unknown 没有任何稳定 subject。
     NONE = "none"
+    # BINDING 表示 binary、translation policy 或分析范围不兼容。
+    BINDING = "cross_route_binding"
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,6 +91,8 @@ class DiagnosticCorrelationReport:
     trace_complete: bool
     # records 是每个静态 Unknown 的完整匹配结果。
     records: tuple[CorrelationRecord, ...] = ()
+    # binding 留下跨路由兼容性检查；None 表示旧 snapshot-only 调用未提供比较材料。
+    binding: CorrelationBinding | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.schema_version, str) or not self.schema_version:
@@ -98,6 +105,8 @@ class DiagnosticCorrelationReport:
             raise CorrelationError("correlation trace_complete must be boolean")
         if any(not isinstance(item, CorrelationRecord) for item in self.records):
             raise CorrelationError("correlation records have an invalid type")
+        if self.binding is not None and not isinstance(self.binding, CorrelationBinding):
+            raise CorrelationError("correlation binding has an invalid type")
         object.__setattr__(
             self,
             "records",
@@ -268,6 +277,8 @@ def _closure_status(
 def correlate_unknowns(
     static: StaticDiagnosticSnapshot,
     dynamic: DynamicDiagnosticSnapshot,
+    *,
+    binding: CorrelationBinding | None = None,
 ) -> DiagnosticCorrelationReport:
     """按 stable subject 和位置回退做保守匹配，绝不猜测缺失的 operand。"""
 
@@ -275,6 +286,8 @@ def correlate_unknowns(
         raise CorrelationError("static snapshot has an invalid type")
     if not isinstance(dynamic, DynamicDiagnosticSnapshot):
         raise CorrelationError("dynamic snapshot has an invalid type")
+    if binding is not None and not isinstance(binding, CorrelationBinding):
+        raise CorrelationError("binding must be a CorrelationBinding")
     closure_matches, closure_known = _closure_status(static, dynamic)
     observed = tuple(
         node
@@ -291,6 +304,42 @@ def correlate_unknowns(
         for node in static.evidence.nodes
         if isinstance(node, UnknownFact)
     )
+    if binding is not None:
+        binary_check = binding.check(BindingDimension.BINARY_CLOSURE)
+        expected_binary_status = (
+            BindingStatus.UNVERIFIED
+            if not closure_known
+            else BindingStatus.MATCH
+            if closure_matches
+            else BindingStatus.MISMATCH
+        )
+        if binary_check.status != expected_binary_status:
+            raise CorrelationError(
+                "binary-closure binding assessment conflicts with diagnostic snapshots"
+            )
+        if binding.status == BindingStatus.MISMATCH:
+            reasons = "; ".join(
+                f"{item.dimension.value}: {item.reason}"
+                for item in binding.checks
+                if item.status == BindingStatus.MISMATCH
+            )
+            return DiagnosticCorrelationReport(
+                schema_version="diagnostic-correlation-v2",
+                static_verdict=static.verdict,
+                trace_id=dynamic.trace_id,
+                trace_complete=dynamic.complete,
+                records=tuple(
+                    CorrelationRecord(
+                        unknown_id=node.id,
+                        observed_ids=(),
+                        status=CorrelationStatus.UNMATCHED,
+                        key=CorrelationKey.BINDING,
+                        reason=f"cross-route inputs are incompatible: {reasons}",
+                    )
+                    for node in static_unknowns
+                ),
+                binding=binding,
+            )
     static_site_counts: dict[tuple[str | None, int | None, str | None], int] = {}
     for node in static_unknowns:
         location = _static_location(node)
@@ -388,12 +437,42 @@ def correlate_unknowns(
             )
         )
         continue
+    if binding is not None and binding.status == BindingStatus.UNVERIFIED:
+        reasons = "; ".join(
+            f"{item.dimension.value}: {item.reason}"
+            for item in binding.checks
+            if item.status == BindingStatus.UNVERIFIED
+        )
+        records = [
+            CorrelationRecord(
+                unknown_id=item.unknown_id,
+                observed_ids=item.observed_ids,
+                status=(
+                    CorrelationStatus.AMBIGUOUS
+                    if item.status == CorrelationStatus.EXACT
+                    else item.status
+                ),
+                key=item.key,
+                reason=(
+                    f"{item.reason}; cross-route binding remains unverified: {reasons}"
+                    if item.status == CorrelationStatus.EXACT
+                    else item.reason
+                ),
+            )
+            for item in records
+        ]
+
     return DiagnosticCorrelationReport(
-        schema_version="diagnostic-correlation-v1",
+        schema_version=(
+            "diagnostic-correlation-v2"
+            if binding is not None
+            else "diagnostic-correlation-v1"
+        ),
         static_verdict=static.verdict,
         trace_id=dynamic.trace_id,
         trace_complete=dynamic.complete,
         records=tuple(records),
+        binding=binding,
     )
 
 

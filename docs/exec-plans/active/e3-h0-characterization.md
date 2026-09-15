@@ -21,9 +21,10 @@ tests use small typed fixtures only; no ELF, benchmark, or trace campaign was ru
 
 1. A dynamic certificate stores the launcher manifest's string `trace_id` and a
    trace digest. The diagnostic adapter derives a typed `TraceId` from trace format,
-   manifest, module identity and record digest. H0 pins that these are distinct
-   identity representations; equality of their string values is not a valid binding
-   check. There is not yet a typed bridge that verifies both represent the same trace.
+   manifest, module identity and record digest. H0 pinned that these are distinct
+   identity representations. H3 now binds both via `BoundDynamicEvidence`, including
+   the raw trace and contract hashes; the two ID strings are still not compared as if
+   they shared a namespace.
 2. Static and dynamic snapshots carry route-local scope strings. The current
    correlator can report `Exact` from matching subject and binary closure even when
    those scope labels differ. This is a site-identity result only, not proof that
@@ -31,9 +32,9 @@ tests use small typed fixtures only; no ELF, benchmark, or trace campaign was ru
 3. The D4 report carries `static_verdict` and `trace_complete`, but no dynamic
    certificate verdict. It therefore cannot distinguish `TRACE_SAFE`, dynamic
    `COUNTEREXAMPLE` and dynamic `UNKNOWN`.
-4. The static snapshot preserves discharge records, but D4 currently selects every
-   `UnknownFact` node, including one with a valid discharge. It does not yet report
-   only the static certificate's unresolved/relevant obligations.
+4. The static snapshot preserves discharge records. H2 replaced the original D4
+   behavior: v2 snapshots carry the exact replayed blocker IDs, and D4 keeps
+   discharged history separate from current obligations.
 5. E1 affine patterns are emitted through a separate `AffineValidationReport`; users
    must currently join that artifact to D4 by evidence IDs themselves.
 6. There is no shared application service that composes the static service, dynamic
@@ -42,11 +43,12 @@ tests use small typed fixtures only; no ELF, benchmark, or trace campaign was ru
 
 ## Characterization tests
 
-`tests/contract/test_hybrid_workflow_characterization.py` pins current scope,
-report-field, affine-output and discharged-Unknown behavior. The dynamic adapter test
-pins the manifest-ID versus typed `TraceId` distinction. These tests are migration
-markers: H1–H5 should replace a characterization assertion when the corresponding
-typed binding/report behavior is implemented, without changing static proof rules.
+`tests/contract/test_hybrid_workflow_characterization.py` pins scope, report-field,
+affine-output and discharged-Unknown behavior. The dynamic adapter test pins the
+manifest-ID versus typed `TraceId` distinction. H1 and H2 replaced their original
+behavior assertions; H3 adds a certificate-to-trace binding bridge and typed
+cross-route compatibility. These tests remain migration markers for H4–H5, without
+changing static proof rules.
 
 An initial sandboxed WSL invocation was denied with `E_ACCESSDENIED`. The configured
 WSL environment then ran the focused contract set successfully: `49 passed`. The
@@ -74,7 +76,6 @@ H4.
 
 ## Next atomic change
 
-H1 classifies correlation misses conservatively. It must distinguish a complete,
-compatible trace with no matching site from closure mismatch, missing identity and
-incomplete trace. Until that typed reason is available, a missing observation must
-not be labeled `NotExecutedInObservedTrace`.
+H4 composes the existing route services and computes `CorrelationBinding` from the
+static result, the bound dynamic trace, and the shared workload request. It must not
+infer a match from route-local scope labels or alter either route's verdict.
