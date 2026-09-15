@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import hashlib
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -39,6 +40,7 @@ from bmo_check_diagnostics.affine import affine_report_to_dict
 from bmo_check_diagnostics.correlation import CorrelationStatus
 from bmo_check_diagnostics.serialization import report_to_dict
 from bmo_check_dynamic.adapters.trace_binding import BoundDynamicEvidence
+from bmo_check_dynamic.config import DynamicConfig
 from bmo_check_dynamic.model import (
     BinaryFingerprint,
     DynamicCertificate,
@@ -297,7 +299,15 @@ def _result(
         )
 
     static_analysis = StaticAnalysisResult(
-        report=object(),
+        report=SimpleNamespace(
+            recovery=SimpleNamespace(
+                manifest=SimpleNamespace(
+                    execution=SimpleNamespace(
+                        environment=dict(manifest.environment)
+                    )
+                )
+            )
+        ),
         legacy_certificate=legacy_certificate,
         canonical_certificate=canonical_evidence,
         canonical_error=canonical_error,
@@ -312,6 +322,9 @@ def _result(
         trace_dir=tmp_path / "trace",
         static_policy_sha256_before=contract_digest,
         static_policy_sha256_after=contract_digest,
+        dynamic_config=DynamicConfig(database_path=tmp_path / "trace.duckdb"),
+        max_thread_events=50_000,
+        max_snapshot_sites=5_000,
     )
 
 
@@ -322,7 +335,7 @@ def test_hybrid_report_keeps_route_results_and_d4_e1_children_round_trip(
     report = build_hybrid_workflow_report(result)
     payload = report.to_dict()
 
-    assert report.schema_version == "hybrid-workflow-report-v1"
+    assert report.schema_version == "hybrid-workflow-report-v2"
     assert report.static.verdict == CertificateVerdict.UNKNOWN
     assert report.dynamic.certificate.verdict == TraceVerdict.TRACE_SAFE
     assert report.static.blocking_unknowns[0].identity_source.value == "canonical_evidence"
@@ -341,6 +354,10 @@ def test_hybrid_report_keeps_route_results_and_d4_e1_children_round_trip(
         "causal_relation_unresolved"
     )
     assert "secret-value-for-test" not in report.to_json()
+    assert report.static.scope.environment == report.dynamic.manifest.environment
+    assert report.dynamic.analysis_limits.database_path == str(tmp_path / "trace.duckdb")
+    assert report.dynamic.capture_max_thread_events == 50_000
+    assert report.dynamic.diagnostic_max_snapshot_sites == 5_000
     assert "verdict" not in HybridWorkflowReport.model_fields
 
     restored = hybrid_report_from_json(report.to_json())
@@ -376,6 +393,18 @@ def test_hybrid_report_rejects_unknown_schema_and_implicit_combined_verdict(
     changed_statement["diagnostics"]["affine_report"]["statement"] = "SAFE"
     with pytest.raises(ValueError, match="invalid hybrid workflow report"):
         hybrid_report_from_dict(changed_statement)
+
+    changed_argv = copy.deepcopy(payload)
+    changed_argv["static"]["scope"]["argv"][0] = "different-input"
+    with pytest.raises(ValueError, match="different argv"):
+        hybrid_report_from_dict(changed_argv)
+
+    changed_environment = copy.deepcopy(payload)
+    changed_environment["dynamic"]["manifest"]["environment"][0][
+        "value_sha256"
+    ] = "e" * 64
+    with pytest.raises(ValueError, match="different environments"):
+        hybrid_report_from_dict(changed_environment)
 
 
 def test_hybrid_report_rejects_cross_trace_and_observation_in_proof_closure(

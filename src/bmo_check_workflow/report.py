@@ -14,6 +14,7 @@ from typing import Literal
 from pydantic import (
     BaseModel,
     ConfigDict,
+    Field,
     ValidationError,
     field_validator,
     model_validator,
@@ -40,7 +41,7 @@ from bmo_check_static.model.unknown import UnknownFact as LegacyUnknownFact
 from bmo_check_workflow.application import HybridWorkflowResult
 
 
-_REPORT_SCHEMA = "hybrid-workflow-report-v1"
+_REPORT_SCHEMA = "hybrid-workflow-report-v2"
 _STATIC_BOUNDARY = "Static SAFE requires a replayed static ProofFact closure."
 _TRACE_BOUNDARY = "Dynamic verdicts apply only to the trace bound in this report."
 _DIAGNOSTIC_BOUNDARY = (
@@ -543,6 +544,20 @@ class DiagnosticBundleSummary(_StrictModel):
     root_cause_assessments: tuple[RootCauseAssessment, ...]
 
 
+class EnvironmentEntry(_StrictModel):
+    # name 保留变量身份，摘要值不复制可能包含凭据的原文。
+    name: str
+    # value_sha256 用于核对两条 route 的输入环境。
+    value_sha256: str
+
+    @field_validator("value_sha256")
+    @classmethod
+    def validate_value_sha256(cls, value: str) -> str:
+        if not _sha256(value):
+            raise ValueError("environment value digest must be a SHA-256 digest")
+        return value
+
+
 class StaticScopeSummary(_StrictModel):
     # executable_sha256 绑定静态恢复使用的主 ELF 内容。
     executable_sha256: str
@@ -561,6 +576,8 @@ class StaticScopeSummary(_StrictModel):
     function_effect_contract_sha256: str | None
     # argv 限定当前静态 workload scope。
     argv: tuple[str, ...]
+    # environment 摘要用于核对静态/动态 route 实际收到相同变量值。
+    environment: tuple[EnvironmentEntry, ...]
     # thread_count_min 是静态证明允许的最少线程数。
     thread_count_min: int | None
     # thread_count_max 是静态证明允许的最多线程数。
@@ -580,6 +597,9 @@ class StaticScopeSummary(_StrictModel):
             self.dbt_contract_sha256_after
         ):
             raise ValueError("static DBT contract hashes must be SHA-256 digests")
+        names = tuple(item.name for item in self.environment)
+        if len(names) != len(set(names)) or names != tuple(sorted(names)):
+            raise ValueError("static environment entries must have unique sorted names")
         for digest in (
             self.function_effect_contract_sha256,
             self.analysis_config_sha256,
@@ -804,20 +824,6 @@ class BinaryFingerprintSummary(_StrictModel):
         return value
 
 
-class EnvironmentEntry(_StrictModel):
-    # name 是传给同一 workload 的环境变量名。
-    name: str
-    # value_sha256 让报告可比对输入，又不复制可能含 token 的原始值。
-    value_sha256: str
-
-    @field_validator("value_sha256")
-    @classmethod
-    def validate_value_sha256(cls, value: str) -> str:
-        if not _sha256(value):
-            raise ValueError("environment value digest must be lowercase hexadecimal")
-        return value
-
-
 class CountEntry(_StrictModel):
     # name 是 drop counter 或其他按原因统计的稳定类别名。
     name: str
@@ -855,6 +861,39 @@ class TraceManifestSummary(_StrictModel):
     # limitations 保留 tracer 明示的采集边界。
     limitations: tuple[str, ...]
 
+    @model_validator(mode="after")
+    def validate_environment_and_drop_counts(self) -> "TraceManifestSummary":
+        names = tuple(item.name for item in self.environment)
+        if len(names) != len(set(names)) or names != tuple(sorted(names)):
+            raise ValueError("trace environment entries must have unique sorted names")
+        if self.dropped_events < 0 or any(
+            item.count < 0 for item in self.dropped_by_reason
+        ):
+            raise ValueError("trace drop counts cannot be negative")
+        if len({item.name for item in self.dropped_by_reason}) != len(
+            self.dropped_by_reason
+        ):
+            raise ValueError("trace drop reasons must have unique names")
+        return self
+
+
+class DynamicAnalysisLimitsSummary(_StrictModel):
+    # 数字必须来自动态 checker 实际收到的 DynamicConfig。
+    max_window_events: int = Field(ge=1)
+    max_executions: int = Field(ge=1)
+    max_communication_edges: int = Field(ge=1)
+    max_communication_active_events: int = Field(ge=1)
+    max_object_events: int = Field(ge=1)
+    max_pages_per_access: int = Field(ge=1)
+    batch_size: int = Field(ge=1)
+    solver_timeout_ms: int = Field(ge=1)
+    max_symbolic_terms: int = Field(ge=1)
+    database_memory_limit_mb: int = Field(ge=1)
+    # database_path=None 表示动态 service 使用自己的临时目录。
+    database_path: str | None
+    # application_only 限定动态 checker 实际送入 solver 的范围。
+    application_only: bool
+
 
 class DynamicWorkflowSummary(_StrictModel):
     # certificate 保留动态 checker 的原始 trace-bound verdict 和范围。
@@ -867,6 +906,14 @@ class DynamicWorkflowSummary(_StrictModel):
     trace_sha256: str
     # dbt_contract_sha256 绑定 target lowering contract 的实际字节。
     dbt_contract_sha256: str
+    # trace_directory 让审阅者定位报告绑定的原始 trace 目录。
+    trace_directory: str
+    # analysis_limits 保存动态 checker 实际使用的资源预算。
+    analysis_limits: DynamicAnalysisLimitsSummary
+    # capture_max_thread_events 是 DynamoRIO client 的事件上限。
+    capture_max_thread_events: int | None
+    # diagnostic_max_snapshot_sites 是动态观察 snapshot 的站点上限。
+    diagnostic_max_snapshot_sites: int = Field(ge=1)
 
     @model_validator(mode="after")
     def keep_trace_binding_closed(self) -> "DynamicWorkflowSummary":
@@ -901,6 +948,10 @@ class DynamicWorkflowSummary(_StrictModel):
             raise ValueError("dynamic certificate has an unsupported analysis scope")
         if not self.content_trace_id:
             raise ValueError("trace content and contract identities must be present")
+        if not self.trace_directory:
+            raise ValueError("trace directory must be recorded")
+        if self.capture_max_thread_events is not None and self.capture_max_thread_events < 1:
+            raise ValueError("capture event limit must be positive")
         if not _sha256(self.trace_sha256) or not _sha256(self.dbt_contract_sha256):
             raise ValueError("trace and DBT contract identities must be SHA-256 digests")
         return self
@@ -927,7 +978,7 @@ class HybridWorkflowReport(_StrictModel):
     """一次 workload 的静态、动态与诊断结果；没有 combined verdict 字段。"""
 
     # schema_version 固定此顶层 report 的字段语义。
-    schema_version: Literal["hybrid-workflow-report-v1"]
+    schema_version: Literal["hybrid-workflow-report-v2"]
     # static 是静态 analyzer 与 canonical replay 的结果摘要。
     static: StaticWorkflowSummary
     # dynamic 是绑定到 manifest、trace 内容和 DBT contract 的动态结果。
@@ -943,6 +994,10 @@ class HybridWorkflowReport(_StrictModel):
     def preserve_independent_verdicts_and_evidence(self) -> "HybridWorkflowReport":
         if (self.diagnostics is None) != (self.diagnostics_unavailable_reason is not None):
             raise ValueError("diagnostics and explicit unavailable reason must be complementary")
+        if self.dynamic.manifest.command[1:] != self.static.scope.argv:
+            raise ValueError("static and dynamic routes were given different argv")
+        if self.static.scope.environment != self.dynamic.manifest.environment:
+            raise ValueError("static and dynamic routes were given different environments")
         if self.diagnostics is None and self.static.canonical_certificate is not None:
             raise ValueError("replayed static certificate cannot silently lose diagnostics")
         if self.diagnostics is not None and self.static.canonical_certificate is None:
@@ -1150,6 +1205,14 @@ def _binding_for_static(result: HybridWorkflowResult) -> tuple[str, str, str]:
 def _static_summary(result: HybridWorkflowResult) -> StaticWorkflowSummary:
     legacy = result.static_analysis.legacy_certificate
     scope = legacy.scope
+    try:
+        static_environment = (
+            result.static_analysis.report.recovery.manifest.execution.environment
+        )
+    except AttributeError as error:
+        raise HybridReportError(
+            "static analysis report lacks its recovered execution environment"
+        ) from error
     canonical = result.static_analysis.canonical_certificate
     if canonical is None:
         blockers = tuple(
@@ -1211,6 +1274,13 @@ def _static_summary(result: HybridWorkflowResult) -> StaticWorkflowSummary:
             dbt_revision=scope.dbt_revision,
             dbt_contract_sha256_before=result.static_policy_sha256_before,
             dbt_contract_sha256_after=result.static_policy_sha256_after,
+            environment=tuple(
+                EnvironmentEntry(
+                    name=name,
+                    value_sha256=hashlib.sha256(value.encode("utf-8")).hexdigest(),
+                )
+                for name, value in sorted(static_environment.items())
+            ),
             function_effect_contract_version=scope.function_effect_contract_version,
             function_effect_contract_sha256=scope.function_effect_contract_sha256,
             argv=scope.argv,
@@ -1306,6 +1376,29 @@ def _dynamic_summary(result: HybridWorkflowResult) -> DynamicWorkflowSummary:
         content_trace_id=bound.content_trace_id.value,
         trace_sha256=bound.trace_sha256,
         dbt_contract_sha256=bound.dbt_contract_sha256,
+        trace_directory=str(result.trace_dir),
+        analysis_limits=DynamicAnalysisLimitsSummary(
+            max_window_events=result.dynamic_config.max_window_events,
+            max_executions=result.dynamic_config.max_executions,
+            max_communication_edges=result.dynamic_config.max_communication_edges,
+            max_communication_active_events=(
+                result.dynamic_config.max_communication_active_events
+            ),
+            max_object_events=result.dynamic_config.max_object_events,
+            max_pages_per_access=result.dynamic_config.max_pages_per_access,
+            batch_size=result.dynamic_config.batch_size,
+            solver_timeout_ms=result.dynamic_config.solver_timeout_ms,
+            max_symbolic_terms=result.dynamic_config.max_symbolic_terms,
+            database_memory_limit_mb=result.dynamic_config.database_memory_limit_mb,
+            database_path=(
+                str(result.dynamic_config.database_path)
+                if result.dynamic_config.database_path is not None
+                else None
+            ),
+            application_only=result.dynamic_config.application_only,
+        ),
+        capture_max_thread_events=result.max_thread_events,
+        diagnostic_max_snapshot_sites=result.max_snapshot_sites,
     )
 
 

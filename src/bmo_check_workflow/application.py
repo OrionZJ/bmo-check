@@ -191,6 +191,11 @@ class HybridWorkflowResult:
     # 两次摘要限定静态分析读取 contract 的时间窗口；不相等时不能声称绑定成功。
     static_policy_sha256_before: str
     static_policy_sha256_after: str
+    # 后续报告要展示动态 checker 实际使用的预算，不能用默认值重建。
+    dynamic_config: DynamicConfig
+    # 采集和 snapshot 上限影响哪些 trace 数据进入动态分析与诊断。
+    max_thread_events: int | None
+    max_snapshot_sites: int
 
     def __post_init__(self) -> None:
         if not isinstance(self.static_analysis, StaticAnalysisResult):
@@ -214,6 +219,30 @@ class HybridWorkflowResult:
                 raise HybridWorkflowError(
                     WorkflowStage.INPUT, f"{name} must be a lowercase SHA-256 digest"
                 )
+        if not isinstance(self.dynamic_config, DynamicConfig):
+            raise HybridWorkflowError(
+                WorkflowStage.INPUT, "dynamic_config has an invalid type"
+            )
+        try:
+            self.dynamic_config.validate()
+        except (TypeError, ValueError) as error:
+            raise HybridWorkflowError(WorkflowStage.INPUT, str(error)) from error
+        if self.max_thread_events is not None and (
+            isinstance(self.max_thread_events, bool)
+            or not isinstance(self.max_thread_events, int)
+            or self.max_thread_events < 1
+        ):
+            raise HybridWorkflowError(
+                WorkflowStage.INPUT, "max_thread_events must be positive"
+            )
+        if (
+            isinstance(self.max_snapshot_sites, bool)
+            or not isinstance(self.max_snapshot_sites, int)
+            or self.max_snapshot_sites < 1
+        ):
+            raise HybridWorkflowError(
+                WorkflowStage.INPUT, "max_snapshot_sites must be positive"
+            )
         if self.diagnostics is None:
             if self.static_analysis.canonical_certificate is not None:
                 raise HybridWorkflowError(
@@ -446,6 +475,9 @@ def analyze_workload(request: HybridWorkflowRequest) -> HybridWorkflowResult:
             trace_dir=request.trace_dir,
             static_policy_sha256_before=policy_sha256_before,
             static_policy_sha256_after=policy_sha256_after_static,
+            dynamic_config=request.dynamic_config,
+            max_thread_events=request.max_thread_events,
+            max_snapshot_sites=request.max_snapshot_sites,
         )
 
     correlation_binding = _correlation_binding(
@@ -489,6 +521,9 @@ def analyze_workload(request: HybridWorkflowRequest) -> HybridWorkflowResult:
         trace_dir=request.trace_dir,
         static_policy_sha256_before=policy_sha256_before,
         static_policy_sha256_after=policy_sha256_after_static,
+        dynamic_config=request.dynamic_config,
+        max_thread_events=request.max_thread_events,
+        max_snapshot_sites=request.max_snapshot_sites,
     )
 
 

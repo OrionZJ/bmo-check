@@ -292,6 +292,11 @@ def test_workflow_runs_existing_services_and_keeps_verdict_domains_separate(
     assert result.diagnostics.report.static_proof_unchanged is True
     assert result.diagnostics.report.records[0].status == CorrelationStatus.EXACT
     assert result.diagnostics.affine_report.static_verdict == static_snapshot.verdict
+    assert result.static_policy_sha256_before == result.dynamic_evidence.dbt_contract_sha256
+    assert result.static_policy_sha256_after == result.dynamic_evidence.dbt_contract_sha256
+    assert result.dynamic_config is request.dynamic_config
+    assert result.max_thread_events == request.max_thread_events
+    assert result.max_snapshot_sites == request.max_snapshot_sites
 
 
 def test_scope_mismatch_keeps_both_route_results_but_blocks_correlation(
@@ -328,6 +333,7 @@ def test_contract_change_during_static_analysis_prevents_exact_correlation(
 
     assert result.diagnostics is not None
     assert result.diagnostics.correlation_binding.status.value == "unverified"
+    assert result.static_policy_sha256_before != result.static_policy_sha256_after
     record = result.diagnostics.report.records[0]
     assert record.status == CorrelationStatus.AMBIGUOUS
     assert record.observed_ids

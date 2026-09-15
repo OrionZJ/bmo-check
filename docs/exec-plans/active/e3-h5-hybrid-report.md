@@ -6,7 +6,7 @@ for H6–H7.
 ## Scope
 
 H5 adds an output adapter at `bmo_check_workflow.report`. It consumes the immutable
-`HybridWorkflowResult` from H4 and creates `hybrid-workflow-report-v1`. It does not run
+`HybridWorkflowResult` from H4 and creates `hybrid-workflow-report-v2`. It does not run
 recovery, a checker, capture, correlation, or classification, and it does not create
 or discharge evidence.
 
@@ -14,10 +14,11 @@ The report keeps the route results independent:
 
 - `static` contains the legacy static verdict, input scope, recovery/checker coverage,
   canonical certificate identity and replayed ProofFact closure IDs, still-open
-  obligations, and DBT contract digests sampled immediately before/after static
-  analysis.
+  obligations, DBT contract digests sampled immediately before/after static analysis,
+  and hashed environment values from the static recovery manifest.
 - `dynamic` contains the original trace-bound `DynamicCertificate`, the capture
-  manifest summary, content-derived `TraceId`, trace digest, and DBT contract digest.
+  manifest summary, content-derived `TraceId`, trace digest, DBT contract digest,
+  dynamic checker budgets, capture/snapshot limits, and trace directory.
 - `diagnostics` is present only if H4 has a replayed canonical static certificate. It
   retains the D4 `diagnostic-report-v3` and E1 `affine-validation-report-v1` payloads,
   plus a D5 candidate and an explicit unresolved causal status for every static
@@ -39,6 +40,7 @@ closure IDs are checked against both ObservedFact and DiagnosticHint IDs.
 The translation-policy status is recomputed from the two recorded static hashes and
 the dynamic certificate's DBT-contract digest; a report cannot claim `Match` after
 the contract changed during analysis or when the two routes used different bytes.
+Static and dynamic argv and environment digests must match as well.
 
 The builder also checks that the supplied static replay refers to the same canonical
 certificate and that every closure node is a `ProofFact`. This report is an audit
@@ -49,6 +51,9 @@ Environment values are represented by SHA-256 digests rather than copied into th
 report. A digest is not encryption: predictable values may still be guessed. The
 trace manifest remains the source artifact containing original capture metadata.
 Large trace chunks are not embedded in the report.
+The v2 bump adds argv/environment cross-checks, dynamic budget recording, and the
+trace-directory locator. Readers reject v1 rather than treating missing fields as
+equivalent.
 
 ## API
 

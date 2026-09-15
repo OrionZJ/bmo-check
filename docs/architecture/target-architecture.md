@@ -108,7 +108,7 @@ static certificate leaves dynamic analysis available but makes diagnostics expli
 unavailable.
 
 E3-H5 adds `bmo_check_workflow.report` as an output-only typed projection of the H4
-result. The `hybrid-workflow-report-v1` envelope contains separate static and dynamic
+result. The `hybrid-workflow-report-v2` envelope contains separate static and dynamic
 summaries, the unchanged D4 and E1 child payloads with their own schema versions, and
 one D5 candidate per static blocker with `causal_relation_unresolved`. Parsing rejects
 unknown fields/versions, trace or closure mismatches, invalid evidence references,
@@ -117,7 +117,8 @@ verdict. Environment values are represented by SHA-256 digests so the report doe
 copy tokens out of the trace manifest. The report also records the DBT contract digest
 before and after static analysis and checks the cross-route policy binding against the
 dynamic certificate digest. This report is not a certificate and does not replace
-route certificate replay.
+route certificate replay. It also checks static/dynamic argv and environment hashes,
+and records the dynamic solver budgets and trace-directory locator.
 
 Phase C closure is now part of the static application path: when a DBT revision is
 bound, `bmo_check_static.application.analyze_with_evidence` converts the legacy

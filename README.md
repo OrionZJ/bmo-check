@@ -92,10 +92,11 @@ bmo-check diagnose static-snapshot.json --trace trace/run-1 \
 
 E3-H4 提供 `bmo_check_workflow.analyze_workload`，让同一份 workload 依次经过
 静态分析、动态采集/分析和只读诊断；E3-H5 的
-`build_hybrid_workflow_report` 可把结果整理成 `hybrid-workflow-report-v1`，并由
+`build_hybrid_workflow_report` 可把结果整理成 `hybrid-workflow-report-v2`，并由
 `save_hybrid_workflow_report` 写成单份 JSON。报告分别保留 static verdict、trace-bound
 dynamic verdict、仍未闭合的 static Unknown、D4 `Exact/Ambiguous/Unmatched` 关联、
-E1 affine observations 和 D5 root-cause 候选。D4/E1 子报告仍保留各自 schema。
+E1 affine observations 和 D5 root-cause 候选。报告也核对静态/动态 argv 与环境摘要，
+记录动态 checker 预算和 trace 目录。D4/E1 子报告仍保留各自 schema。
 报告还保留静态分析前后的 DBT contract 摘要，并与动态证书中的 digest 核对。
 
 报告没有合并 verdict：dynamic observation 和 `DiagnosticHint` 不能进入 static
