@@ -1,6 +1,7 @@
 # E3-H6 — One-workload hybrid CLI
 
-Status: implementation complete. H7 real-workload validation remains pending.
+Status: implementation complete. H7 real-workload validation is complete; see
+`e3-h7-real-workload-validation.md` for run results and limits.
 
 ## Intent
 

@@ -459,12 +459,14 @@ corpus. Every ELF must enter through the normal binary/CFG/thread/MemoryEvent/sh
 slice path. A separate evaluation-owned herd oracle checks concrete execution
 legality; it cannot construct proof evidence, remove events or change a verdict.
 
-The repository now contains the versioned fixture, route-local characterization,
-contract-aware oracle adapter and opt-in real-ELF conformance profile described in
-`docs/exec-plans/active/e2-5-litmus-elf-correctness.md`. The six pinned cases pass
-the local recovery profile. Actual source/target herd outcomes remain pending until
-herd7 is available in the execution environment; checked-in records therefore stay
-`Unsupported` rather than guessing a result.
+E2.5 is now complete and frozen. The repository contains the versioned fixture,
+route-local characterization, contract-aware oracle adapter and opt-in real-ELF
+conformance profile described in `docs/exec-plans/active/e2-5-litmus-elf-correctness.md`.
+The representative ELF profile and independent herd7 source/target oracle were run;
+herd7 exposed an LB RVWMO modeling bug that was fixed and covered by regression. The
+full regression passed, while the CoWW final-state query remains an explicit model
+boundary rather than a guessed result. Oracle output remains outside static proof
+closure.
 
 Keep three results distinct:
 
@@ -484,9 +486,11 @@ The detailed implementation sequence and exit criteria are in
 The current E3 order is to finish the hybrid workflow before adding static precision.
 The 2,595-ELF corpus measurement and E2.5 correctness suite are frozen inputs, not
 targets to improve during this phase. H0–H6 characterize, compose and expose the
-existing services; H7 validates the one-workload path on a small set of real inputs.
-The active plan and per-commit acceptance criteria are in
-`docs/exec-plans/active/e3-hybrid-workflow.md`.
+existing services; H7 validated the one-workload path on SB, MP+MFENCE, canneal and
+blackscholes. The reports preserve `UNKNOWN` where static recovery, application
+partitioning or trace collection did not close. Results are recorded in
+`docs/exec-plans/active/e3-h7-real-workload-validation.md`; the active plan and
+per-commit acceptance criteria are in `docs/exec-plans/active/e3-hybrid-workflow.md`.
 
 The workflow report must retain independent static and trace-bound dynamic verdicts,
 identify the still-blocking static Unknowns, correlate observations as
@@ -522,20 +526,27 @@ capability on the PARSEC portfolio. Report:
 PARSEC results remain under `.experiments/` unless a deliberately small fixture is
 reviewed for version control.
 
-### Phase E exit criteria
+### E3 hybrid-workflow exit criteria (complete)
 
 - a one-workload CLI emits one versioned report plus separate static and dynamic route
   certificates, with static and trace-bound verdicts kept independent;
 - real canneal, representative litmus and a distinct PARSEC workload exercise the
   integrated path without benchmark-specific proof semantics;
-- representative real litmus ELFs validate recovery and execution legality without
-  allowing external oracle data to enter proof closure;
-- static and dynamic memory-model drift has no unclassified case in their declared
-  common support set;
-- later-selected generic static capabilities are justified by diagnostics and
-  synthetic tests, and produce static ProofFacts independently of traces;
-- every changed static verdict is replayable from a proof-closed certificate;
+- reports show blocking Unknowns, correlation status and trace-bound limitations;
+- incomplete trace and module/scope binding stay `UNKNOWN`/unmatched;
+- dynamic observations and diagnostic hints do not enter static proof closure;
+- the default regression suite and frozen E2.5 correctness baseline remain unchanged;
 - no benchmark-specific semantic branch exists.
+
+### E3 static-precision follow-up exit criteria (future)
+
+- choose one or two generic capabilities from hybrid diagnostics, canneal evidence and
+  the frozen corpus root-blocker measurement;
+- add synthetic positive, negative and Unknown-propagation tests before improving
+  coverage on real workloads;
+- produce any new static `ProofFact` without reading a trace;
+- replay the static certificate for every changed verdict and compare the exact frozen
+  2,595-ELF corpus measurement after implementation.
 
 ## 6. Test migration
 

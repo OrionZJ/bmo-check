@@ -1,6 +1,6 @@
 # E3 — 先完成动静结合诊断工作流
 
-状态：active implementation；H0–H6 complete，H7 real-workload validation pending。分析器、真实 workload 与 frozen corpus baseline 均未改变。
+状态：H0–H7 complete。hybrid workflow 已在真实 litmus ELF 和 PARSEC workload 上验证；E2.5 correctness baseline 与 2,595-ELF static baseline 保持冻结。
 
 ## 阶段边界
 
@@ -80,7 +80,31 @@ D5 分类器根据 `UnknownKind`、reason/context 和 correlation status 选择 
 | E3-H4 | `Compose existing route services` | 新增一个 model-free workflow application service，组合 `StaticRequest`/`analyze_with_evidence`、dynamic capture/analyze、现有 adapters、D4 和 E1。只新增编排 request/result；不实现新 MemoryEvent、solver、correlator、certificate 或 evidence ledger。 | 用隔离服务测试验证顺序和 artifact binding。分析边界内的 incomplete/unsupported/resource limit 使用该 route 已有的 typed Unknown；配置、I/O 或工具启动失败则保留明确 workflow error，不伪造一张分析证书，也不静默跳过失败的一侧。 |
 | E3-H5 | `Emit one versioned hybrid report` | 完成。`bmo_check_workflow.report` 把 static verdict/未闭合 obligations、dynamic verdict/trace scope、D4 correlation/hints、E1 affine observations、root-cause candidate/confidence/causal status 放进 `hybrid-workflow-report-v2`。D4/E1 子 schema 原样保留，DynamicCertificate 不进入 diagnostics evidence。 | 完成 typed JSON round-trip、未知 schema/字段拒绝、trace/closure/evidence reference 检查、静态 proof-closure 与动态 observation/hint 隔离、静态/动态 argv 与环境摘要核对、DBT hash 与动态预算记录。没有 combined verdict；记录见 `e3-h5-hybrid-report.md`。 |
 | E3-H6 | `Expose one-workload CLI` | 完成。`bmo-check hybrid --workload ... --output-dir ...` 通过严格 `hybrid-workload-v1` manifest 调用 H4 service/H5 report builder；保留 snapshot-based `diagnose` 和 static/dynamic 独立命令。 | contract tests 覆盖相对路径、未知/重复字段、缺失 DBT revision 的 static-Unknown 输入、缺 DynamoRIO 时不分配输出目录、拒绝覆盖、分别写 route certificate/report、workflow exit code 不代表 combined verdict，并保留失败后的 trace。测试 mock H4，不运行 workload。实现记录见 `e3-h6-workload-cli.md`。 |
-| E3-H7 | `Validate hybrid workflow on real workloads` | 用少量真实 ELF/应用验证同一输入身份、观察相关、harness 事件可见、产物预算和可复现命令；只记录结果和限制，不按 workload 名改变语义。 | 先跑 canneal 和 E2.5 代表 ELF，再选一个已有动态完整 trace 的 PARSEC workload。若 trace 过大、依赖缺失、closure mismatch 或过预算，结果如实为 `UNKNOWN`/unmatched；不通过过滤 harness 获得成功。 |
+| E3-H7 | `Validate hybrid workflow on real workloads` | 已完成。普通 H6 命令分析 SB、MP+MFENCE、canneal 和 blackscholes，验证 route 证书、统一报告、observations/correlation 与 resource-limit 传播。 | 四个真实输入均生成独立 static/dynamic 证书与 H5 报告；所有 verdict 仍为 `UNKNOWN`。结果和限制见 `e3-h7-real-workload-validation.md`。 |
+
+### E3-H7 实际结果
+
+最终 H7 运行均使用本机普通 manifests；E2.5 herd oracle 只用于 correctness
+baseline，不会进入 workflow proof。SB 和 MP+MFENCE 轨迹分别记录到 64,169 和
+60,588 个事件，canneal 记录 1,091,344 个事件；三者 capture manifest 正常结束，
+但 D4 snapshot 因 `[vdso]` 缺少绑定 fingerprint 而不完整，dynamic route 也因
+`application-only scope requires a safe main-module partition` 返回 `UNKNOWN`。
+MP+MFENCE 的动态 snapshot 记录到 5 个显式 Fence 事件。
+
+blackscholes 使用 `in_64K.txt`，每线程最多记录 250,000 个事件；3 个线程都达到
+上限，得到 750,000 个事件和 3 个 `resource_limit` marker。进程正常退出不代表
+轨迹完整，dynamic certificate 因丢失事件返回 `UNKNOWN`。这次运行同时检验了
+report 对不完整 trace 的 fail-closed 路径。
+
+在 H7 检查中发现 E1 的历史 `not_executed_count` 会把不完整 trace 的“未观察到”
+计成“未执行”。修正已单独提交为 `971b0a9 Require complete bindings for affine absence`：
+只有 trace 完整、跨路由 binding 匹配且 site 身份稳定时才计入该字段。最终四份
+报告的该计数均为 0；静态 verdict 和 proof closure 没有改变。完整 coverage、Unknown
+分类、运行产物位置和存储说明见 `e3-h7-real-workload-validation.md`。
+
+H7 之后的工作不是继续让这些测试从 `UNKNOWN` 变为其他 verdict，而是结合已有
+hybrid diagnostics、canneal 和冻结的 2,595-ELF measurement 做一次静态 precision
+优先级评审；原 thread/lifecycle E3.1 暂不自动恢复。
 
 ### Workflow service 的归属决策
 

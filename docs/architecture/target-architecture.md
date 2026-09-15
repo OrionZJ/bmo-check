@@ -1,6 +1,6 @@
 # Target Architecture
 
-Status: accepted design; Phase C evidence/provenance foundation and E3-H6 hybrid workflow implemented
+Status: accepted design; Phase C evidence/provenance foundation and E3-H0–H7 hybrid workflow implemented and validated
 
 Applies after: repository baseline `3375b5f`
 
@@ -127,8 +127,11 @@ manifest maps to the existing static and dynamic request models; the CLI adds no
 analysis semantics. It preflights inputs, creates a new user-selected output directory
 exclusively, saves both route certificates and the H5 report separately, and preserves
 trace artifacts after a later output failure. Its exit code reports workflow
-completion, not a combined safety verdict. H6 tests mock the workflow service; actual
-workload validation remains in H7.
+completion, not a combined safety verdict. H6 tests mock the workflow service. H7
+validated the one-workload path on representative litmus ELF and PARSEC inputs. The
+reports correctly preserve `UNKNOWN` where application partitioning, module identity
+or trace limits leave evidence incomplete; the run record is
+`docs/exec-plans/active/e3-h7-real-workload-validation.md`.
 
 Phase C closure is now part of the static application path: when a DBT revision is
 bound, `bmo_check_static.application.analyze_with_evidence` converts the legacy
