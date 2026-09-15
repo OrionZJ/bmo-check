@@ -1,6 +1,6 @@
 # E3-H4 — Compose existing route services
 
-Status: implementation complete; one-workload CLI/report remain for H5–H6
+Status: implementation complete; one-workload CLI remains for H6
 
 ## Service boundary
 
@@ -47,6 +47,11 @@ dimension prevents `Exact`. This check is about whether observations may be join
 the static sites; it does not alter either route verdict. Capture, analysis, I/O and
 binding failures raise a stage-labelled `HybridWorkflowError`. A route-level resource
 limit or incomplete trace remains that route's ordinary typed `UNKNOWN` result.
+
+`HybridWorkflowResult` also retains the DBT contract SHA-256 observed immediately
+before and after static analysis. H5 uses this pair to validate the report's
+translation-policy binding against the digest in the dynamic certificate; if the
+contract changed while static analysis ran, the binding stays `Unverified`.
 
 ## Tests and validation
 

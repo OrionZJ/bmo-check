@@ -74,7 +74,9 @@ boundary for future static/dynamic correlation; they do not change verdicts.
 
 `bmo_check_workflow` is the neutral owner for one-workload orchestration. It may call
 the static and dynamic application services and pass their immutable snapshots to
-diagnostics, but it must not implement recovery, checking, correlation or proof rules.
+diagnostics and project their results into a versioned report, but it must not implement
+recovery, checking, correlation or proof rules. The report keeps route verdicts separate;
+its typed root-cause field is a D5 candidate, not a causal proof.
 The static and dynamic routes remain independently usable and do not import workflow.
 
 The recovery producers expose opt-in canonical ledgers as migration seams. The static
@@ -131,8 +133,10 @@ bmo-check capture|analyze|run|campaign|explain|locate|diagnose
 bmo-check-static fingerprint|recover|slice|analyze|explain|evaluate
 ```
 
-The H4 Python workflow API is `bmo_check_workflow.analyze_workload`; the one-workload
-CLI and serialized hybrid report are scheduled for H5–H6.
+The H4 Python workflow API is `bmo_check_workflow.analyze_workload`. H5 adds
+`build_hybrid_workflow_report`, `save_hybrid_workflow_report`, and
+`load_hybrid_workflow_report`; H6 will expose the same workflow through a one-workload
+CLI. The H5 report has no combined verdict and rejects unknown schema versions.
 
 `diagnose` consumes only typed static/dynamic snapshots and writes a versioned
 diagnostic report. It may correlate observations and create hints, but must not attach

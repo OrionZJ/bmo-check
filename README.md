@@ -88,6 +88,23 @@ bmo-check diagnose static-snapshot.json --trace trace/run-1 \
 关闭 Unknown 或进入静态证书。若静态 Unknown 带有明确的模块/PC provenance，
 命令会只保留这些站点的观察，避免为一次回查展开大型 trace 的全部站点。
 
+## 动静结合工作流 API
+
+E3-H4 提供 `bmo_check_workflow.analyze_workload`，让同一份 workload 依次经过
+静态分析、动态采集/分析和只读诊断；E3-H5 的
+`build_hybrid_workflow_report` 可把结果整理成 `hybrid-workflow-report-v1`，并由
+`save_hybrid_workflow_report` 写成单份 JSON。报告分别保留 static verdict、trace-bound
+dynamic verdict、仍未闭合的 static Unknown、D4 `Exact/Ambiguous/Unmatched` 关联、
+E1 affine observations 和 D5 root-cause 候选。D4/E1 子报告仍保留各自 schema。
+报告还保留静态分析前后的 DBT contract 摘要，并与动态证书中的 digest 核对。
+
+报告没有合并 verdict：dynamic observation 和 `DiagnosticHint` 不能进入 static
+proof closure、消除 Unknown 或把 static `UNKNOWN` 升成 `SAFE`。D5 候选的
+`causal_relation_unresolved` 表示当前没有可证明的因果边。报告保留启动命令与工作目录，
+环境变量只记录名称和值的摘要；原始环境仍留在 trace manifest，大型 trace 仍留在
+独立 trace 目录。H6 会再提供
+面向普通 workload 的单命令 CLI；目前可通过 `bmo_check_workflow` Python API 调用。
+
 多轮实验使用 `bmo-check campaign manifest.yaml --output results`。总体 `TRACE_SAFE` 只表示清单中的每条轨迹都为 `TRACE_SAFE`。
 
 旧静态分析入口保持为：

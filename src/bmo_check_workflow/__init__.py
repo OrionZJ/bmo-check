@@ -8,6 +8,16 @@ from .application import (
     WorkflowStage,
     analyze_workload,
 )
+from .report import (
+    CausalStatus,
+    HybridReportError,
+    HybridWorkflowReport,
+    build_hybrid_workflow_report,
+    hybrid_report_from_dict,
+    hybrid_report_from_json,
+    load_hybrid_workflow_report,
+    save_hybrid_workflow_report,
+)
 
 __all__ = [
     "DiagnosticProducts",
@@ -16,4 +26,12 @@ __all__ = [
     "HybridWorkflowResult",
     "WorkflowStage",
     "analyze_workload",
+    "CausalStatus",
+    "HybridReportError",
+    "HybridWorkflowReport",
+    "build_hybrid_workflow_report",
+    "hybrid_report_from_dict",
+    "hybrid_report_from_json",
+    "load_hybrid_workflow_report",
+    "save_hybrid_workflow_report",
 ]

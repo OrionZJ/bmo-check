@@ -1,6 +1,6 @@
 # Target Architecture
 
-Status: accepted design; Phase C evidence/provenance foundation and E3-H4 workflow service implemented
+Status: accepted design; Phase C evidence/provenance foundation and E3-H5 workflow report implemented
 
 Applies after: repository baseline `3375b5f`
 
@@ -62,7 +62,8 @@ src/
 │   ├── classification/     extensible root-cause classifiers
 │   └── report/             diagnostic report schema and explanation
 ├── bmo_check_workflow/
-│   └── application.py      one-workload orchestration over existing route services
+│   ├── application.py      one-workload orchestration over existing route services
+│   └── report.py           strict versioned projection; no combined verdict
 ├── bmo_check_evaluation/
 │   ├── parsec.py           typed PARSEC harness and aggregation service
 │   └── regression/         reproducible experiment drivers
@@ -105,6 +106,18 @@ D4 correlation and E1 affine-observation services. It does not add a CLI command
 combine the static `SAFE` and dynamic `TRACE_SAFE` verdicts. A missing canonical
 static certificate leaves dynamic analysis available but makes diagnostics explicitly
 unavailable.
+
+E3-H5 adds `bmo_check_workflow.report` as an output-only typed projection of the H4
+result. The `hybrid-workflow-report-v1` envelope contains separate static and dynamic
+summaries, the unchanged D4 and E1 child payloads with their own schema versions, and
+one D5 candidate per static blocker with `causal_relation_unresolved`. Parsing rejects
+unknown fields/versions, trace or closure mismatches, invalid evidence references,
+observations in the static proof-closure ID set, and any attempt to add a combined
+verdict. Environment values are represented by SHA-256 digests so the report does not
+copy tokens out of the trace manifest. The report also records the DBT contract digest
+before and after static analysis and checks the cross-route policy binding against the
+dynamic certificate digest. This report is not a certificate and does not replace
+route certificate replay.
 
 Phase C closure is now part of the static application path: when a DBT revision is
 bound, `bmo_check_static.application.analyze_with_evidence` converts the legacy

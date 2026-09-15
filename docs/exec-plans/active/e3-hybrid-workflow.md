@@ -1,6 +1,6 @@
 # E3 — 先完成动静结合诊断工作流
 
-状态：active implementation；H0–H4 complete，H5 active。分析器、真实 workload 与 frozen corpus baseline 均未改变。
+状态：active implementation；H0–H5 complete，H6 active。分析器、真实 workload 与 frozen corpus baseline 均未改变。
 
 ## 阶段边界
 
@@ -78,15 +78,15 @@ D5 分类器根据 `UnknownKind`、reason/context 和 correlation status 选择 
 | E3-H2 | `Expose unresolved static obligations` | 从经过 replay 的 static certificate 显式导出 `relevant_unknowns`/未闭合 obligations；扩展 snapshot 或其 typed adapter，让 D4 默认只把仍阻塞当前结论的 Unknown 当作 blocking。已 discharge 的 Unknown 可保留为历史 provenance，但必须另行标记。 | 完成。v2 snapshot 的 blocker ID 与 replay 后未闭合集合一致；D4 报告分列全部 blocking、所选 blocking 和 proof-discharged history。v1/手工快照缺少可信分区时按保守候选 blocker 展示。实现记录见 `e3-h2-unresolved-obligations.md`。 |
 | E3-H3 | `Bind dynamic certificate to trace observations` | 增加单一 typed bridge，核对 `DynamicCertificate`、manifest、trace digest、executable/libraries、DBT contract 与 snapshot；显式映射 manifest trace ID 和诊断 `TraceId`，不复制证据模型。增加通用 `CorrelationBinding`，让 diagnostics 能接收 binary、translation policy、analysis scope 的逐项比对。 | 完成。动态 bridge 只从原 trace 重建 snapshot，并核对 certificate 的 manifest ID、内容 digest、模块闭包、命令、工作目录和 contract hash；跨路由不兼容会输出 `Unmatched`，缺材料会降为 `Ambiguous`。H4 将从两条 route 的 application result 生成实际比对项。实现记录见 `e3-h3-trace-binding.md`。 |
 | E3-H4 | `Compose existing route services` | 新增一个 model-free workflow application service，组合 `StaticRequest`/`analyze_with_evidence`、dynamic capture/analyze、现有 adapters、D4 和 E1。只新增编排 request/result；不实现新 MemoryEvent、solver、correlator、certificate 或 evidence ledger。 | 用隔离服务测试验证顺序和 artifact binding。分析边界内的 incomplete/unsupported/resource limit 使用该 route 已有的 typed Unknown；配置、I/O 或工具启动失败则保留明确 workflow error，不伪造一张分析证书，也不静默跳过失败的一侧。 |
-| E3-H5 | `Emit one versioned hybrid report` | 建立 workflow 外层报告，将 static verdict/未闭合 obligations、dynamic verdict/trace scope、D4 correlation/hints、E1 affine observations、root-cause confidence/causal status 放在一个 JSON 下。保留原 D4/E1 子 schema，不把 DynamicCertificate 塞进 diagnostics evidence。 | round-trip 与 schema negative tests；closure/scope mismatch 必须显式；每个 observation 带 `TraceId`；每个 hint 仍只引用 Unknown/Observed IDs。不得输出一个含糊的 hybrid `SAFE`。 |
-| E3-H6 | `Expose one-workload CLI` | 增加薄 CLI 子命令和 versioned generic workload manifest。CLI 只解析/渲染，调用 H4 service；保留现有 snapshot-based `diagnose`、static/dynamic 独立命令。 | CLI integration tests 检查普通输入、无效 manifest、缺失 DBT binding、DynamoRIO 不可用、trace incomplete、输出路径失败；结果 JSON 仍分别显示两种 verdict。 |
+| E3-H5 | `Emit one versioned hybrid report` | 完成。`bmo_check_workflow.report` 把 static verdict/未闭合 obligations、dynamic verdict/trace scope、D4 correlation/hints、E1 affine observations、root-cause candidate/confidence/causal status 放进 `hybrid-workflow-report-v1`。D4/E1 子 schema 原样保留，DynamicCertificate 不进入 diagnostics evidence。 | 完成 typed JSON round-trip、未知 schema/字段拒绝、trace/closure/evidence reference 检查、静态 proof-closure 与动态 observation 隔离、敏感环境变量值摘要化。没有 combined verdict；记录见 `e3-h5-hybrid-report.md`。 |
+| E3-H6 | `Expose one-workload CLI` | 增加薄 CLI 子命令和 versioned generic workload manifest。CLI 只解析/渲染，调用 H4 service 与 H5 report builder；保留现有 snapshot-based `diagnose`、static/dynamic 独立命令。 | CLI integration tests 检查普通输入、无效 manifest、缺失 DBT binding、DynamoRIO 不可用、trace incomplete、输出路径失败；结果 JSON 仍分别显示两种 verdict。 |
 | E3-H7 | `Validate hybrid workflow on real workloads` | 用少量真实 ELF/应用验证同一输入身份、观察相关、harness 事件可见、产物预算和可复现命令；只记录结果和限制，不按 workload 名改变语义。 | 先跑 canneal 和 E2.5 代表 ELF，再选一个已有动态完整 trace 的 PARSEC workload。若 trace 过大、依赖缺失、closure mismatch 或过预算，结果如实为 `UNKNOWN`/unmatched；不通过过滤 harness 获得成功。 |
 
 ### Workflow service 的归属决策
 
-`bmo_check_workflow` 是三个 route 之间的中性编排 owner。静态和动态 service 保持互不依赖，diagnostics 只消费 snapshots，CLI 保持薄层；`bmo_check_evaluation` 仍是 PARSEC/litmus 评测域，不承载普通 workload workflow。H4 已更新 dependency tests 和架构文档并加入编排服务。
+`bmo_check_workflow` 是三个 route 之间的中性编排 owner。静态和动态 service 保持互不依赖，diagnostics 只消费 snapshots，CLI 保持薄层；`bmo_check_evaluation` 仍是 PARSEC/litmus 评测域，不承载普通 workload workflow。H4 加入服务，H5 加入 output-only report adapter；两者都不拥有 analyzer、correlator 或 proof rule。
 
-`bmo_check_workflow` 依赖 static、dynamic、diagnostics 和 core，只调用既有 service 并串接不可变结果；不拥有第二套 analyzer、memory model、evidence ledger、Unknown registry 或 correlator。H4 已把 dependency DAG、`AGENTS.md` 和 architecture map 写入仓库，并用 architecture test 固定方向。
+`bmo_check_workflow` 依赖 static、dynamic、diagnostics 和 core，只调用既有 service 并串接不可变结果；不拥有第二套 analyzer、memory model、evidence ledger、Unknown registry 或 correlator。H4/H5 的 dependency tests 固定 workflow 只能经过 route application service 和诊断接口；report schema 单独验证输入身份与引用完整性，不改变 route verdict。
 
 ## 5. 完成后用户如何运行、看到什么
 

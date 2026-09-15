@@ -188,6 +188,9 @@ class HybridWorkflowResult:
     diagnostics_unavailable_reason: str | None
     # trace_dir 指向用户选择的动态采集产物，不复制或清理它。
     trace_dir: Path
+    # 两次摘要限定静态分析读取 contract 的时间窗口；不相等时不能声称绑定成功。
+    static_policy_sha256_before: str
+    static_policy_sha256_after: str
 
     def __post_init__(self) -> None:
         if not isinstance(self.static_analysis, StaticAnalysisResult):
@@ -200,6 +203,17 @@ class HybridWorkflowResult:
             )
         if not isinstance(self.trace_dir, Path):
             raise HybridWorkflowError(WorkflowStage.INPUT, "trace_dir must be a Path")
+        for name in ("static_policy_sha256_before", "static_policy_sha256_after"):
+            value = getattr(self, name)
+            if (
+                not isinstance(value, str)
+                or len(value) != 64
+                or value != value.lower()
+                or any(char not in "0123456789abcdef" for char in value)
+            ):
+                raise HybridWorkflowError(
+                    WorkflowStage.INPUT, f"{name} must be a lowercase SHA-256 digest"
+                )
         if self.diagnostics is None:
             if self.static_analysis.canonical_certificate is not None:
                 raise HybridWorkflowError(
@@ -430,6 +444,8 @@ def analyze_workload(request: HybridWorkflowRequest) -> HybridWorkflowResult:
             diagnostics=None,
             diagnostics_unavailable_reason=reason,
             trace_dir=request.trace_dir,
+            static_policy_sha256_before=policy_sha256_before,
+            static_policy_sha256_after=policy_sha256_after_static,
         )
 
     correlation_binding = _correlation_binding(
@@ -471,6 +487,8 @@ def analyze_workload(request: HybridWorkflowRequest) -> HybridWorkflowResult:
         diagnostics=products,
         diagnostics_unavailable_reason=None,
         trace_dir=request.trace_dir,
+        static_policy_sha256_before=policy_sha256_before,
+        static_policy_sha256_after=policy_sha256_after_static,
     )
 
 
