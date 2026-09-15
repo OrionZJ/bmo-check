@@ -213,6 +213,9 @@ def test_report_bridge_preserves_relevant_unknowns() -> None:
     assert result.certificate.verdict == CertificateVerdict.UNKNOWN
     assert len(result.certificate.relevant_unknowns) == 1
     assert len(result.ledger.unresolved_unknowns(scope)) == 1
+    snapshot = static_snapshot_from_certificate(result)
+    assert snapshot.schema_version == "static-diagnostic-v2"
+    assert snapshot.blocking_unknown_ids == result.certificate.relevant_unknowns
 
 
 def test_report_bridge_records_proof_backed_unknown_discharge() -> None:
@@ -278,6 +281,10 @@ def test_report_bridge_records_proof_backed_unknown_discharge() -> None:
     assert result.certificate.verdict == CertificateVerdict.SAFE
     assert result.ledger.discharges()
     assert result.ledger.unresolved_unknowns(scope) == ()
+    snapshot = static_snapshot_from_certificate(result)
+    assert snapshot.blocking_unknown_ids == ()
+    assert len(snapshot.unknown_ids) == 1
+    assert len(snapshot.evidence.discharges) == 1
 
 
 def test_bridge_rejects_dynamic_observation() -> None:

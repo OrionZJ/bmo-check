@@ -8,7 +8,8 @@ Status: implemented on branch `dev`
 immutable snapshots produced by earlier phases. The report keeps:
 
 - the original static `CertificateVerdict` and a typed identity for both inputs;
-- every selected static `UnknownFact` and every trace-bound `ObservedFact`;
+- all current blocking static `UnknownFact` obligations, the selected blocker subset,
+  proof-discharged historical Unknowns, and every trace-bound `ObservedFact`;
 - `Exact`, `Ambiguous` and `Unmatched` correlation records;
 - coverage counts, dynamic Unknowns, and a typed `DiagnosticHint` for each selected
   Unknown (using the typed D5 root-cause registry);
@@ -24,8 +25,12 @@ so changing a trace cannot alter the static verdict.
 `bmo_check_diagnostics.serialization` is the only JSON adapter. It reconstructs
 typed identities and evidence nodes before creating a snapshot; an ID/content
 mismatch, unknown evidence category, unregistered Unknown kind or cross-category
-edge fails closed. Snapshot files use `kind: static|dynamic`; report files use
-`schema_version: diagnostic-report-v1`.
+edge fails closed. Certificate-replayed static snapshots use
+`schema_version: static-diagnostic-v2` and carry the unresolved blocker IDs. Legacy
+v1 snapshots remain readable, but without a replayed blocker partition the report
+conservatively treats every static Unknown as a candidate blocker. Report files use
+`schema_version: diagnostic-report-v2` and separately list `blocking_unknowns`,
+`selected_unknowns`, and `discharged_unknowns`.
 
 ## CLI
 
@@ -54,6 +59,7 @@ identity.
 ## Acceptance
 
 - exact, ambiguous and unmatched cases remain visible in JSON;
+- a discharged Unknown cannot be selected as a current blocker;
 - static Unknowns and dynamic observations remain separate typed categories;
 - report construction and CLI round-trip tests pass;
 - the full suite retains the static/dynamic import boundary and all prior verdicts.

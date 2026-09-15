@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from bmo_check_core import (
     BinaryClosureId,
     CertificateVerdict,
@@ -114,7 +116,7 @@ def test_h0_d4_omits_dynamic_verdict_and_keeps_affine_as_separate_output() -> No
     assert affine_payload["patterns"]
 
 
-def test_h0_d4_selects_discharged_unknowns_from_snapshot_evidence() -> None:
+def test_h2_d4_separates_blocking_and_discharged_unknowns() -> None:
     static, dynamic, open_unknown = _snapshots(observations=False)
     closed_unknown = UnknownFact.create(
         schema_version="unknown-v1",
@@ -136,23 +138,51 @@ def test_h0_d4_selects_discharged_unknowns_from_snapshot_evidence() -> None:
         discharges=(UnknownDischarge(closed_unknown.id, proof.id, static.scope),),
     )
     static = StaticDiagnosticSnapshot(
-        schema_version=static.schema_version,
+        schema_version="static-diagnostic-v2",
         scope=static.scope,
         verdict=CertificateVerdict.UNKNOWN,
         evidence=evidence,
         binary_closure=static.binary_closure,
         subject_ids=static.subject_ids,
+        blocking_unknown_ids=(open_unknown.id,),
     )
 
     assert static.ledger().unresolved_unknowns(static.scope) == (open_unknown,)
     report = build_diagnostic_report(static, dynamic)
 
-    # H2 will change the report's blocking-obligation selection. Keep this
-    # assertion until that migration replaces the characterized behavior.
-    assert {item.id for item in report.selected_unknowns} == {
+    assert report.blocking_unknowns == report.selected_unknowns == (open_unknown,)
+    assert report.discharged_unknowns == (closed_unknown,)
+    assert report.coverage.blocking_unknown_count == 1
+    assert report.coverage.discharged_unknown_count == 1
+    payload = report.to_dict()
+    assert [item["id"] for item in payload["blocking_unknowns"]] == [
+        open_unknown.id.value
+    ]
+    assert [item["id"] for item in payload["discharged_unknowns"]] == [
+        closed_unknown.id.value
+    ]
+
+    with pytest.raises(ValueError, match="discharged"):
+        build_diagnostic_report(
+            static,
+            dynamic,
+            selected_unknown_ids=(closed_unknown.id,),
+        )
+
+    legacy_snapshot = StaticDiagnosticSnapshot(
+        schema_version="static-diagnostic-v1",
+        scope=static.scope,
+        verdict=static.verdict,
+        evidence=evidence,
+        binary_closure=static.binary_closure,
+        subject_ids=static.subject_ids,
+    )
+    legacy_report = build_diagnostic_report(legacy_snapshot, dynamic)
+    assert {item.id for item in legacy_report.blocking_unknowns} == {
         closed_unknown.id,
         open_unknown.id,
     }
+    assert legacy_report.discharged_unknowns == ()
 
 
 def test_h1_complete_unmatched_trace_does_not_claim_site_was_not_executed() -> None:

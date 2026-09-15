@@ -119,10 +119,23 @@ def test_snapshot_json_round_trip_rebuilds_typed_identity(tmp_path: Path) -> Non
         assert load_snapshot(path, expected_kind=kind) == snapshot
 
 
+def test_static_snapshot_v2_serializes_replayed_blocker_set() -> None:
+    static, _dynamic, unknown, _observed = _snapshots()
+    replayed = replace(
+        static,
+        schema_version="static-diagnostic-v2",
+        blocking_unknown_ids=(unknown.id,),
+    )
+
+    payload = snapshot_to_dict(replayed)
+    assert payload["blocking_unknown_ids"] == [unknown.id.value]
+    assert snapshot_from_dict(payload, expected_kind="static") == replayed
+
+
 def test_diagnose_cli_writes_versioned_report_without_upgrading_unknown(
     tmp_path: Path, capsys
 ) -> None:
-    static, dynamic, _, _ = _snapshots()
+    static, dynamic, unknown, _ = _snapshots()
     static_path = tmp_path / "static.json"
     dynamic_path = tmp_path / "dynamic.json"
     output = tmp_path / "diagnostic.json"
@@ -141,10 +154,13 @@ def test_diagnose_cli_writes_versioned_report_without_upgrading_unknown(
 
     assert result == 2
     payload = json.loads(output.read_text(encoding="utf-8"))
-    assert payload["schema_version"] == "diagnostic-report-v1"
+    assert payload["schema_version"] == "diagnostic-report-v2"
     assert payload["static_verdict"] == "UNKNOWN"
     assert payload["static_proof_unchanged"] is True
     assert payload["coverage"]["exact_count"] == 1
+    assert payload["coverage"]["blocking_unknown_count"] == 1
+    assert payload["coverage"]["discharged_unknown_count"] == 0
+    assert payload["blocking_unknowns"][0]["id"] == unknown.id.value
     assert payload["hints"][0]["category"] == "DiagnosticHint"
     assert "static=UNKNOWN" in capsys.readouterr().out
 
@@ -154,7 +170,9 @@ def test_report_payload_keeps_observation_separate_from_static_unknown() -> None
     report = build_diagnostic_report(static, dynamic)
     payload = report_to_dict(report)
 
+    assert payload["blocking_unknowns"][0]["id"] == unknown.id.value
     assert payload["selected_unknowns"][0]["id"] == unknown.id.value
+    assert payload["discharged_unknowns"] == []
     assert payload["observed_facts"][0]["id"] == observed.id.value
     assert payload["static_verdict"] == "UNKNOWN"
     assert payload["trace_id"] == dynamic.trace_id.value

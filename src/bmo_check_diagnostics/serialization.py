@@ -324,7 +324,7 @@ def snapshot_to_dict(
     """将 canonical snapshot 转成 versioned JSON-compatible 文档。"""
 
     if isinstance(snapshot, StaticDiagnosticSnapshot):
-        return {
+        payload = {
             "kind": "static",
             "schema_version": snapshot.schema_version,
             "scope": snapshot.scope,
@@ -335,6 +335,11 @@ def snapshot_to_dict(
             "subject_ids": [item.value for item in snapshot.subject_ids],
             "evidence": _evidence_payload(snapshot),
         }
+        if snapshot.blocking_unknown_ids is not None:
+            payload["blocking_unknown_ids"] = [
+                item.value for item in snapshot.blocking_unknown_ids
+            ]
+        return payload
     if isinstance(snapshot, DynamicDiagnosticSnapshot):
         return {
             "kind": "dynamic",
@@ -388,6 +393,17 @@ def snapshot_from_dict(
         raw_subjects = _required(mapping, "subject_ids")
         if not isinstance(raw_subjects, (list, tuple)):
             raise DiagnosticSerializationError("subject_ids must be an array")
+        if "blocking_unknown_ids" not in mapping:
+            if schema_version != "static-diagnostic-v1":
+                raise DiagnosticSerializationError(
+                    "static snapshot schema requires blocking_unknown_ids"
+                )
+            blocking_unknown_ids = None
+        else:
+            raw_blockers = mapping["blocking_unknown_ids"]
+            if not isinstance(raw_blockers, (list, tuple)):
+                raise DiagnosticSerializationError("blocking_unknown_ids must be an array")
+            blocking_unknown_ids = tuple(_evidence_id(item) for item in raw_blockers)
         return StaticDiagnosticSnapshot(
             schema_version=schema_version,
             scope=scope,
@@ -395,6 +411,7 @@ def snapshot_from_dict(
             evidence=evidence,
             binary_closure=closure,  # type: ignore[arg-type]
             subject_ids=tuple(_stable_id(item) for item in raw_subjects),
+            blocking_unknown_ids=blocking_unknown_ids,
         )
     if kind == "dynamic":
         trace_id = _stable_id(_required(mapping, "trace_id"), expected=TraceId)
@@ -496,7 +513,9 @@ def report_to_dict(report: DiagnosticReport) -> dict[str, Any]:
         "dynamic_snapshot_schema_version": report.dynamic_snapshot_schema_version,
         "trace_id": report.trace_id.value,
         "trace_complete": report.trace_complete,
+        "blocking_unknowns": [_node_payload(item) for item in report.blocking_unknowns],
         "selected_unknowns": [_node_payload(item) for item in report.selected_unknowns],
+        "discharged_unknowns": [_node_payload(item) for item in report.discharged_unknowns],
         "correlations": _correlation_payload(report.correlations),
         "observed_facts": [_node_payload(item) for item in report.observed_facts],
         "dynamic_unknowns": [_node_payload(item) for item in report.dynamic_unknowns],
@@ -505,6 +524,8 @@ def report_to_dict(report: DiagnosticReport) -> dict[str, Any]:
             "observed_unknown_count": report.coverage.observed_unknown_count,
             "observed_subject_count": report.coverage.observed_subject_count,
             "observed_thread_count": report.coverage.observed_thread_count,
+            "blocking_unknown_count": report.coverage.blocking_unknown_count,
+            "discharged_unknown_count": report.coverage.discharged_unknown_count,
             "selected_unknown_count": report.coverage.selected_unknown_count,
             "exact_count": report.coverage.exact_count,
             "ambiguous_count": report.coverage.ambiguous_count,

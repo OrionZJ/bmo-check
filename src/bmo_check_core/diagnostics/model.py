@@ -110,6 +110,9 @@ class StaticDiagnosticSnapshot:
     binary_closure: BinaryClosureId | None = None
     # subject_ids 让报告回查指令、事件和对象，不依赖临时数组序号。
     subject_ids: tuple[StableId, ...] = ()
+    # blocking_unknown_ids 只由证书回放适配器填写；None 表示旧快照没有
+    # 可验证的 obligation 分区，诊断必须把其中所有 Unknown 都当作候选 blocker。
+    blocking_unknown_ids: tuple[EvidenceId, ...] | None = None
 
     def __post_init__(self) -> None:
         _non_empty("snapshot schema_version", self.schema_version)
@@ -124,6 +127,14 @@ class StaticDiagnosticSnapshot:
             raise SnapshotError("static snapshot binary_closure is invalid")
         if any(not isinstance(item, StableId) for item in self.subject_ids):
             raise SnapshotError("static snapshot subjects must be StableId values")
+        if self.blocking_unknown_ids is not None and any(
+            not isinstance(item, EvidenceId) for item in self.blocking_unknown_ids
+        ):
+            raise SnapshotError("blocking_unknown_ids must contain EvidenceId values")
+        if self.schema_version == "static-diagnostic-v2" and self.blocking_unknown_ids is None:
+            raise SnapshotError(
+                "static-diagnostic-v2 requires a replayed blocking Unknown set"
+            )
         for node in self.evidence.nodes:
             if not isinstance(node, (ProofFact, UnknownFact)):
                 raise SnapshotError(
@@ -131,6 +142,23 @@ class StaticDiagnosticSnapshot:
                 )
             if node.scope != self.scope:
                 raise SnapshotError("static evidence scope does not match snapshot")
+        if self.blocking_unknown_ids is not None:
+            normalized_blockers = tuple(
+                sorted(set(self.blocking_unknown_ids), key=lambda item: item.value)
+            )
+            unknown_ids = {
+                node.id for node in self.evidence.nodes if isinstance(node, UnknownFact)
+            }
+            if not set(normalized_blockers).issubset(unknown_ids):
+                raise SnapshotError("blocking_unknown_ids references an absent UnknownFact")
+            unresolved_ids = {
+                item.id for item in self.evidence.ledger().unresolved_unknowns(self.scope)
+            }
+            if set(normalized_blockers) != unresolved_ids:
+                raise SnapshotError(
+                    "blocking_unknown_ids must match unresolved evidence in the snapshot"
+                )
+            object.__setattr__(self, "blocking_unknown_ids", normalized_blockers)
         object.__setattr__(
             self,
             "subject_ids",

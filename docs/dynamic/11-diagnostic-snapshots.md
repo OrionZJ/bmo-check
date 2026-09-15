@@ -52,3 +52,23 @@ Unknown 覆盖。它把 `exercised`、`ambiguous`、`unmatched` 和明确没有�
 当 `diagnose` 同时指定 `--affine-output` 和 `--trace` 时，如果静态 Unknown 的
 provenance 含有模块/PC，适配器会以这些位置作为 `site_filter`。原始 trace 仍
 完整扫描，过滤只减少保留的观察站点；因此不会把未选中的路径当成已经执行。
+
+## Static blocking Unknown 分区
+
+由 `static_snapshot_from_certificate` 生成的 `static-diagnostic-v2` 快照包含
+`blocking_unknown_ids`。适配器先重放静态证书，再检查该 ID 集等于证书
+`relevant_unknowns` 扣除已在 proof closure 中验证的 discharge，并且等于当前
+ledger 的 unresolved Unknown 集。快照仍保留所有 `UnknownFact` 和 discharge；
+它不会删除历史节点。
+
+D4 `diagnostic-report-v2` 分开输出：
+
+- `blocking_unknowns`：当前仍未闭合的全部静态 obligation；
+- `selected_unknowns`：本次实际做动态关联的 blocker 子集，默认等于全部 blocker；
+- `discharged_unknowns`：不再阻塞当前结论、且由静态证据中的 discharge 记录关闭的历史 Unknown。
+
+不能把已 discharge 的 ID 作为诊断选择项。旧 `static-diagnostic-v1` 快照没有
+由证书回放产生的 blocker 分区；读取后会把其中所有 Unknown 保守地视为候选
+blocker，而不会根据快照内容擅自把它们移入 discharged history。此兼容行为可能
+多报 blocker，但不会静默隐藏 obligation。以上字段只影响诊断呈现，不修改静态
+certificate 或 verdict。

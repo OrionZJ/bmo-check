@@ -79,6 +79,25 @@ def test_static_snapshot_keeps_unknown_and_returns_independent_ledger() -> None:
     assert len(snapshot.ledger().nodes()) == 1
 
 
+def test_static_snapshot_rejects_blocker_set_that_drops_unresolved_unknown() -> None:
+    unknown = _unknown()
+    proof = ProofFact.create(
+        schema_version="proof-v1",
+        producer=ProducerId("test", "1"),
+        subject=None,
+        rule="unrelated-proof",
+        scope="static.test",
+    )
+    with pytest.raises(SnapshotError, match="match unresolved evidence"):
+        StaticDiagnosticSnapshot(
+            schema_version="static-diagnostic-v2",
+            scope="static.test",
+            verdict=CertificateVerdict.UNKNOWN,
+            evidence=EvidenceSnapshot((unknown, proof)),
+            blocking_unknown_ids=(),
+        )
+
+
 def test_static_snapshot_rejects_observed_fact_and_hint() -> None:
     trace = _trace()
     observed = _observed(trace)

@@ -43,7 +43,7 @@ def _snapshot_subjects(
 def static_snapshot_from_certificate(
     evidence: StaticCertificateEvidence,
     *,
-    schema_version: str = "static-diagnostic-v1",
+    schema_version: str = "static-diagnostic-v2",
 ) -> StaticDiagnosticSnapshot:
     """将静态证书的完整证据转换成只读诊断快照。
 
@@ -70,6 +70,26 @@ def static_snapshot_from_certificate(
             "static certificate verification does not match the supplied certificate"
         )
 
+    proof_closure_ids = {item.id for item in verification.proof_closure}
+    for discharge in evidence.ledger.discharges():
+        if discharge.proof_id not in proof_closure_ids:
+            raise DiagnosticSnapshotAdapterError(
+                "static evidence contains an Unknown discharge outside the certificate proof closure"
+            )
+    replay_blocking_ids = set(evidence.certificate.relevant_unknowns) - set(
+        verification.discharged_unknowns
+    )
+    unresolved_ids = {
+        item.id
+        for item in evidence.ledger.unresolved_unknowns(
+            evidence.certificate.binding.scope
+        )
+    }
+    if replay_blocking_ids != unresolved_ids:
+        raise DiagnosticSnapshotAdapterError(
+            "certificate replay obligation set differs from unresolved static evidence"
+        )
+
     nodes = evidence.ledger.nodes()
     if any(isinstance(node, (ObservedFact, DiagnosticHint)) for node in nodes):
         raise DiagnosticSnapshotAdapterError(
@@ -89,6 +109,7 @@ def static_snapshot_from_certificate(
             ),
             binary_closure=evidence.certificate.binding.binary_closure,
             subject_ids=_snapshot_subjects(static_nodes),
+            blocking_unknown_ids=tuple(replay_blocking_ids),
         )
     except (TypeError, ValueError, SnapshotError) as error:
         raise DiagnosticSnapshotAdapterError(
