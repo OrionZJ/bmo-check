@@ -30,6 +30,7 @@ from bmo_check_diagnostics import (
     site_filter_for_affine_unknowns,
     summarize_observed_affine_patterns,
 )
+from bmo_check_diagnostics.correlation import CorrelationStatus
 
 
 HASH = "a" * 64
@@ -186,6 +187,36 @@ def test_unobserved_affine_unknown_is_reported_without_changing_static_verdict()
     assert report.not_executed_count == 1
     assert report.unmatched_count == 1
     assert report.patterns[0].status == ObservedAffineStatus.NOT_OBSERVED
+
+
+def test_non_memory_match_does_not_count_as_an_affine_address_observation() -> None:
+    static, dynamic, unknown = _inputs()
+    fence = ObservedFact.create(
+        schema_version="observed-v1",
+        producer=ProducerId("dynamic-test", "e1-fence"),
+        trace_id=dynamic.trace_id,
+        execution_id=ThreadInstanceId.from_parts(dynamic.trace_id, 3),
+        subject=unknown.subject,
+        observation_kind="explicit-fence",
+        attributes=(EvidenceAttribute("sample_count", "1"),),
+    )
+    dynamic = DynamicDiagnosticSnapshot(
+        schema_version=dynamic.schema_version,
+        trace_id=dynamic.trace_id,
+        scope=dynamic.scope,
+        complete=True,
+        evidence=EvidenceSnapshot((fence,)),
+        binary_closure=dynamic.binary_closure,
+    )
+
+    report = build_affine_validation_report(static, dynamic)
+    pattern = report.patterns[0]
+
+    assert pattern.correlation_status == CorrelationStatus.EXACT
+    assert pattern.observed_ids == ()
+    assert report.exercised_count == 0
+    assert report.not_executed_count == 0
+    assert report.unmatched_count == 1
 
 
 def test_site_filter_uses_only_explicit_static_provenance() -> None:

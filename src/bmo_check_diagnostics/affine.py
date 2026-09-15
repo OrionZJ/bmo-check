@@ -683,9 +683,13 @@ def build_affine_validation_report(
     exercised = ambiguous = unmatched = not_executed = 0
     for pattern in patterns:
         item_records = tuple(by_unknown.get(pattern.unknown_id, ()))
-        if any(record.status == CorrelationStatus.EXACT and record.observed_ids for record in item_records):
+        # 覆盖率跟随 E1 过滤后的普通访存样本；匹配到 fence 不能冒充地址序列。
+        if (
+            pattern.correlation_status == CorrelationStatus.EXACT
+            and pattern.observed_ids
+        ):
             exercised += 1
-        elif any(record.status == CorrelationStatus.AMBIGUOUS for record in item_records):
+        elif pattern.correlation_status == CorrelationStatus.AMBIGUOUS:
             ambiguous += 1
         else:
             unmatched += 1

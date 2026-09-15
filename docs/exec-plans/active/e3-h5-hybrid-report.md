@@ -63,6 +63,11 @@ The report only accepts the sound implication chain
 do not hold; the report preserves each narrower status instead of rejecting the whole
 workflow when diagnostics have less module coverage than the dynamic checker.
 
+E1 coverage counts a static affine obligation as exercised only when its correlation
+contains a retained ordinary-memory observation with address samples. A D4 match to a
+fence, atomic boundary, or control event may help diagnose the instruction site, but it
+cannot stand in for an affine address pattern; the E1 coverage remains unmatched.
+
 Environment values are represented by SHA-256 digests rather than copied into the
 report. A digest is not encryption: predictable values may still be guessed. The
 trace manifest remains the source artifact containing original capture metadata.
