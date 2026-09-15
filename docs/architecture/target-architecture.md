@@ -1,6 +1,6 @@
 # Target Architecture
 
-Status: accepted design; Phase C evidence/provenance foundation implemented
+Status: accepted design; Phase C evidence/provenance foundation and E3-H4 workflow service implemented
 
 Applies after: repository baseline `3375b5f`
 
@@ -61,6 +61,8 @@ src/
 │   ├── affine/             observed affine-pattern summaries
 │   ├── classification/     extensible root-cause classifiers
 │   └── report/             diagnostic report schema and explanation
+├── bmo_check_workflow/
+│   └── application.py      one-workload orchestration over existing route services
 ├── bmo_check_evaluation/
 │   ├── parsec.py           typed PARSEC harness and aggregation service
 │   └── regression/         reproducible experiment drivers
@@ -96,6 +98,14 @@ construct typed application requests. PARSEC orchestration now lives in
 `bmo_check_evaluation`, including its per-benchmark worker and report aggregation;
 the static compatibility CLI only converts arguments and renders the returned report.
 
+E3-H4 adds `bmo_check_workflow.application` as the neutral one-workload coordinator.
+It calls static `analyze_with_evidence`, dynamic capture/analyze and the verified
+certificate-to-trace adapter, then passes only the resulting canonical snapshots to
+D4 correlation and E1 affine-observation services. It does not add a CLI command or
+combine the static `SAFE` and dynamic `TRACE_SAFE` verdicts. A missing canonical
+static certificate leaves dynamic analysis available but makes diagnostics explicitly
+unavailable.
+
 Phase C closure is now part of the static application path: when a DBT revision is
 bound, `bmo_check_static.application.analyze_with_evidence` converts the legacy
 report into canonical identities, preserves every report Unknown, records only
@@ -110,7 +120,8 @@ SAFE path.
 ### 3.1 Package-level graph
 
 ```text
-bmo_check_cli ---------> static / dynamic / diagnostics / evaluation
+bmo_check_cli ---------> static / dynamic / diagnostics / workflow / evaluation
+bmo_check_workflow ----> static / dynamic / diagnostics / core
 bmo_check_evaluation --> static / dynamic / diagnostics / core
 bmo_check_static ------> core
 bmo_check_dynamic -----> core
@@ -123,6 +134,9 @@ Forbidden imports:
 - `core` must not import static, dynamic, diagnostics, evaluation or CLI;
 - static and dynamic must not import each other;
 - static and dynamic must not import diagnostics or evaluation;
+- workflow may call only route application services and read-only adapters; it must
+  not import analyzer internals, evaluation or CLI;
+- routes, diagnostics, core and evaluation must not import workflow;
 - diagnostics must consume canonical evidence snapshots, not analyzer internals;
 - portability and certificate code must not import PARSEC or benchmark manifests;
 - evaluation must never be imported by core analysis.

@@ -1,6 +1,6 @@
 # E3 — 先完成动静结合诊断工作流
 
-状态：active implementation；H0 characterization complete。分析器、真实 workload 与 frozen corpus baseline 均未改变。
+状态：active implementation；H0–H4 complete，H5 active。分析器、真实 workload 与 frozen corpus baseline 均未改变。
 
 ## 阶段边界
 
@@ -84,9 +84,9 @@ D5 分类器根据 `UnknownKind`、reason/context 和 correlation status 选择 
 
 ### Workflow service 的归属决策
 
-当前没有一个已有 service 同时拥有这三个 route 的编排职责。静态和动态 service 必须保持互不依赖，diagnostics 只消费 snapshots，CLI 必须保持薄层；`bmo_check_evaluation` 当前是 PARSEC/litmus 评测域，不应借它给所有普通 workload 加 benchmark 语义。H0 已把 `bmo_check_workflow` 记录为后续中性编排 owner，见 `e3-h0-characterization.md`；在 H4 前更新 dependency tests 和架构文档。
+`bmo_check_workflow` 是三个 route 之间的中性编排 owner。静态和动态 service 保持互不依赖，diagnostics 只消费 snapshots，CLI 保持薄层；`bmo_check_evaluation` 仍是 PARSEC/litmus 评测域，不承载普通 workload workflow。H4 已更新 dependency tests 和架构文档并加入编排服务。
 
-推荐在 H0 的架构决策中加入一个很薄的 `bmo_check_workflow`（或在仓库认可的中性 application 层实现）：依赖 static、dynamic、diagnostics 和 core，只负责调用既有 service 并串接不可变结果。它不得拥有第二套 analyzer、memory model、evidence ledger、Unknown registry 或 correlator。对应的 dependency DAG、`AGENTS.md` 和 architecture map 在 H4 前先更新并通过 architecture test。若仓库维护者决定复用其他现有 application owner，则 H0 记录理由后替换此提议。
+`bmo_check_workflow` 依赖 static、dynamic、diagnostics 和 core，只调用既有 service 并串接不可变结果；不拥有第二套 analyzer、memory model、evidence ledger、Unknown registry 或 correlator。H4 已把 dependency DAG、`AGENTS.md` 和 architecture map 写入仓库，并用 architecture test 固定方向。
 
 ## 5. 完成后用户如何运行、看到什么
 

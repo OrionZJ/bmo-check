@@ -67,15 +67,14 @@ CLI -> bmo_check_workflow
 bmo_check_workflow -> static + dynamic + diagnostics + core
 ```
 
-The package will only pass typed requests/results between existing services and
-adapters. It will not own a second checker, evidence ledger, Unknown registry,
-correlator or certificate verifier. Static, dynamic and diagnostics must not import
-the workflow package; evaluation remains a workload-manifest and campaign owner.
-Update dependency tests and architecture guidance before the package is introduced in
-H4.
+The package only passes typed requests/results between existing services and
+adapters. It does not own a second checker, evidence ledger, Unknown registry,
+correlator or certificate verifier. H4 introduced it and added dependency checks.
+Static, dynamic and diagnostics do not import workflow, while evaluation remains a
+workload-manifest and campaign owner.
 
 ## Next atomic change
 
-H4 composes the existing route services and computes `CorrelationBinding` from the
-static result, the bound dynamic trace, and the shared workload request. It must not
-infer a match from route-local scope labels or alter either route's verdict.
+H4 now composes the existing routes and computes typed cross-route bindings. H5 adds
+one versioned workflow report around that result; it must retain both route verdicts
+and the trace-bound limitation without inventing a merged `SAFE` verdict.

@@ -62,6 +62,7 @@ def test_static_and_dynamic_routes_have_no_cross_route_imports() -> None:
         assert all(
             not imported.startswith("bmo_check_dynamic")
             and not imported.startswith("bmo_check_diagnostics")
+            and not imported.startswith("bmo_check_workflow")
             and not imported.startswith("bmo_check_evaluation")
             for imported in _package_imports(path)
         ), path
@@ -69,6 +70,7 @@ def test_static_and_dynamic_routes_have_no_cross_route_imports() -> None:
         assert all(
             not imported.startswith("bmo_check_static")
             and not imported.startswith("bmo_check_diagnostics")
+            and not imported.startswith("bmo_check_workflow")
             and not imported.startswith("bmo_check_evaluation")
             for imported in _package_imports(path)
         ), path
@@ -79,6 +81,7 @@ def test_static_and_dynamic_routes_have_no_cross_route_imports() -> None:
             and not imported.startswith("bmo_check_diagnostics")
             and not imported.startswith("bmo_check_evaluation")
             and not imported.startswith("bmo_check_cli")
+            and not imported.startswith("bmo_check_workflow")
             for imported in _package_imports(path)
         ), path
 
@@ -89,6 +92,7 @@ def test_evaluation_service_does_not_import_route_cli() -> None:
         "bmo_check_static.cli",
         "bmo_check_dynamic.cli",
         "bmo_check_cli",
+        "bmo_check_workflow",
     }
     for path in (src / "bmo_check_evaluation").rglob("*.py"):
         assert _package_imports(path).isdisjoint(forbidden), path
@@ -98,6 +102,50 @@ def test_static_cli_does_not_own_parsec_evaluation_policy() -> None:
     src = Path(__file__).resolve().parents[2] / "src"
     imports = _package_imports(src / "bmo_check_static" / "cli.py")
     assert "bmo_check_static.evaluation" not in imports
+
+
+def test_workflow_uses_route_application_boundaries_only() -> None:
+    src = Path(__file__).resolve().parents[2] / "src"
+    workflow_root = src / "bmo_check_workflow"
+    forbidden_prefixes = (
+        "bmo_check_cli",
+        "bmo_check_evaluation",
+        "bmo_check_static.analysis",
+        "bmo_check_static.binary",
+        "bmo_check_static.controlflow",
+        "bmo_check_static.proof",
+        "bmo_check_static.slicing",
+        "bmo_check_static.synchronization",
+        "bmo_check_static.threading",
+        "bmo_check_dynamic.analysis",
+        "bmo_check_dynamic.capture",
+        "bmo_check_dynamic.pipeline",
+        "bmo_check_dynamic.proof",
+        "bmo_check_dynamic.storage",
+        "bmo_check_dynamic.trace",
+    )
+    for path in workflow_root.rglob("*.py"):
+        imports = _package_imports(path)
+        assert all(
+            not imported.startswith(prefix)
+            for imported in imports
+            for prefix in forbidden_prefixes
+        ), path
+
+
+def test_diagnostics_do_not_import_workflow_or_routes() -> None:
+    src = Path(__file__).resolve().parents[2] / "src"
+    for path in (src / "bmo_check_diagnostics").rglob("*.py"):
+        imports = _package_imports(path)
+        assert all(
+            not imported.startswith(prefix)
+            for imported in imports
+            for prefix in (
+                "bmo_check_static",
+                "bmo_check_dynamic",
+                "bmo_check_workflow",
+            )
+        ), path
 
 
 def test_semantic_routes_do_not_branch_on_benchmark_names() -> None:

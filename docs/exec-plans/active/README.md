@@ -39,10 +39,11 @@ Affine diagnostic workstream:
   `mo-off` contract.
 
 Latest WSL2 validation (2026-09-15): the default repository suite passes
-`403 passed, 10 skipped, 0 failed`; the skips are native-capture requirements and
+`410 passed, 10 skipped, 0 failed`; the skips are native-capture requirements and
 the opt-in real-ELF profile. E3-H0 focused characterization tests pass `49` cases;
 E3-H1 unmatched-classification tests pass `27`; E3-H2 obligation/report tests pass
-`26`; E3-H3 trace-binding/correlation tests pass `38`. The separately recorded
-E2.5 herd7 and real-ELF results remain the frozen baseline.
+`26`; E3-H3 trace-binding/correlation tests pass `38`; E3-H4 workflow/architecture
+tests pass `12`. The separately recorded E2.5 herd7 and real-ELF results remain the
+frozen baseline.
 
 每个阶段都以“不完整证据只能产生 UNKNOWN”为共同验收条件。

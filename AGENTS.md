@@ -50,6 +50,7 @@ The accepted target graph is:
 ```text
 static / dynamic / diagnostics -> bmo_check_core
 evaluation -> static / dynamic / diagnostics / core
+workflow -> static / dynamic / diagnostics / core
 CLI -> application services
 ```
 
@@ -57,6 +58,8 @@ Forbidden:
 
 - static importing dynamic or diagnostics;
 - dynamic importing static or diagnostics;
+- static, dynamic, diagnostics, evaluation or core importing workflow;
+- workflow importing route internals, evaluation or CLI;
 - core importing any implementation, evaluation or CLI package;
 - proof/certificate code importing PARSEC manifests;
 - core semantic branches on benchmark names.
@@ -68,6 +71,11 @@ model or a generic `common` dumping ground.
 `bmo_check_core.contracts` is the canonical DBT memory-order interpretation. The
 read-only snapshot types in `bmo_check_core.diagnostics` are the only allowed
 boundary for future static/dynamic correlation; they do not change verdicts.
+
+`bmo_check_workflow` is the neutral owner for one-workload orchestration. It may call
+the static and dynamic application services and pass their immutable snapshots to
+diagnostics, but it must not implement recovery, checking, correlation or proof rules.
+The static and dynamic routes remain independently usable and do not import workflow.
 
 The recovery producers expose opt-in canonical ledgers as migration seams. The static
 application service's `analyze_with_evidence` translates the complete legacy report,
@@ -122,6 +130,9 @@ reproduction path and a reviewed reason that a synthetic fixture is insufficient
 bmo-check capture|analyze|run|campaign|explain|locate|diagnose
 bmo-check-static fingerprint|recover|slice|analyze|explain|evaluate
 ```
+
+The H4 Python workflow API is `bmo_check_workflow.analyze_workload`; the one-workload
+CLI and serialized hybrid report are scheduled for H5–H6.
 
 `diagnose` consumes only typed static/dynamic snapshots and writes a versioned
 diagnostic report. It may correlate observations and create hints, but must not attach
