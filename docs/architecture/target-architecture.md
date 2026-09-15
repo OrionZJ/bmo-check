@@ -441,3 +441,38 @@ The target architecture is complete only when CI checks:
 - unsupported schema versions fail closed;
 - ambiguous correlation cannot be serialized as exact;
 - legacy adapters are listed with owners and deletion conditions.
+
+## 16. Deferred direction: policy-parameterized cross-ISA verification
+
+This is a future architecture discussion, not part of the currently accepted
+implementation scope. The current checker, E2.5 oracle, certificates and all
+ongoing E3 experiments continue to use the canonical DBT6 `mo-off` contract
+with RVWMO. No policy abstraction or Box64 model is implemented in this phase.
+
+After the static + dynamic + diagnostics workflow is complete and stable, a
+separate design review may consider making the translation/lowering policy an
+explicit verifier input:
+
+```text
+guest binary + source memory model + translation policy + target memory model
+    -> BMoCheck
+```
+
+Potential later case studies include the current DBT6 `mo-off` policy, Box64-like
+TSO levels 0–4, and other x86-to-RISC-V lowering rules. This would be a
+versioned policy boundary, not a change to the current canonical DBT6 rule. Any
+future certificate would need to bind the exact policy identity/version and
+source/target model versions used by the analysis.
+
+The meaningful validation unit for a workload-specific result is the
+application, its loaded library closure, workload/input, and selected policy.
+A result such as `Foo + libjvm + workload W under P1 -> TRACE_SAFE` is bound to
+that execution. It must not be generalized to claim that `libjvm` is universally
+safe under P1. Static claims likewise remain limited to the binary closure and
+scope actually proved.
+
+Comparisons between policies must use their induced target-ordering relations
+on a common supported instruction/model domain. Policy names or level numbers
+do not establish a strength ordering; any inclusion or equivalence claim must
+be checked from the rules themselves. This direction does not change verdict
+semantics or permit dynamic observations to enter static proof closure.

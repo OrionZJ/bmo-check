@@ -30,15 +30,17 @@ Affine diagnostic workstream:
   complete. The six-case representative profile, all-2,595 source herd7 sweep,
   real-ELF recovery profile, and static/dynamic characterization are the
   correctness baseline; see `e2-5-litmus-elf-correctness.md`.
-- E3 corpus measurement and generic static precision improvement — the full
-  2,595-ELF measurement is complete. Its `UNKNOWN` distribution and the first
-  E3.1 recommendation are recorded in `e3-corpus-measurement.md`; no analyzer
-  precision fix has started.
+- E3 — first complete the static + dynamic + diagnostics workflow. The 2,595-ELF
+  static measurement and the original thread/lifecycle E3.1 plan remain preserved;
+  E3.1 implementation is paused while the integrated workflow is built. See
+  `e3-hybrid-workflow.md` and `e3-corpus-measurement.md`. Policy-parameterized
+  cross-ISA verification (including a possible Box64 case study) is deferred
+  until this workflow is stable; current experiments remain on the DBT6
+  `mo-off` contract.
 
-Latest WSL2 validation (2026-09-13): the E2.5 herd7 refresh and real-ELF profile
-completed; the repository suite passes `374 passed, 10 skipped, 0 failed`.
-The opt-in real-ELF profile separately passes `1 passed` against the pinned
-litmus corpus and `x86lib`. Native-capture and external-ELF checks remain
-skipped in the default suite unless their environment/profile is requested.
+Latest WSL2 validation (2026-09-15): the default repository suite passes
+`386 passed, 10 skipped, 0 failed`; the skips are native-capture requirements and
+the opt-in real-ELF profile. E3-H0 focused characterization tests pass `49` cases.
+The separately recorded E2.5 herd7 and real-ELF results remain the frozen baseline.
 
 每个阶段都以“不完整证据只能产生 UNKNOWN”为共同验收条件。

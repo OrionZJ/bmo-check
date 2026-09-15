@@ -1,12 +1,21 @@
-# E3 corpus measurement and first capability selection
+# E3 corpus measurement and deferred static precision roadmap
 
-状态：measurement 已完成；E2.5 correctness baseline 已冻结；本文件不授权修改
-analyzer 的证明门槛或 verdict 语义。
+状态：2,595-ELF measurement 已完成并冻结；E2.5 correctness baseline 已冻结。
+原 E3.1 首选能力与 atomic plan 保留为后续 static precision roadmap，不再是当前
+E3 的执行顺序。当前先完成动静结合诊断 workflow，见
+`e3-hybrid-workflow.md`。本文件不授权修改 analyzer 的证明门槛或 verdict 语义。
 
 记录日期：2026-09-13  
 输入 corpus：`litmus-tests-x86/elf-tests` 及其对应的
 `tests/non-mixed-size` source。  
 外部结果目录：`E:\bmo-check-e2-5-full`（WSL：`/mnt/e/bmo-check-e2-5-full`）。
+
+## 2026-09-15 路线更新
+
+- 保留本文件的全量 corpus 数字、root-cause/co-occurrence 限制和原 E3.1 选择依据；它们仍是静态 precision 的冻结 baseline。
+- 原 E3.1 的 thread/lifecycle 方案及其已提交代码不回退、不删除，但暂停继续扩展。据用户此前报告，100-ELF 试跑仍全部为 `UNKNOWN`；该 pilot 未纳入本文件的全量数据，不替代全量 measurement，也不用于宣称 coverage 改善。
+- 未来恢复 E3.1 或选择 function-effect、escape、affine 等能力前，先完成 `e3-hybrid-workflow.md`，再综合真实关联诊断、canneal evidence 和本文件的 corpus measurement 选择 1–2 个 generic gap。
+- E2.5 与本文件的静态 baseline 均不因 dynamic observation、herd outcome 或 workload 名称改变。
 
 ## A. E2.5 frozen baseline
 
@@ -164,7 +173,7 @@ Unknown。
 unsupported 或 pipeline error。也没有在这次 static-only sweep 中测量 oracle
 mismatch；不能把“未测量”写成 0。
 
-## E. E3.1 recommendation
+## E. Historical first recommendation: E3.1 thread/lifecycle (deferred)
 
 ### E.1 首选：context-sensitive thread/lifecycle provenance recovery
 
@@ -232,10 +241,11 @@ certificate proof-closure 回归全绿。改进只能新增可追溯的 `ProofFa
 `ObservedFact`、herd outcome、一次运行的地址或 benchmark 名称变成 proof，也不能
 为了 coverage 删除 relevant Unknown。
 
-## F. 后续 atomic implementation plan
+## F. Historical E3.1 atomic implementation plan (paused)
 
-当前 measurement 只新增/使用紧凑报告脚本，未改 analyzer 语义。未来 E3.1 按以下
-可独立回滚的提交推进：
+以下记录描述 2026-09-13 measurement 当时的代码状态；之后已有部分 E3.1
+thread/lifecycle commits，本计划现已暂停。下面的步骤仍保留为静态 precision
+roadmap，不是当前执行顺序：
 
 1. **Characterize stage provenance**：扩展每条 compact row 的 stage/Unknown
    provenance 字段，解决本次 `recovery_failure_elfs=not_stage_separated` 的

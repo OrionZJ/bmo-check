@@ -15,9 +15,15 @@ from bmo_check_core import (
 )
 from bmo_check_dynamic.adapters import dynamic_snapshot_from_trace
 from bmo_check_dynamic.cli import main
-from bmo_check_dynamic.model import EventKind, TraceEvent
+from bmo_check_dynamic.model import (
+    DynamicCertificate,
+    EventKind,
+    TraceEvent,
+    TraceScope,
+    TraceVerdict,
+)
 from bmo_check_dynamic.model import BinaryFingerprint
-from bmo_check_dynamic.trace import TraceWriter
+from bmo_check_dynamic.trace import TraceWriter, trace_digest
 from bmo_check_diagnostics.serialization import save_snapshot
 
 
@@ -74,6 +80,45 @@ def test_dynamic_adapter_streams_sites_and_keeps_trace_identity(
     assert attrs["address_samples"] == "0x4000,0x4004"
     assert attrs["stride_candidates"] == "4"
     assert attrs["address_sample_complete"] == "true"
+
+
+def test_h0_manifest_certificate_and_snapshot_use_distinct_trace_identities(
+    trace_manifest, tmp_path: Path
+) -> None:
+    trace_dir = tmp_path / "trace"
+    manifest = trace_manifest(trace_dir)
+    _write_trace(trace_dir, Path(manifest.executable.path))
+
+    snapshot = dynamic_snapshot_from_trace(trace_dir)
+    certificate = DynamicCertificate(
+        verdict=TraceVerdict.UNKNOWN,
+        scope=TraceScope(
+            trace_ids=(manifest.trace_id,),
+            trace_sha256=(trace_digest(trace_dir),),
+            executable=manifest.executable,
+            libraries=manifest.libraries,
+            commands=(manifest.command,),
+            working_directories=(manifest.working_directory,),
+            analysis_scope="full",
+        ),
+        dbt_contract_sha256="c" * 64,
+        analyzer_version="h0-characterization",
+        trace_complete=True,
+        event_count=2,
+        thread_count=1,
+        object_count=0,
+        unique_pc_count=1,
+        communication_edge_count=0,
+        indirect_target_count=0,
+    )
+
+    # The route certificate uses the manifest's launcher ID; the diagnostic
+    # adapter derives a content-bound TraceId. H3 must join them by verified
+    # trace bindings, not by comparing these identifiers directly.
+    assert certificate.scope.trace_ids == (manifest.trace_id,)
+    assert certificate.scope.trace_sha256 == (trace_digest(trace_dir),)
+    assert snapshot.trace_id.value != manifest.trace_id
+    assert snapshot.binary_closure is not None
 
 
 def test_site_filter_keeps_trace_integrity_but_bounds_retained_sites(
