@@ -57,10 +57,12 @@ proof。样本集合达到上限、trace 不完整或 operand 相关不唯一时
 `Incomplete`/`Ambiguous` 状态。
 
 E2 的 `AffineValidationReport` 单独列出 canneal（或任何其他输入）的 affine
-Unknown 覆盖。它把 `exercised`、`ambiguous`、`unmatched` 和明确没有动态候选的
-`not_executed` 分开，并原样复制静态 verdict。`--affine-output` 生成的文件不
-进入静态证书，也不能关闭 Unknown；只有后续纯静态分析产生新的 `ProofFact`
-才可以改变静态结论。
+Unknown 覆盖。它把 `exercised`、`ambiguous`、`unmatched` 和 `not_executed` 分开，
+并原样复制静态 verdict。只有所有 trace 完整、相关报告携带已验证且匹配的跨路由
+binding、并且静态 site 有稳定 subject 或指令位置时，才把无观察记为
+`not_executed`。其他情况仍是 `unmatched`/`NotObserved`；不完整 trace 中没找到
+事件不能说明该 site 没执行。`--affine-output` 生成的文件不进入静态证书，也
+不能关闭 Unknown；只有后续纯静态分析产生新的 `ProofFact` 才可以改变静态结论。
 
 当 `diagnose` 同时指定 `--affine-output` 和 `--trace` 时，如果静态 Unknown 的
 provenance 含有模块/PC，适配器会以这些位置作为 `site_filter`。原始 trace 仍

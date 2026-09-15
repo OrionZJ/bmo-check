@@ -5,8 +5,12 @@ import json
 import pytest
 
 from bmo_check_core import (
+    BindingCheck,
+    BindingDimension,
+    BindingStatus,
     BinaryClosureId,
     CertificateVerdict,
+    CorrelationBinding,
     DynamicDiagnosticSnapshot,
     EvidenceAttribute,
     EvidenceSnapshot,
@@ -30,7 +34,10 @@ from bmo_check_diagnostics import (
     site_filter_for_affine_unknowns,
     summarize_observed_affine_patterns,
 )
-from bmo_check_diagnostics.correlation import CorrelationStatus
+from bmo_check_diagnostics.correlation import (
+    CorrelationStatus,
+    correlate_unknowns,
+)
 
 
 HASH = "a" * 64
@@ -97,6 +104,19 @@ def _inputs() -> tuple[StaticDiagnosticSnapshot, DynamicDiagnosticSnapshot, Unkn
         binary_closure=closure,
     )
     return static, dynamic, unknown
+
+
+def _matching_binding() -> CorrelationBinding:
+    return CorrelationBinding(
+        tuple(
+            BindingCheck(
+                dimension=dimension,
+                status=BindingStatus.MATCH,
+                reason=f"test fixture binds {dimension.value}",
+            )
+            for dimension in BindingDimension
+        )
+    )
 
 
 def test_observed_affine_summary_is_stable_but_not_a_static_proof() -> None:
@@ -184,9 +204,50 @@ def test_unobserved_affine_unknown_is_reported_without_changing_static_verdict()
     assert report.static_verdict == CertificateVerdict.UNKNOWN
     assert report.exercised_count == 0
     assert report.ambiguous_count == 0
-    assert report.not_executed_count == 1
+    assert report.not_executed_count == 0
     assert report.unmatched_count == 1
     assert report.patterns[0].status == ObservedAffineStatus.NOT_OBSERVED
+
+
+def test_not_executed_count_requires_complete_trace_and_verified_binding() -> None:
+    static, dynamic, _unknown = _inputs()
+    empty = DynamicDiagnosticSnapshot(
+        schema_version=dynamic.schema_version,
+        trace_id=dynamic.trace_id,
+        scope=dynamic.scope,
+        complete=True,
+        evidence=EvidenceSnapshot(),
+        binary_closure=dynamic.binary_closure,
+    )
+    correlations = correlate_unknowns(static, empty, binding=_matching_binding())
+
+    complete_report = build_affine_validation_report(
+        static,
+        empty,
+        correlations=(correlations,),
+    )
+    assert complete_report.not_executed_count == 1
+
+    incomplete = DynamicDiagnosticSnapshot(
+        schema_version=empty.schema_version,
+        trace_id=empty.trace_id,
+        scope=empty.scope,
+        complete=False,
+        evidence=empty.evidence,
+        binary_closure=empty.binary_closure,
+    )
+    incomplete_correlations = correlate_unknowns(
+        static,
+        incomplete,
+        binding=_matching_binding(),
+    )
+    incomplete_report = build_affine_validation_report(
+        static,
+        incomplete,
+        correlations=(incomplete_correlations,),
+    )
+    assert incomplete_report.trace_complete is False
+    assert incomplete_report.not_executed_count == 0
 
 
 def test_non_memory_match_does_not_count_as_an_affine_address_observation() -> None:

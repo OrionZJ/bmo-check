@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Final
 
 from bmo_check_core import (
+    BindingStatus,
     CertificateVerdict,
     DynamicDiagnosticSnapshot,
     EvidenceId,
@@ -664,13 +665,17 @@ def build_affine_validation_report(
     )
     records: tuple[CorrelationRecord, ...]
     if supplied is None:
+        correlation_reports: tuple[object, ...] = tuple(
+            correlate_unknowns(static, item) for item in dynamics
+        )
         records = tuple(
             record
-            for item in dynamics
-            for record in correlate_unknowns(static, item).records
+            for report in correlation_reports
+            for record in getattr(report, "records", ())
             if record.unknown_id in {pattern.unknown_id for pattern in patterns}
         )
     else:
+        correlation_reports = supplied
         records = tuple(
             record
             for report in supplied
@@ -680,6 +685,21 @@ def build_affine_validation_report(
     by_unknown: dict[EvidenceId, list[CorrelationRecord]] = defaultdict(list)
     for record in records:
         by_unknown[record.unknown_id].append(record)
+    dynamic_trace_ids = {item.trace_id for item in dynamics}
+    complete_bound_trace_ids = {
+        report.trace_id
+        for report in correlation_reports
+        if isinstance(report, DiagnosticCorrelationReport)
+        and report.trace_complete
+        and report.binding is not None
+        and report.binding.status == BindingStatus.MATCH
+        and report.trace_id in dynamic_trace_ids
+    }
+    can_classify_unobserved = (
+        all(item.complete for item in dynamics)
+        and complete_bound_trace_ids == dynamic_trace_ids
+        and len(correlation_reports) == len(dynamics)
+    )
     exercised = ambiguous = unmatched = not_executed = 0
     for pattern in patterns:
         item_records = tuple(by_unknown.get(pattern.unknown_id, ()))
@@ -693,8 +713,12 @@ def build_affine_validation_report(
             ambiguous += 1
         else:
             unmatched += 1
-            if item_records and all(
-                not record.observed_ids and record.key != CorrelationKey.BINARY_CLOSURE
+            # 只有完整 trace 和已核对的跨路由绑定都证明覆盖范围相同，
+            # 才能把“没有观察到”写成“本次没有执行”。
+            if can_classify_unobserved and item_records and all(
+                not record.observed_ids
+                and record.status == CorrelationStatus.UNMATCHED
+                and record.key in {CorrelationKey.SUBJECT, CorrelationKey.INSTRUCTION}
                 for record in item_records
             ):
                 not_executed += 1
