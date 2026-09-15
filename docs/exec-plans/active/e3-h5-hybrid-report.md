@@ -47,6 +47,22 @@ certificate and that every closure node is a `ProofFact`. This report is an audi
 summary, not a replacement for replaying either route's certificate; loading JSON
 does not independently recreate the evidence ledger or prove its listed closure IDs.
 
+The three completeness fields have different scopes and must not be equated:
+
+- `dynamic.manifest.complete` records whether the capture launcher reached a clean
+  process exit.
+- `dynamic.certificate.trace_complete` records whether the raw trace passed structural
+  validation. Model gaps remain separately listed in `unknown_reasons`.
+- `diagnostics.d4_report.trace_complete` records whether the diagnostic adapter could
+  normalize all of the event sites it examined. It may be false for a structurally
+  complete trace, for example when an observed PC belongs to an unbound `[vdso]`
+  mapping.
+
+The report only accepts the sound implication chain
+`D4 complete -> structurally complete trace -> clean capture`. The reverse implications
+do not hold; the report preserves each narrower status instead of rejecting the whole
+workflow when diagnostics have less module coverage than the dynamic checker.
+
 Environment values are represented by SHA-256 digests rather than copied into the
 report. A digest is not encryption: predictable values may still be guessed. The
 trace manifest remains the source artifact containing original capture metadata.

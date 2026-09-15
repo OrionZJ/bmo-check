@@ -63,6 +63,7 @@ from bmo_check_static.model import (
 from bmo_check_static.proof.certificate_bridge import StaticCertificateEvidence
 from bmo_check_workflow import (
     DiagnosticProducts,
+    HybridReportError,
     HybridWorkflowReport,
     HybridWorkflowResult,
     build_hybrid_workflow_report,
@@ -84,6 +85,9 @@ def _result(
     *,
     dynamic_scope: str = "full",
     canonical_static: bool = True,
+    capture_complete: bool = True,
+    certificate_trace_complete: bool = True,
+    diagnostic_snapshot_complete: bool = True,
 ) -> HybridWorkflowResult:
     closure = BinaryClosureId.from_parts(
         HASH,
@@ -130,7 +134,7 @@ def _result(
         libraries=(),
         dynamorio_version="11.3.0",
         client_version="test-client",
-        complete=True,
+        complete=capture_complete,
         exit_code=0,
         dropped_events=0,
         dropped_by_reason={},
@@ -138,7 +142,11 @@ def _result(
     )
     contract_digest = hashlib.sha256(b"dbt6-mo-off-v1 test contract").hexdigest()
     certificate = DynamicCertificate(
-        verdict=TraceVerdict.TRACE_SAFE,
+        verdict=(
+            TraceVerdict.TRACE_SAFE
+            if certificate_trace_complete
+            else TraceVerdict.UNKNOWN
+        ),
         scope=TraceScope(
             trace_ids=(manifest.trace_id,),
             trace_sha256=(TRACE_HASH,),
@@ -150,13 +158,18 @@ def _result(
         ),
         dbt_contract_sha256=contract_digest,
         analyzer_version="test-analyzer",
-        trace_complete=True,
+        trace_complete=certificate_trace_complete,
         event_count=2,
         thread_count=1,
         object_count=1,
         unique_pc_count=1,
         communication_edge_count=0,
         indirect_target_count=0,
+        unknown_reasons=(
+            ()
+            if certificate_trace_complete
+            else ("trace structure could not be validated",)
+        ),
     )
     content_trace_id = TraceId.from_parts(
         "trace-v1",
@@ -178,12 +191,24 @@ def _result(
             EvidenceAttribute("sample_complete", "true"),
         ),
     )
+    diagnostic_nodes = (observed,)
+    if not diagnostic_snapshot_complete:
+        diagnostic_nodes += (
+            UnknownFact.create(
+                schema_version="unknown-v1",
+                producer=ProducerId("dynamic-test", "workflow-report"),
+                kind=UnknownKind.UNSUPPORTED_INPUT,
+                reason="module has no bound fingerprint: [vdso]",
+                subject=None,
+                scope=f"dynamic.{dynamic_scope}",
+            ),
+        )
     dynamic_snapshot = DynamicDiagnosticSnapshot(
         schema_version="dynamic-diagnostic-v1",
         trace_id=content_trace_id,
         scope=f"dynamic.{dynamic_scope}",
-        complete=True,
-        evidence=EvidenceSnapshot((observed,)),
+        complete=diagnostic_snapshot_complete,
+        evidence=EvidenceSnapshot(diagnostic_nodes),
         binary_closure=closure,
     )
     bound = BoundDynamicEvidence(
@@ -365,6 +390,41 @@ def test_hybrid_report_keeps_route_results_and_d4_e1_children_round_trip(
     out_path = tmp_path / "report" / "hybrid.json"
     save_hybrid_workflow_report(report, out_path)
     assert load_hybrid_workflow_report(out_path) == report
+
+
+def test_diagnostic_snapshot_may_be_incomplete_for_a_structurally_complete_trace(
+    tmp_path: Path,
+) -> None:
+    report = build_hybrid_workflow_report(
+        _result(tmp_path, diagnostic_snapshot_complete=False)
+    )
+
+    assert report.dynamic.manifest.complete
+    assert report.dynamic.certificate.trace_complete
+    assert report.diagnostics is not None
+    d4 = report.diagnostics.d4_report
+    assert not d4.trace_complete
+    assert [item.reason for item in d4.dynamic_unknowns] == [
+        "module has no bound fingerprint: [vdso]"
+    ]
+
+
+def test_hybrid_report_rejects_completeness_claims_that_exceed_their_input(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(HybridReportError, match="capture manifest is incomplete"):
+        build_hybrid_workflow_report(
+            _result(tmp_path, capture_complete=False)
+        )
+
+    with pytest.raises(HybridReportError, match="structurally incomplete trace"):
+        build_hybrid_workflow_report(
+            _result(
+                tmp_path,
+                certificate_trace_complete=False,
+                diagnostic_snapshot_complete=True,
+            )
+        )
 
 
 def test_hybrid_report_rejects_unknown_schema_and_implicit_combined_verdict(

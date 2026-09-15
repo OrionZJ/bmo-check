@@ -942,8 +942,11 @@ class DynamicWorkflowSummary(_StrictModel):
             raise ValueError("dynamic certificate and manifest commands differ")
         if certificate.scope.working_directories != (manifest.working_directory,):
             raise ValueError("dynamic certificate and manifest working directories differ")
-        if certificate.trace_complete != manifest.complete:
-            raise ValueError("dynamic certificate and manifest completeness differ")
+        if certificate.trace_complete and not manifest.complete:
+            raise ValueError(
+                "dynamic certificate claims a structurally complete trace "
+                "while the capture manifest is incomplete"
+            )
         if certificate.scope.analysis_scope not in {"full", "application"}:
             raise ValueError("dynamic certificate has an unsupported analysis scope")
         if not self.content_trace_id:
@@ -1009,8 +1012,11 @@ class HybridWorkflowReport(_StrictModel):
                 raise ValueError("diagnostic child report changed the static verdict")
             if d4.trace_id != self.dynamic.content_trace_id:
                 raise ValueError("D4 report is bound to another trace content identity")
-            if d4.trace_complete != self.dynamic.certificate.trace_complete:
-                raise ValueError("D4 and dynamic certificate completeness differ")
+            if d4.trace_complete and not self.dynamic.certificate.trace_complete:
+                raise ValueError(
+                    "D4 claims complete diagnostic observations for a "
+                    "structurally incomplete trace"
+                )
             if d4.trace_certificate.trace_id != self.dynamic.content_trace_id:
                 raise ValueError("D4 certificate identity is bound to another content TraceId")
             if d4.trace_certificate.scope != (

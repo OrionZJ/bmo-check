@@ -271,7 +271,7 @@ class DynamicDiagnosticSnapshot:
     trace_id: TraceId
     # scope 限定动态 Unknown 的采集范围和资源预算。
     scope: str
-    # complete=False 时诊断只能解释缺口，不能生成 TRACE_SAFE。
+    # False 表示有些 trace event 不能归一化；原始 trace 仍可能通过结构校验。
     complete: bool
     # evidence 允许 ObservedFact/UnknownFact，不允许静态 ProofFact。
     evidence: EvidenceSnapshot

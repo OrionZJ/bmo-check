@@ -84,6 +84,7 @@ class DynamicCertificate(StrictModel):
     scope: TraceScope
     dbt_contract_sha256: str
     analyzer_version: str
+    # 这里只表示 trace 记录本身通过结构校验；诊断 snapshot 还要绑定每个站点的模块身份。
     trace_complete: bool
     event_count: int
     thread_count: int
