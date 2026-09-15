@@ -74,10 +74,64 @@ def test_correlation_context_never_turns_observation_into_proof() -> None:
         reason="no observed fact has the same stable subject",
     )
 
-    result = classify_unknown(unknown, correlation=correlation)
+    result = classify_unknown(
+        unknown,
+        correlation=correlation,
+        trace_complete=True,
+    )
 
-    assert result.root_cause == DiagnosticRootCause.NOT_EXECUTED_IN_OBSERVED_TRACE
+    assert result.root_cause == DiagnosticRootCause.UNKNOWN_ROOT_CAUSE
     assert result.confidence == 0
+    assert "workload and scope compatibility are not bound" in result.rationale
+
+
+@pytest.mark.parametrize(
+    ("key", "reason", "trace_complete", "expected_detail"),
+    (
+        (
+            CorrelationKey.BINARY_CLOSURE,
+            "static and dynamic binary closures differ",
+            True,
+            "binary closures differ",
+        ),
+        (
+            CorrelationKey.NONE,
+            "static Unknown has no stable subject or location",
+            True,
+            "no stable site identity",
+        ),
+        (
+            CorrelationKey.SUBJECT,
+            "no observed fact has the same stable subject",
+            False,
+            "trace is incomplete",
+        ),
+    ),
+)
+def test_unmatched_reason_never_becomes_a_not_executed_claim(
+    key: CorrelationKey,
+    reason: str,
+    trace_complete: bool,
+    expected_detail: str,
+) -> None:
+    unknown = _unknown(UnknownKind.UNKNOWN_ROOT_CAUSE)
+    correlation = CorrelationRecord(
+        unknown_id=unknown.id,
+        observed_ids=(),
+        status=CorrelationStatus.UNMATCHED,
+        key=key,
+        reason=reason,
+    )
+
+    result = classify_unknown(
+        unknown,
+        correlation=correlation,
+        trace_complete=trace_complete,
+    )
+
+    assert result.root_cause == DiagnosticRootCause.UNKNOWN_ROOT_CAUSE
+    assert result.confidence == 0
+    assert expected_detail in result.rationale
 
 
 def test_correlation_for_another_unknown_is_rejected() -> None:

@@ -401,6 +401,8 @@ def _selected_records(
 def _make_hints(
     static: StaticDiagnosticSnapshot,
     records: tuple[CorrelationRecord, ...],
+    *,
+    trace_complete: bool,
 ) -> tuple[DiagnosticHint, ...]:
     unknowns = {
         node.id: node
@@ -414,7 +416,11 @@ def _make_hints(
             raise DiagnosticReportError(
                 f"correlation references an absent static Unknown: {record.unknown_id.value}"
             )
-        classification = classify_unknown(unknown, correlation=record)
+        classification = classify_unknown(
+            unknown,
+            correlation=record,
+            trace_complete=trace_complete,
+        )
         # 相关状态比分类器更严格：没有稳定候选时，提示不能显示为高置信度。
         status_cap = {
             CorrelationStatus.EXACT: 1.0,
@@ -558,7 +564,11 @@ def build_diagnostic_report(
             observed_facts=observations,
             dynamic_unknowns=dynamic_unknowns,
             coverage=coverage,
-            hints=_make_hints(static, selected_correlation.records),
+            hints=_make_hints(
+                static,
+                selected_correlation.records,
+                trace_complete=dynamic.complete,
+            ),
         )
     except (TypeError, ValueError) as error:
         raise DiagnosticReportError(f"diagnostic report construction failed: {error}") from error

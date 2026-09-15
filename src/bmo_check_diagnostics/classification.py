@@ -13,7 +13,7 @@ from types import MappingProxyType
 
 from bmo_check_core import EvidenceId, UnknownFact, UnknownKind
 
-from .correlation import CorrelationRecord, CorrelationStatus
+from .correlation import CorrelationKey, CorrelationRecord, CorrelationStatus
 
 
 class ClassificationError(ValueError):
@@ -69,7 +69,7 @@ _DESCRIPTIONS: dict[DiagnosticRootCause, str] = {
     DiagnosticRootCause.OPAQUE_CALL_BOUNDARY: "不透明调用的普通访存 effect 没有闭合",
     DiagnosticRootCause.UNRESOLVED_INDIRECT: "间接控制流目标集合没有闭合",
     DiagnosticRootCause.UNSUPPORTED_ADDRESS_NORMALIZATION: "地址形式无法归一化",
-    DiagnosticRootCause.NOT_EXECUTED_IN_OBSERVED_TRACE: "该静态 site 未出现在当前轨迹",
+    DiagnosticRootCause.NOT_EXECUTED_IN_OBSERVED_TRACE: "该静态 site 未出现在已绑定且完整的当前轨迹",
     DiagnosticRootCause.DYNAMIC_PATTERN_NOT_STABLE: "动态观察模式不足以形成稳定线索",
     DiagnosticRootCause.UNKNOWN_ROOT_CAUSE: "当前证据不足以分类根因",
 }
@@ -247,21 +247,41 @@ def classify_unknown(
     unknown: UnknownFact,
     *,
     correlation: CorrelationRecord | None = None,
+    trace_complete: bool | None = None,
 ) -> ClassificationResult:
     """分类一个 Unknown；动态相关状态只会降低/解释线索，不会造 proof。"""
 
     if not isinstance(unknown, UnknownFact):
         raise ClassificationError("classify_unknown expects an UnknownFact")
+    if trace_complete is not None and not isinstance(trace_complete, bool):
+        raise ClassificationError("trace_complete must be a bool when provided")
     if correlation is not None:
         if correlation.unknown_id != unknown.id:
             raise ClassificationError("correlation does not reference the Unknown")
         if correlation.status == CorrelationStatus.UNMATCHED and not correlation.observed_ids:
-            # 未命中只能说明当前 trace 没有给出观察，不能说明静态对象不存在。
+            # 快照还没有共同的 workload/scope binding。
+            # 因此，即使 trace 完整，也不能把“没匹配到”说成“该 site 没执行”。
+            if correlation.key == CorrelationKey.BINARY_CLOSURE:
+                detail = "static and dynamic binary closures differ"
+            elif correlation.key == CorrelationKey.NONE:
+                detail = "the static Unknown has no stable site identity"
+            elif trace_complete is False:
+                detail = "the dynamic trace is incomplete"
+            elif trace_complete is True:
+                detail = (
+                    "no same-site observation was found, but workload and scope "
+                    "compatibility are not bound"
+                )
+            else:
+                detail = "trace completeness and workload/scope compatibility are unbound"
             return ClassificationResult(
                 unknown_id=unknown.id,
-                root_cause=DiagnosticRootCause.NOT_EXECUTED_IN_OBSERVED_TRACE,
+                root_cause=DiagnosticRootCause.UNKNOWN_ROOT_CAUSE,
                 confidence=0.0,
-                rationale="当前轨迹没有可接受的同 site 观察；这不是 NoAlias 或静态证明",
+                rationale=(
+                    f"{detail}; {correlation.reason}. This is not evidence that "
+                    "the site was not executed, and it is not a static proof."
+                ),
             )
         if correlation.status == CorrelationStatus.AMBIGUOUS:
             return ClassificationResult(
@@ -277,12 +297,19 @@ def classify_unknown(
 def classify_unknowns(
     unknowns: tuple[UnknownFact, ...],
     correlations: tuple[CorrelationRecord, ...] = (),
+    *,
+    trace_complete: bool | None = None,
 ) -> tuple[ClassificationResult, ...]:
     """按稳定 EvidenceId 顺序分类一组 Unknown。"""
 
     by_id = {item.unknown_id: item for item in correlations}
     results = tuple(
-        classify_unknown(item, correlation=by_id.get(item.id)) for item in unknowns
+        classify_unknown(
+            item,
+            correlation=by_id.get(item.id),
+            trace_complete=trace_complete,
+        )
+        for item in unknowns
     )
     return tuple(sorted(results, key=lambda item: item.unknown_id.value))
 

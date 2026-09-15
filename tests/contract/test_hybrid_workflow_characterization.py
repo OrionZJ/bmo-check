@@ -20,6 +20,7 @@ from bmo_check_core import (
 )
 from bmo_check_diagnostics import (
     CorrelationStatus,
+    DiagnosticRootCause,
     affine_report_to_dict,
     build_affine_validation_report,
     build_diagnostic_report,
@@ -152,3 +153,14 @@ def test_h0_d4_selects_discharged_unknowns_from_snapshot_evidence() -> None:
         closed_unknown.id,
         open_unknown.id,
     }
+
+
+def test_h1_complete_unmatched_trace_does_not_claim_site_was_not_executed() -> None:
+    static, dynamic, _unknown = _snapshots(observations=False)
+
+    report = build_diagnostic_report(static, dynamic)
+
+    assert dynamic.complete is True
+    assert report.records[0].status == CorrelationStatus.UNMATCHED
+    assert report.hints[0].root_cause == DiagnosticRootCause.UNKNOWN_ROOT_CAUSE.value
+    assert "workload and scope compatibility are not bound" in report.hints[0].explanation
