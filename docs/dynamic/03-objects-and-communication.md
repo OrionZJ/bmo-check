@@ -12,6 +12,10 @@ TLS 标签不能证明地址没有逃逸。数值地址重叠时，即便对象�
 
 通信图按连通分量切窗，并把同一线程两端之间的 Fence/atomic/sync 边界带入窗口。窗口超过配置上限时不得拆掉关键边后继续证明。
 
+大轨迹的扫描器可把通信边交给 `CompactCommunicationEdges`。它保留原始边数、端点
+身份和精确重叠范围，只把中间图节点改成整数数组；真正进入 checker 的小窗口仍恢复
+原始 `CommunicationEdge`。因此紧凑存储是资源优化，不是新的共享状态过滤规则。
+
 THREAD_START 和 join 的 ticket 只描述观测到的生命周期，不能单独当作排序边。
 当前分析器只有在同一个父线程同时看到成功的 THREAD_CREATE、子线程的
 THREAD_START/THREAD_END 和成功的 THREAD_JOIN 时，才把父线程 create 前的访问与

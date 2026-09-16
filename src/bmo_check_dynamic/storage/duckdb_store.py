@@ -3,10 +3,15 @@ from __future__ import annotations
 import csv
 import tempfile
 from collections.abc import Iterable, Iterator
+from itertools import chain, islice
 from pathlib import Path
 from typing import Any
 
 from bmo_check_dynamic.model import EventFlags, EventKind, TraceEvent
+
+_EVENT_ID_QUERY_BATCH_SIZE = 10_000
+_EVENT_ID_BULK_LOOKUP_THRESHOLD = 50_000
+_EVENT_ID_INSERT_BATCH_SIZE = 100_000
 
 
 class TraceStoreError(RuntimeError):
@@ -51,6 +56,19 @@ class TraceStore:
                 event_id VARCHAR NOT NULL,
                 page UBIGINT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS direct_munmaps(
+                thread_id UINTEGER NOT NULL,
+                ticket UBIGINT NOT NULL,
+                address UBIGINT NOT NULL,
+                size UINTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS objects(
+                object_id VARCHAR,
+                base UBIGINT,
+                size UINTEGER,
+                start_ticket UBIGINT,
+                end_ticket UBIGINT
+            );
             """
         )
 
@@ -63,6 +81,7 @@ class TraceStore:
     ) -> tuple[int, tuple[str, ...]]:
         rows: list[tuple[object, ...]] = []
         page_rows: list[tuple[str, int]] = []
+        munmap_rows: list[tuple[int, int, int, int]] = []
         unsupported: list[str] = []
         count = 0
         pending_syscalls: dict[int, dict[str, object]] = {}
@@ -108,6 +127,23 @@ class TraceStore:
                     assert isinstance(arguments, dict)
                     number = int(pending["number"])
                     operation = int(arguments.get(1, -1))
+                    if (
+                        number == 11
+                        and len(arguments) == 6
+                        and event.value < (1 << 63)
+                        and 0 < int(arguments[1]) <= 0xFFFFFFFF
+                        and int(arguments[0]) + int(arguments[1]) <= 1 << 64
+                    ):
+                        # 直接 syscall 不会经过 drwrap 的 munmap_post。
+                        # 保存返回点，后续按完整 mapping generation 结束对象。
+                        munmap_rows.append(
+                            (
+                                event.thread_id,
+                                event.ticket,
+                                int(arguments[0]),
+                                int(arguments[1]),
+                            )
+                        )
                     # WAIT_BITSET/WAIT_PRIVATE 成功返回时，内核只读取同步字。
                     # 把它物化为读事件，才能让后续证明检查真实 read-from；
                     # wake、失败 wait 和未知 op 继续由 syscall effect 门拦截。
@@ -159,12 +195,15 @@ class TraceStore:
                 else:
                     page_rows.extend((event.event_id, page) for page in range(first, last + 1))
             if len(rows) >= batch_size:
-                self._flush(rows, page_rows)
-        self._flush(rows, page_rows)
+                self._flush(rows, page_rows, munmap_rows)
+        self._flush(rows, page_rows, munmap_rows)
         return count, tuple(unsupported)
 
     def _flush(
-        self, rows: list[tuple[object, ...]], page_rows: list[tuple[str, int]]
+        self,
+        rows: list[tuple[object, ...]],
+        page_rows: list[tuple[str, int]],
+        munmap_rows: list[tuple[int, int, int, int]],
     ) -> None:
         if rows:
             self._copy_rows(
@@ -188,6 +227,13 @@ class TraceStore:
         if page_rows:
             self._copy_rows("event_pages", ("event_id", "page"), page_rows)
             page_rows.clear()
+        if munmap_rows:
+            self._copy_rows(
+                "direct_munmaps",
+                ("thread_id", "ticket", "address", "size"),
+                munmap_rows,
+            )
+            munmap_rows.clear()
 
     def _copy_rows(
         self,
@@ -244,6 +290,13 @@ class TraceStore:
                     row_number() OVER (PARTITION BY address ORDER BY ticket) AS generation
                 FROM events
                 WHERE kind IN (20, 22, 24, 30) AND size > 0
+            ), endings AS (
+                SELECT ticket, address, size, kind
+                FROM events
+                WHERE kind IN (21, 23, 25, 31)
+                UNION ALL
+                SELECT ticket, address, size, 23 AS kind
+                FROM direct_munmaps
             )
             SELECT
                 concat(CASE kind
@@ -258,10 +311,16 @@ class TraceStore:
                 start_ticket,
                 (
                     SELECT min(f.ticket)
-                    FROM events f
-                    WHERE f.kind IN (21, 23, 25, 31)
-                      AND f.address = allocations.base
+                    FROM endings f
+                    WHERE f.address = allocations.base
                       AND f.ticket >= allocations.start_ticket
+                      AND CASE allocations.kind
+                          WHEN 20 THEN f.kind = 21
+                          WHEN 22 THEN f.kind = 23 AND f.size = allocations.size
+                          WHEN 24 THEN f.kind = 25
+                          WHEN 30 THEN f.kind = 31
+                          ELSE false
+                      END
                 ) AS end_ticket
             FROM allocations
             """
@@ -299,16 +358,55 @@ class TraceStore:
         )
 
     def get_events(self, event_ids: Iterable[str]) -> tuple[TraceEvent, ...]:
-        ids = tuple(event_ids)
-        if not ids:
+        iterator = iter(event_ids)
+        prefix = list(islice(iterator, _EVENT_ID_BULK_LOOKUP_THRESHOLD + 1))
+        if not prefix:
             return ()
-        placeholders = ",".join("?" for _ in ids)
-        rows = self.connection.execute(
-            "SELECT thread_id, sequence, ticket, pc, kind, address, size, value, flags, aux "
-            f"FROM events WHERE event_id IN ({placeholders}) ORDER BY thread_id, sequence",
-            ids,
-        ).fetchall()
-        return tuple(_row_to_event(row) for row in rows)
+
+        if len(prefix) <= _EVENT_ID_BULK_LOOKUP_THRESHOLD:
+            ids = tuple(prefix)
+            events: list[TraceEvent] = []
+            # 小窗口用主键查找更省；只有大量端点才切到整表顺序 join。
+            for start in range(0, len(ids), _EVENT_ID_QUERY_BATCH_SIZE):
+                batch = ids[start : start + _EVENT_ID_QUERY_BATCH_SIZE]
+                placeholders = ",".join("?" for _ in batch)
+                rows = self.connection.execute(
+                    "SELECT thread_id, sequence, ticket, pc, kind, address, size, "
+                    "value, flags, aux "
+                    f"FROM events WHERE event_id IN ({placeholders}) "
+                    "ORDER BY thread_id, sequence",
+                    batch,
+                ).fetchall()
+                events.extend(_row_to_event(row) for row in rows)
+            events.sort(key=lambda event: (event.thread_id, event.sequence))
+            return tuple(events)
+
+        # 大窗口若逐批按 event_id 查主键，会在 /mnt/e 上触发大量随机读。
+        # 把 ID 分批写入临时表后做一次 join，让 DuckDB 顺序扫描所需列。
+        table_name = "_bmo_requested_event_ids"
+        self.connection.execute(f"CREATE TEMP TABLE {table_name}(event_id VARCHAR)")
+        pending = chain(prefix, iterator)
+        try:
+            while batch := list(islice(pending, _EVENT_ID_INSERT_BATCH_SIZE)):
+                self.connection.execute(
+                    f"INSERT INTO {table_name} SELECT unnest(?::VARCHAR[])",
+                    (batch,),
+                )
+
+            cursor = self.connection.execute(
+                "SELECT events.thread_id, events.sequence, events.ticket, events.pc, "
+                "events.kind, events.address, events.size, events.value, "
+                "events.flags, events.aux "
+                "FROM events SEMI JOIN "
+                f"{table_name} requested USING (event_id)"
+            )
+            events = []
+            while rows := cursor.fetchmany(_EVENT_ID_INSERT_BATCH_SIZE):
+                events.extend(_row_to_event(row) for row in rows)
+            events.sort(key=lambda event: (event.thread_id, event.sequence))
+            return tuple(events)
+        finally:
+            self.connection.execute(f"DROP TABLE {table_name}")
 
     def events_between(self, thread_id: int, first: int, last: int) -> tuple[TraceEvent, ...]:
         rows = self.connection.execute(

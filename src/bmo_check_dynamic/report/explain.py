@@ -27,10 +27,13 @@ def explain_certificate(certificate: DynamicCertificate) -> str:
             f"{certificate.external_runtime_edge_count}"
         )
     if not certificate.communication_edges_complete:
-        lines.append(
-            "Communication edges: not enumerated; verified thread handoffs and "
-            "disjoint application writes were used"
-        )
+        if certificate.verdict == TraceVerdict.TRACE_SAFE:
+            lines.append(
+                "Communication edges: not enumerated; verified thread handoffs and "
+                "disjoint application writes were used"
+            )
+        else:
+            lines.append("Communication edges: enumeration incomplete")
     if certificate.verdict == TraceVerdict.TRACE_SAFE:
         lines.append(
             "Meaning: no RVWMO-only execution was found for the recorded event skeleton."

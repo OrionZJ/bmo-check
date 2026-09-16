@@ -271,8 +271,9 @@ def _add_analysis_options(parser: argparse.ArgumentParser) -> None:
         "--application-only",
         action="store_true",
         help=(
-            "prove only the main ELF's ordinary communication after a safe partition; "
-            "external runtime edges remain covered by the DBT LOCK/XCHG contract"
+            "prove main-ELF-touching communication; use the disjoint-partition fast path "
+            "when available, otherwise scan main-touched pages; runtime-only edges "
+            "remain covered by the DBT contract"
         ),
     )
 

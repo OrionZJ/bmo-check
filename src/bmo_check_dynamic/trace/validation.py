@@ -14,7 +14,13 @@ from .format import (
     TraceFormatError,
     event_files,
 )
-from .syscalls import SyscallObservation, unsupported_syscall_effects
+from .module_permissions import read_only_module_ranges
+from .syscalls import (
+    SyscallObservation,
+    prove_active_munmaps,
+    prove_syscall_buffer_disjointness,
+    unsupported_syscall_effects,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,7 +43,6 @@ def validate_trace(trace_dir: Path) -> TraceValidation:
     syscall_observations: list[SyscallObservation] = []
     lifecycle: list[tuple[int, int, int]] = []
     stacks: dict[int, tuple[int, int]] = {}
-    captured_munmaps: set[tuple[int, int, int]] = set()
 
     def add_reason(reason: str) -> None:
         nonlocal omitted_reasons
@@ -76,7 +81,9 @@ def validate_trace(trace_dir: Path) -> TraceValidation:
         file_event_count = 0
         pending_call: dict[str, object] | None = None
 
-        def finish_pending(result: int | None = None) -> None:
+        def finish_pending(
+            result: int | None = None, exit_ticket: int | None = None
+        ) -> None:
             nonlocal pending_call
             if pending_call is None:
                 return
@@ -93,6 +100,7 @@ def validate_trace(trace_dir: Path) -> TraceValidation:
                         if index in arguments
                     ),
                     result=result,
+                    exit_ticket=exit_ticket,
                 )
             )
             pending_call = None
@@ -169,7 +177,7 @@ def validate_trace(trace_dir: Path) -> TraceValidation:
                                     f"in {path.name}"
                                 )
                             else:
-                                finish_pending(value)
+                                finish_pending(value, ticket)
                         if kind in {
                             int(EventKind.THREAD_START),
                             int(EventKind.THREAD_END),
@@ -177,8 +185,6 @@ def validate_trace(trace_dir: Path) -> TraceValidation:
                             lifecycle.append((ticket, kind, thread_id))
                         elif kind == int(EventKind.THREAD_STACK):
                             stacks[thread_id] = (address, size)
-                        elif kind == int(EventKind.MUNMAP):
-                            captured_munmaps.add((thread_id, address, size))
                         old = previous.get(thread_id)
                         expected = 1 if old is None else old + 1
                         if sequence != expected:
@@ -218,11 +224,36 @@ def validate_trace(trace_dir: Path) -> TraceValidation:
                 f"multi-thread trace contains {syscall_count} opaque syscall boundaries"
             )
         else:
+            read_only_ranges: tuple[tuple[int, int], ...] = ()
+            if any(
+                call.number == 14
+                and len(call.arguments) == 6
+                and call.result == 0
+                and call.arguments[1] != 0
+                and call.arguments[3] == 8
+                and not _local_or_null(
+                    call.arguments[1],
+                    call.arguments[3],
+                    stacks.get(call.thread_id),
+                )
+                for call in syscall_observations
+            ):
+                read_only_ranges = read_only_module_ranges(
+                    trace_dir / "modules.tsv", manifest, tuple(syscall_observations)
+                )
+            buffer_proof = prove_syscall_buffer_disjointness(
+                tuple(syscall_observations),
+                tuple(lifecycle),
+                _iter_memory_events(files, tuple(syscall_observations), memory_kinds),
+            )
+            closed_munmaps = prove_active_munmaps(tuple(syscall_observations))
             for reason in unsupported_syscall_effects(
                 tuple(syscall_observations),
                 tuple(lifecycle),
                 stacks,
-                captured_munmaps,
+                closed_munmaps,
+                read_only_ranges,
+                buffer_proof,
             ):
                 add_reason(reason)
     if omitted_reasons:
@@ -234,3 +265,45 @@ def validate_trace(trace_dir: Path) -> TraceValidation:
         tuple(sorted(thread_ids)),
         tuple(reasons),
     )
+
+
+def _local_or_null(
+    address: int, size: int, stack: tuple[int, int] | None
+) -> bool:
+    if address == 0:
+        return True
+    if stack is None or size < 0:
+        return False
+    base, length = stack
+    return base <= address and address + size <= base + length
+
+
+def _iter_memory_events(
+    paths: tuple[Path, ...],
+    syscalls: tuple[SyscallObservation, ...],
+    memory_kinds: set[int],
+):
+    """第二遍只流式读访存记录，避免把 2,600 万条事件留在内存中。"""
+
+    for path in paths:
+        try:
+            with path.open("rb") as stream:
+                stream.seek(HEADER.size)
+                while raw := stream.read(RECORD.size * 65_536):
+                    if len(raw) % RECORD.size:
+                        return
+                    for record in RECORD.iter_unpack(raw):
+                        kind, _flags, thread_id = record[:3]
+                        if kind in memory_kinds:
+                            yield thread_id, kind, record[6], record[8]
+        except OSError:
+            return
+    # 成功的 futex wait 也会进入通信图，不能从缓冲区检查中漏掉。
+    for call in syscalls:
+        if (
+            call.number == 202
+            and len(call.arguments) == 6
+            and call.result == 0
+            and (call.arguments[1] & ~(0x80 | 0x100)) in {0, 9}
+        ):
+            yield call.thread_id, int(EventKind.FUTEX_WAIT), call.arguments[0], 4

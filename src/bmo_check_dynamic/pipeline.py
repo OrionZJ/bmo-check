@@ -7,6 +7,9 @@ from pathlib import Path
 
 from bmo_check_dynamic import __version__
 from bmo_check_dynamic.analysis import (
+    CompactCommunicationEdges,
+    CommunicationEdge,
+    CommunicationScanStats,
     analyze_application_partition,
     build_windows,
     find_communication_edges,
@@ -26,6 +29,33 @@ from bmo_check_dynamic.proof import check_window, load_supported_contract
 from bmo_check_dynamic.storage import TraceStore
 from bmo_check_dynamic.trace import TraceReader, trace_digest, validate_trace
 from bmo_check_dynamic.trace.format import event_files
+
+
+def _scan_communication_edges(
+    store: TraceStore,
+    *,
+    limit: int,
+    max_active_events: int,
+    required_pc_range: tuple[int, int] | None,
+    edge_pc_range: tuple[int, int] | None,
+    stats: CommunicationScanStats,
+) -> CompactCommunicationEdges | tuple[CommunicationEdge, ...]:
+    """把正常扫描结果压缩保存；被测试替换的旧扫描器仍可返回 tuple。"""
+
+    compact = CompactCommunicationEdges()
+    yielded = tuple(
+        find_communication_edges(
+            store,
+            limit=limit,
+            max_active_events=max_active_events,
+            required_pc_range=required_pc_range,
+            edge_pc_range=edge_pc_range,
+            stats=stats,
+            edge_sink=compact,
+        )
+    )
+    return yielded if yielded else compact
+
 
 
 def analyze_trace(
@@ -161,16 +191,21 @@ def analyze_trace(
             )
             external_runtime_edges = 0
             communication_edges_complete = True
-            if config.application_only and application_partition.status != "safe":
-                # 分区证据已经失败时，运行库边不能进入应用范围证明。
-                # 继续构造通信图只会把百万级运行库访问搬进 Python 图，
-                # 不会改变 UNKNOWN 结论，反而可能耗尽内存。
-                unknowns.append(
-                    "application-only scope requires a safe main-module partition"
-                )
+            scan_stats = CommunicationScanStats()
+            if (
+                config.application_only
+                and application_partition.module_start >= application_partition.module_end
+            ):
+                # 没有主 ELF 的 PC 范围时，不能把外部运行库事件误当成应用事件。
+                unknowns.append("application-only scope requires a known main-module range")
                 raw_edge_sample = ()
                 edge_sample = ()
-            elif config.application_only and thread_handoffs_complete(store):
+                communication_edges_complete = False
+            elif (
+                config.application_only
+                and application_partition.status == "safe"
+                and thread_handoffs_complete(store)
+            ):
                 # 主模块分区已经逐字节排除了 worker/主线程的并发写重叠，
                 # create/start/end/join 又提供了生命周期边界。此时继续枚举
                 # 运行库热页不会增加应用证明，只会把外部边搬进内存。
@@ -194,17 +229,27 @@ def analyze_trace(
                     # 原子访问可能和普通访问共同发布数据；不能把它从
                     # “无共享普通写”的充分条件里悄悄删除。
                     try:
-                        raw_edge_sample = tuple(
-                            find_communication_edges(
-                                store,
-                                limit=config.max_communication_edges + 1,
-                                max_active_events=config.max_communication_active_events,
-                            )
+                        raw_edge_sample = _scan_communication_edges(
+                            store,
+                            limit=config.max_communication_edges + 1,
+                            max_active_events=config.max_communication_active_events,
+                            required_pc_range=(
+                                application_partition.module_start,
+                                application_partition.module_end,
+                            ),
+                            edge_pc_range=(
+                                application_partition.module_start,
+                                application_partition.module_end,
+                            ),
+                            stats=scan_stats,
                         )
                     except CommunicationLimitError as error:
                         unknowns.append(str(error))
                         raw_edge_sample = ()
+                        communication_edges_complete = False
                     edge_sample = raw_edge_sample
+                    external_runtime_edges = scan_stats.external_edges
+                    communication_edges_complete = scan_stats.complete
             else:
                 required_pc_range = None
                 if config.application_only:
@@ -238,46 +283,51 @@ def analyze_trace(
                         f"{config.max_communication_active_events}"
                     )
                     raw_edge_sample = ()
+                    communication_edges_complete = False
                 else:
                     try:
-                        raw_edge_sample = tuple(
-                            find_communication_edges(
-                                store,
-                                limit=config.max_communication_edges + 1,
-                                max_active_events=config.max_communication_active_events,
-                                required_pc_range=required_pc_range,
-                            )
+                        raw_edge_sample = _scan_communication_edges(
+                            store,
+                            limit=config.max_communication_edges + 1,
+                            max_active_events=config.max_communication_active_events,
+                            required_pc_range=required_pc_range,
+                            edge_pc_range=(
+                                (
+                                    application_partition.module_start,
+                                    application_partition.module_end,
+                                )
+                                if config.application_only
+                                else None
+                            ),
+                            stats=scan_stats,
                         )
                     except CommunicationLimitError as error:
                         unknowns.append(str(error))
                         raw_edge_sample = ()
-                if config.application_only:
-                    edge_sample, external_runtime_edges = _application_edges(
-                        store,
-                        raw_edge_sample,
-                        application_partition.module_start,
-                        application_partition.module_end,
-                    )
-                else:
-                    edge_sample = raw_edge_sample
-            raw_edge_count = len(raw_edge_sample)
-            edge_limit_exceeded = len(edge_sample) > config.max_communication_edges
+                        communication_edges_complete = False
+                edge_sample = raw_edge_sample
+                external_runtime_edges = scan_stats.external_edges
+                if scan_stats.complete:
+                    communication_edges_complete = True
+            raw_edge_count = scan_stats.total_edges
+            edge_count = (
+                edge_sample.edge_count
+                if isinstance(edge_sample, CompactCommunicationEdges)
+                else len(edge_sample)
+            )
+            edge_limit_exceeded = edge_count > config.max_communication_edges
             if edge_limit_exceeded:
                 unknowns.append(
-                    "communication edge count exceeds "
-                    f"{config.max_communication_edges}"
+                    "communication edge scan exceeds "
+                    f"{config.max_communication_edges} scoped edges"
                 )
+                communication_edges_complete = False
                 edges = ()
             else:
-                edges = tuple(
-                    sorted(
-                        edge_sample,
-                        key=lambda edge: (edge.first_event, edge.second_event),
-                    )
-                )
-            if (
-                config.application_only and application_partition.status != "safe"
-            ) or edge_limit_exceeded:
+                # 扫描器已经按页和地址稳定地产生边；窗口切分不依赖字典序。
+                # 不再复制一份 sorted tuple，避免大轨迹同时保留 list、tuple 和边对象。
+                edges = edge_sample
+            if edge_limit_exceeded:
                 # 上面的门已经决定 UNKNOWN；不再把不受证明约束的边送进
                 # biconnected graph，避免“已知失败”先变成内存峰值。
                 windows, window_unknowns = (), ()
@@ -463,34 +513,3 @@ def _unknown_certificate(
         unknown_reasons=tuple(dict.fromkeys(unknowns)),
         assumptions=(assumption,),
     )
-
-
-def _application_edges(
-    store: TraceStore,
-    edges: tuple[object, ...],
-    module_start: int,
-    module_end: int,
-) -> tuple[tuple[object, ...], int]:
-    """保留至少一端来自主 ELF 的边，外部运行库边单独计数。
-
-    application scope 只在主模块分区已经证明无 worker/main 写冲突时启用。
-    运行库普通访存不被悄悄当成安全；它们必须由 DBT 的 LOCK/XCHG/Fence
-    契约承担，并在证书中留下被排除的边数量。
-    """
-
-    event_ids = {
-        event_id
-        for edge in edges
-        for event_id in (edge.first_event, edge.second_event)
-    }
-    events = store.get_events(event_ids)
-    by_id = {event.event_id: event for event in events}
-    kept = tuple(
-        edge
-        for edge in edges
-        if (
-            module_start <= by_id[edge.first_event].pc < module_end
-            or module_start <= by_id[edge.second_event].pc < module_end
-        )
-    )
-    return kept, len(edges) - len(kept)

@@ -2,6 +2,11 @@
 
 原始事件按线程分块，Python 通过迭代器批量写入 DuckDB。事件页索引用于落盘 join，避免建立全量 Python 图。只有当前求解窗口会转换成 Python 对象。
 
+通信边扫描支持紧凑落点：大轨迹把端点编号和地址范围写入整数数组，窗口切分阶段
+只在小窗口重新构造 `CommunicationEdge`。这条路径不减少、抽样或合并通信边；它只
+避免为每条边保留 Python dataclass、字符串哈希表和重复端点对象。若紧凑图发现窗口
+超过预算，直接留下带下界的 `UNKNOWN`，不会为了省内存删除边或拆开关系环。
+
 资源边界包括：单次访问最大页数、批大小、单窗口事件数、候选执行数、符号公式项数、通信边数和通信页活动集合。`--max-symbolic-terms` 单独限制 Python/Z3 AST，因为这部分内存不受 DuckDB 的 memory limit 控制。通信扫描先按页聚合检查 `--max-communication-active-events`，再逐页排序；热点页超过预算时在全局排序前返回 `UNKNOWN`。任何边界触发都记录具体 event/window 并返回 `UNKNOWN`。
 
 采集阶段还可用 `--max-thread-events` 限制每线程轨迹大小。超限会写入

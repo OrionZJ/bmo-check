@@ -1,9 +1,26 @@
 from __future__ import annotations
 
+from array import array
+from collections import defaultdict
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from heapq import heappop, heappush
+from typing import Protocol
 
+from bmo_check_dynamic.model import EventKind
 from bmo_check_dynamic.storage import TraceStore
+
+
+@dataclass(frozen=True, slots=True)
+class CommunicationEndpoint:
+    # 窗口图用 event_id 识别同一个访存节点。
+    event_id: str
+    # 按 thread_id 分组后，只在同一线程内补程序序边。
+    thread_id: int
+    # sequence 表示 guest 线程内顺序，不借全局 ticket 推断跨线程顺序。
+    sequence: int
+    # Fence 只跨越它覆盖的访存类型，窗口切分需要保留这个区别。
+    kind: EventKind
 
 
 @dataclass(frozen=True, slots=True)
@@ -13,10 +30,193 @@ class CommunicationEdge:
     second_event: str
     address: int
     size: int
+    # 缓存扫描时已读到的端点事实，避免窗口构建再从大轨迹库取一次。
+    first_endpoint: CommunicationEndpoint | None = field(default=None, compare=False)
+    # 手工构造的旧边没有端点事实；比较边身份时也不把缓存内容算进去。
+    second_endpoint: CommunicationEndpoint | None = field(default=None, compare=False)
+
+
+_ActiveEntry = tuple[
+    str,
+    int,
+    int,
+    int,
+    int,
+    int,
+    str | None,
+    int,
+    int | None,
+    int | None,
+    int,
+]
 
 
 class CommunicationLimitError(RuntimeError):
     """扫描活动集合超限，调用者必须报告 UNKNOWN。"""
+
+
+@dataclass(slots=True)
+class CommunicationScanStats:
+    # total_edges 包含 application scope 排除的纯外部模块边。
+    total_edges: int = 0
+    # external_edges 只计两端都不在指定主模块范围内的精确重叠边。
+    external_edges: int = 0
+    # 命中返回边数上限或活动集合上限时为 false，不能据此给出 TRACE_SAFE。
+    complete: bool = False
+
+
+class CommunicationEdgeSink(Protocol):
+    """扫描器的可选落点；实现可以把边压缩或直接落盘。"""
+
+    def add(
+        self,
+        first_event: str,
+        second_event: str,
+        address: int,
+        size: int,
+        first_endpoint: CommunicationEndpoint,
+        second_endpoint: CommunicationEndpoint,
+    ) -> None: ...
+
+
+class CompactCommunicationEdges:
+    """用整数节点和紧凑数组保存通信边，避免大轨迹创建百万个 dataclass。
+
+    端点名称仍按原 event_id 保存，只有真正送入小窗口的边才重新构造
+    ``CommunicationEdge``。这不会改变边集合，只改变中间存储方式。
+    """
+
+    __slots__ = (
+        "_event_nodes",
+        "event_ids",
+        "thread_ids",
+        "sequences",
+        "kinds",
+        "left_nodes",
+        "right_nodes",
+        "addresses",
+        "sizes",
+    )
+
+    def __init__(self) -> None:
+        # event_id 到紧凑节点号的映射只存在于本次扫描，窗口输出仍使用原 ID。
+        self._event_nodes: dict[str, int] = {}
+        # 节点名称用于把真正入窗的整数节点还原成 trace event_id。
+        self.event_ids: list[str] = []
+        # 以下三个数组保存端点的线程内事实，避免每条边重复存一份。
+        self.thread_ids = array("I")
+        self.sequences = array("Q")
+        self.kinds = array("B")
+        # 边端点使用节点号；同一对事件的不同页重叠仍分别保留。
+        self.left_nodes = array("I")
+        self.right_nodes = array("I")
+        # 每条通信边的精确重叠地址和长度，供小窗口恢复原边。
+        self.addresses = array("Q")
+        self.sizes = array("I")
+
+    @property
+    def edge_count(self) -> int:
+        return len(self.left_nodes)
+
+    @property
+    def node_count(self) -> int:
+        return len(self.event_ids)
+
+    def _intern(self, endpoint: CommunicationEndpoint) -> int:
+        return self._intern_values(
+            endpoint.event_id,
+            endpoint.thread_id,
+            endpoint.sequence,
+            int(endpoint.kind),
+        )
+
+    def _intern_values(
+        self, event_id: str, thread_id: int, sequence: int, kind: int
+    ) -> int:
+        node = self._event_nodes.get(event_id)
+        if node is None:
+            node = len(self.event_ids)
+            self._event_nodes[event_id] = node
+            self.event_ids.append(event_id)
+            self.thread_ids.append(thread_id)
+            self.sequences.append(sequence)
+            self.kinds.append(kind)
+            return node
+        if (
+            self.thread_ids[node] != thread_id
+            or self.sequences[node] != sequence
+            or self.kinds[node] != kind
+        ):
+            raise ValueError(f"conflicting endpoint facts for {event_id}")
+        return node
+
+    def add(
+        self,
+        first_event: str,
+        second_event: str,
+        address: int,
+        size: int,
+        first_endpoint: CommunicationEndpoint,
+        second_endpoint: CommunicationEndpoint,
+    ) -> None:
+        first = self._intern(first_endpoint)
+        second = self._intern(second_endpoint)
+        if first_event != first_endpoint.event_id or second_event != second_endpoint.event_id:
+            raise ValueError("edge endpoint name does not match endpoint fact")
+        if first_event > second_event:
+            first, second = second, first
+        self.left_nodes.append(first)
+        self.right_nodes.append(second)
+        self.addresses.append(address)
+        self.sizes.append(size)
+
+    def add_raw(
+        self,
+        first_event: str,
+        second_event: str,
+        address: int,
+        size: int,
+        first_thread: int,
+        first_sequence: int,
+        first_kind: int,
+        second_thread: int,
+        second_sequence: int,
+        second_kind: int,
+    ) -> None:
+        """接收扫描器的标量端点事实，不为每条边创建 endpoint 对象。"""
+
+        first = self._intern_values(
+            first_event, first_thread, first_sequence, first_kind
+        )
+        second = self._intern_values(
+            second_event, second_thread, second_sequence, second_kind
+        )
+        if first_event > second_event:
+            first, second = second, first
+        self.left_nodes.append(first)
+        self.right_nodes.append(second)
+        self.addresses.append(address)
+        self.sizes.append(size)
+
+    def endpoint(self, node: int) -> CommunicationEndpoint:
+        return CommunicationEndpoint(
+            self.event_ids[node],
+            int(self.thread_ids[node]),
+            int(self.sequences[node]),
+            EventKind(int(self.kinds[node])),
+        )
+
+    def edge(self, index: int) -> CommunicationEdge:
+        left = int(self.left_nodes[index])
+        right = int(self.right_nodes[index])
+        return CommunicationEdge(
+            self.event_ids[left],
+            self.event_ids[right],
+            int(self.addresses[index]),
+            int(self.sizes[index]),
+            self.endpoint(left),
+            self.endpoint(right),
+        )
 
 
 def thread_handoffs_complete(store: TraceStore) -> bool:
@@ -82,17 +282,22 @@ def find_communication_edges(
     limit: int | None = None,
     max_active_events: int = 100_000,
     required_pc_range: tuple[int, int] | None = None,
+    edge_pc_range: tuple[int, int] | None = None,
+    stats: CommunicationScanStats | None = None,
+    edge_sink: CommunicationEdgeSink | None = None,
 ) -> Iterator[CommunicationEdge]:
     """只保留真实地址重叠且至少一端写入的跨线程访问。
 
     ``required_pc_range`` 只缩小候选页集合：页上至少要出现一个来自主
-    ELF 的访存。页内仍保留所有线程和模块的事件，所以不会漏掉主程序与
-    运行库之间的边，也不会改变 application scope 的外部边计数。
+    ELF 的访存。``edge_pc_range`` 才会在精确重叠后排除两端都不在该范围
+    的边；主程序与运行库之间的混合边仍会返回。
     """
 
     # 单线程轨迹不可能产生通信边。跳过同页自连接，否则循环和库初始化会把
     # 同一页上的大量事件展开成无意义的二次方候选。
     if store.thread_count() < 2:
+        if stats is not None:
+            stats.complete = True
         return
 
     handoffs = _thread_handoffs(store)
@@ -127,94 +332,226 @@ def find_communication_edges(
             # ORDER BY；active 只保存当前页的地址区间。
             cursor = store.connection.execute(
                 """
-                SELECT e.event_id, e.thread_id, e.ticket, e.address, e.size,
-                       e.kind, e.object_id, e.pc
+                SELECT e.event_id, e.thread_id, e.sequence, e.ticket, e.address, e.size,
+                       e.kind, e.object_id, e.pc, o.start_ticket, o.end_ticket
                 FROM event_pages ep
                 JOIN events e USING (event_id)
+                LEFT JOIN objects o ON o.object_id = e.object_id
                 WHERE ep.page = ?
                 ORDER BY e.address, e.event_id
                 """,
                 (page,),
             )
-            active: list[tuple[str, int, int, int, int, int, str | None, int]] = []
+            active: dict[str, _ActiveEntry] = {}
+            active_by_thread: dict[int, dict[str, _ActiveEntry]] = defaultdict(dict)
+            active_writes_by_thread: dict[int, dict[str, _ActiveEntry]] = defaultdict(dict)
+            expirations: list[tuple[int, str]] = []
+            endpoint_cache: dict[str, CommunicationEndpoint] = {}
             while rows := cursor.fetchmany(10_000):
                 for (
                     event_id_value,
                     thread,
+                    sequence,
                     ticket,
                     address,
                     size,
                     kind,
                     object_id,
                     pc,
+                    object_start,
+                    object_end,
                 ) in rows:
                     start = int(address)
                     end = start + int(size)
-                    active = [candidate for candidate in active if candidate[2] > start]
+                    while expirations and expirations[0][0] <= start:
+                        _expired_end, expired_id = heappop(expirations)
+                        expired = active.pop(expired_id, None)
+                        if expired is None:
+                            continue
+                        expired_thread = expired[3]
+                        del active_by_thread[expired_thread][expired_id]
+                        if not active_by_thread[expired_thread]:
+                            del active_by_thread[expired_thread]
+                        if expired[5] in (2, 3):
+                            del active_writes_by_thread[expired_thread][expired_id]
+                            if not active_writes_by_thread[expired_thread]:
+                                del active_writes_by_thread[expired_thread]
                     event_id = str(event_id_value)
-                    for (
-                        other_id,
-                        other_start,
-                        other_end,
-                        other_thread,
-                        other_ticket,
-                        other_kind,
-                        other_object,
-                        _other_pc,
-                    ) in active:
-                        if other_thread == int(thread):
+                    thread_id = int(thread)
+                    kind_id = int(kind)
+                    current_object = None if object_id is None else str(object_id)
+                    current_object_start = (
+                        None if object_start is None else int(object_start)
+                    )
+                    current_object_end = None if object_end is None else int(object_end)
+                    candidate_buckets = (
+                        active_by_thread
+                        if kind_id in (2, 3)
+                        else active_writes_by_thread
+                    )
+                    for other_thread, candidates in candidate_buckets.items():
+                        if other_thread == thread_id:
                             continue
-                        if int(kind) not in (2, 3) and other_kind not in (2, 3):
-                            continue
-                        if _is_thread_handoff_edge(
-                            event_id,
-                            int(thread),
-                            int(ticket),
-                            int(kind),
-                            other_id,
-                            other_thread,
-                            other_ticket,
-                            other_kind,
-                            handoffs,
-                        ):
-                            continue
-                        if (
-                            object_id is not None and other_object is not None
-                            and object_id != other_object
-                            and not str(object_id).startswith("tls:")
-                            and not str(other_object).startswith("tls:")
-                            and str(object_id).rsplit(":g", 1)[0]
-                            == str(other_object).rsplit(":g", 1)[0]
-                        ):
-                            continue
-                        overlap_start = max(start, other_start)
-                        overlap_end = min(end, other_end)
-                        if overlap_start >= overlap_end or overlap_start >> 12 != page:
-                            continue
-                        first, second = sorted((event_id, other_id))
-                        yield CommunicationEdge(
-                            first, second, overlap_start, overlap_end - overlap_start
-                        )
-                        emitted += 1
-                        if limit is not None and emitted >= limit:
-                            return
-                    # 同址只读事件也会累积；输出边上限无法限制这个集合。
+                        for candidate in candidates.values():
+                            (
+                                other_id,
+                                other_start,
+                                other_end,
+                                _other_thread,
+                                other_ticket,
+                                other_kind,
+                                other_object,
+                                _other_pc,
+                                other_object_start,
+                                other_object_end,
+                                other_sequence,
+                            ) = candidate
+                            if _is_thread_handoff_edge(
+                                event_id,
+                                thread_id,
+                                int(ticket),
+                                kind_id,
+                                other_id,
+                                other_thread,
+                                other_ticket,
+                                other_kind,
+                                handoffs,
+                            ):
+                                continue
+                            if _different_lifetimes(
+                                current_object,
+                                current_object_start,
+                                current_object_end,
+                                other_object,
+                                other_object_start,
+                                other_object_end,
+                            ):
+                                continue
+                            overlap_start = max(start, other_start)
+                            overlap_end = min(end, other_end)
+                            if overlap_start >= overlap_end or overlap_start >> 12 != page:
+                                continue
+                            if stats is not None:
+                                stats.total_edges += 1
+                            if edge_pc_range is not None and not (
+                                edge_pc_range[0] <= int(pc) < edge_pc_range[1]
+                                or edge_pc_range[0] <= _other_pc < edge_pc_range[1]
+                            ):
+                                if stats is not None:
+                                    stats.external_edges += 1
+                                continue
+                            if event_id < other_id:
+                                first, second = event_id, other_id
+                                first_endpoint_args = (
+                                    thread_id, int(sequence), kind_id,
+                                    other_thread, other_sequence, other_kind,
+                                )
+                            else:
+                                first, second = other_id, event_id
+                                first_endpoint_args = (
+                                    other_thread, other_sequence, other_kind,
+                                    thread_id, int(sequence), kind_id,
+                                )
+                            if edge_sink is not None:
+                                if isinstance(edge_sink, CompactCommunicationEdges):
+                                    edge_sink.add_raw(
+                                        first,
+                                        second,
+                                        overlap_start,
+                                        overlap_end - overlap_start,
+                                        *first_endpoint_args,
+                                    )
+                                else:
+                                    first_endpoint = _cached_communication_endpoint(
+                                        endpoint_cache,
+                                        first,
+                                        first_endpoint_args[0],
+                                        first_endpoint_args[1],
+                                        first_endpoint_args[2],
+                                    )
+                                    second_endpoint = _cached_communication_endpoint(
+                                        endpoint_cache,
+                                        second,
+                                        first_endpoint_args[3],
+                                        first_endpoint_args[4],
+                                        first_endpoint_args[5],
+                                    )
+                                    edge_sink.add(
+                                        first,
+                                        second,
+                                        overlap_start,
+                                        overlap_end - overlap_start,
+                                        first_endpoint,
+                                        second_endpoint,
+                                    )
+                            else:
+                                first_endpoint = _cached_communication_endpoint(
+                                    endpoint_cache,
+                                    first,
+                                    first_endpoint_args[0],
+                                    first_endpoint_args[1],
+                                    first_endpoint_args[2],
+                                )
+                                second_endpoint = _cached_communication_endpoint(
+                                    endpoint_cache,
+                                    second,
+                                    first_endpoint_args[3],
+                                    first_endpoint_args[4],
+                                    first_endpoint_args[5],
+                                )
+                                yield CommunicationEdge(
+                                    first,
+                                    second,
+                                    overlap_start,
+                                    overlap_end - overlap_start,
+                                    first_endpoint,
+                                    second_endpoint,
+                                )
+                            emitted += 1
+                            if limit is not None and emitted >= limit:
+                                return
+                    # 只查可能产生边的其他线程访存；结束地址堆淘汰过期项，
+                    # 避免同线程和读-读访问让每个事件都重扫整个活动集合。
                     if len(active) >= max_active_events:
                         raise CommunicationLimitError(
                             f"communication active set exceeds {max_active_events} events"
                         )
-                    active.append(
-                        (
-                            event_id,
-                            start,
-                            end,
-                            int(thread),
-                            int(ticket),
-                            int(kind),
-                            None if object_id is None else str(object_id),
-                            int(pc),
-                        )
+                    entry = (
+                        event_id,
+                        start,
+                        end,
+                        thread_id,
+                        int(ticket),
+                        kind_id,
+                        current_object,
+                        int(pc),
+                        current_object_start,
+                        current_object_end,
+                        int(sequence),
                     )
+                    active[event_id] = entry
+                    active_by_thread[thread_id][event_id] = entry
+                    if kind_id in (2, 3):
+                        active_writes_by_thread[thread_id][event_id] = entry
+                    heappush(expirations, (end, event_id))
+    if stats is not None:
+        stats.complete = True
+
+
+def _cached_communication_endpoint(
+    cache: dict[str, CommunicationEndpoint],
+    event_id: str,
+    thread_id: int,
+    sequence: int,
+    kind: int,
+) -> CommunicationEndpoint:
+    endpoint = cache.get(event_id)
+    if endpoint is None:
+        endpoint = CommunicationEndpoint(
+            event_id, thread_id, sequence, EventKind(kind)
+        )
+        cache[event_id] = endpoint
+    return endpoint
 
 
 def _thread_handoffs(store: TraceStore) -> dict[int, _ThreadHandoff]:
@@ -334,4 +671,31 @@ def _is_thread_handoff_edge(
     return (
         (parent_ticket < handoff.start_ticket)
         or (parent_ticket > handoff.join_ticket and worker_ticket <= handoff.end_ticket)
+    )
+
+
+def _different_lifetimes(
+    left_id: str | None,
+    left_start: int | None,
+    left_end: int | None,
+    right_id: str | None,
+    right_start: int | None,
+    right_end: int | None,
+) -> bool:
+    """地址相交但对象生命周期不交叠时，不把两代映射连成通信边。"""
+
+    if (
+        left_id is None
+        or right_id is None
+        or left_id == right_id
+        or left_id.startswith("tls:")
+        or right_id.startswith("tls:")
+        or left_start is None
+        or right_start is None
+    ):
+        return False
+    return (
+        left_end is not None and left_end < right_start
+    ) or (
+        right_end is not None and right_end < left_start
     )

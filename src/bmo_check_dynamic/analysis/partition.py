@@ -165,8 +165,14 @@ def _different_generation_sql(left: str, right: str) -> str:
         f"AND {left}.object_id <> {right}.object_id "
         f"AND substr({left}.object_id, 1, 4) <> 'tls:' "
         f"AND substr({right}.object_id, 1, 4) <> 'tls:' "
-        f"AND split_part({left}.object_id, ':g', 1) "
-        f"= split_part({right}.object_id, ':g', 1)"
+        f"AND EXISTS ("
+        f"SELECT 1 FROM objects lo JOIN objects ro "
+        f"ON lo.object_id = {left}.object_id "
+        f"AND ro.object_id = {right}.object_id "
+        f"WHERE (lo.end_ticket IS NOT NULL "
+        f"AND lo.end_ticket < ro.start_ticket) "
+        f"OR (ro.end_ticket IS NOT NULL "
+        f"AND ro.end_ticket < lo.start_ticket))"
     )
 
 
