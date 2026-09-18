@@ -4,11 +4,13 @@ from dataclasses import dataclass
 
 import pytest
 
+from bmo_check_core import SemanticPrimitive, SemanticPrimitiveRef
 from bmo_check_dynamic.analysis import AnalysisWindow
 from bmo_check_dynamic.model import EventKind as DynamicEventKind, TraceEvent
 from bmo_check_dynamic.proof.characterization import (
     check_fixed_execution as check_dynamic,
 )
+from bmo_check_dynamic.proof.relations import target_preserved_order
 from bmo_check_evaluation.litmus import (
     DifferentialClassification,
     DifferentialStatus,
@@ -361,6 +363,64 @@ def test_unknown_route_is_incomplete_and_not_equivalent() -> None:
     )
     assert comparison.status is DifferentialStatus.INCOMPLETE
     assert comparison.classification is DifferentialClassification.UNRESOLVED_MODEL_DRIFT
+
+
+def test_futex_ordering_is_a_named_characterization_boundary() -> None:
+    """FUTEX semantics must be audited as synchronization, not hidden in PPO."""
+
+    reference = SemanticPrimitiveRef(
+        primitive=SemanticPrimitive.SYNCHRONIZATION,
+        source_model="x86-tso",
+        target_model="rvwmo",
+        contract_version="dbt6-mo-off-v2",
+    )
+
+    assert reference.primitive is SemanticPrimitive.SYNCHRONIZATION
+    assert reference.contract_version == "dbt6-mo-off-v2"
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "RU1 must not treat FUTEX_WAIT as a full memory fence without a "
+        "contract-backed synchronization proof"
+    ),
+)
+def test_futex_wait_does_not_create_unconditional_full_memory_order() -> None:
+    events = (
+        TraceEvent(
+            thread_id=1,
+            sequence=1,
+            ticket=0,
+            pc=0x10,
+            kind=DynamicEventKind.STORE,
+            address=0x1000,
+            size=4,
+        ),
+        TraceEvent(
+            thread_id=1,
+            sequence=2,
+            ticket=7,
+            pc=0x14,
+            kind=DynamicEventKind.FUTEX_WAIT,
+            address=0x2000,
+            size=4,
+        ),
+        TraceEvent(
+            thread_id=1,
+            sequence=3,
+            ticket=0,
+            pc=0x18,
+            kind=DynamicEventKind.LOAD,
+            address=0x3000,
+            size=4,
+        ),
+    )
+
+    edges = target_preserved_order(events)
+    futex_id = events[1].event_id
+    assert (events[0].event_id, futex_id) not in edges
+    assert (futex_id, events[2].event_id) not in edges
 
 
 def test_known_route_difference_must_be_explicitly_exempted() -> None:

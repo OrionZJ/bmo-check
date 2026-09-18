@@ -43,6 +43,8 @@ from .contracts import (
     TargetFence,
     TargetOrdering,
     TranslationContract,
+    SemanticPrimitive,
+    SemanticPrimitiveRef,
 )
 from .certificate import (
     CertificateBinding,
@@ -103,6 +105,8 @@ __all__ = [
     "TargetFence",
     "TargetOrdering",
     "TranslationContract",
+    "SemanticPrimitive",
+    "SemanticPrimitiveRef",
     "CertificateBinding",
     "CertificateError",
     "CertificateVerdict",

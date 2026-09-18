@@ -164,4 +164,16 @@ RU4 与 RU5 可在 RU2 的 identity 接口稳定后并行推进，但任何 veri
 
 ## 当前执行点
 
-下一提交只做 RU1 的 characterization 和 semantic primitive 边界，不修改 memory-model checker 的 verdict 规则，不改变 E2.5 baseline，不运行大规模 PARSEC 或 2595 corpus。该提交完成后再检查 diff、运行 RU1 小型测试并更新本日志。
+RU1 的第一个 atomic commit 已完成：引入 `SemanticPrimitive` 和
+`SemanticPrimitiveRef` 作为 static、dynamic、oracle 共享的身份边界，并把
+FUTEX_WAIT 的无条件 full-order 风险写成严格 xfail characterization。该提交
+没有修改任何 checker verdict 规则，也没有改变 E2.5 baseline。
+
+最小测试结果：`19 passed, 1 xfailed`。这个 xfail 不是通过条件；它明确记录
+当前实现仍把 FUTEX_WAIT 当成全序边界，后续必须由 contract-backed
+synchronization rule 关闭，或者继续返回 UNKNOWN。
+
+下一提交仍只推进 RU1：为 PPO、same-address、rf/co/fr、显式 fence 和 atomic
+boundary 建立同一组 fixed-execution characterization 输入，先把 static 与
+dynamic route 的差异逐项暴露出来，再迁移一个可由 DBT contract 和 herd oracle
+确定的 primitive。此阶段不运行大规模 PARSEC 或 2595 corpus。

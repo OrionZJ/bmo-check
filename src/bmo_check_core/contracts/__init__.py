@@ -8,6 +8,7 @@ from .model import (
     TargetOrdering,
     TranslationContract,
 )
+from .semantics import SemanticPrimitive, SemanticPrimitiveRef
 
 __all__ = [
     "ContractError",
@@ -16,4 +17,6 @@ __all__ = [
     "TargetFence",
     "TargetOrdering",
     "TranslationContract",
+    "SemanticPrimitive",
+    "SemanticPrimitiveRef",
 ]
