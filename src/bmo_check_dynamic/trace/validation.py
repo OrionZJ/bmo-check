@@ -31,6 +31,8 @@ class TraceValidation:
     event_count: int
     thread_ids: tuple[int, ...]
     reasons: tuple[str, ...]
+    # 单线程 shortcut 也必须先识别未绑定 contract 的同步 primitive。
+    event_kinds: tuple[int, ...] = ()
 
 
 def validate_trace(trace_dir: Path) -> TraceValidation:
@@ -38,6 +40,7 @@ def validate_trace(trace_dir: Path) -> TraceValidation:
     omitted_reasons = 0
     event_count = 0
     thread_ids: set[int] = set()
+    event_kinds: set[int] = set()
     syscall_count = 0
     saw_syscall_metadata = False
     syscall_observations: list[SyscallObservation] = []
@@ -135,6 +138,7 @@ def validate_trace(trace_dir: Path) -> TraceValidation:
                         event_count += 1
                         file_event_count += 1
                         thread_ids.add(thread_id)
+                        event_kinds.add(kind)
                         if kind not in known_kinds:
                             raise TraceFormatError(f"unknown event kind {kind}: {path}")
                         if kind == int(EventKind.SYSCALL):
@@ -264,6 +268,7 @@ def validate_trace(trace_dir: Path) -> TraceValidation:
         event_count,
         tuple(sorted(thread_ids)),
         tuple(reasons),
+        tuple(sorted(event_kinds)),
     )
 
 

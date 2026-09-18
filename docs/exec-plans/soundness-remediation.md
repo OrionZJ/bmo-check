@@ -431,6 +431,21 @@ COUNTEREXAMPLE必须包含events、PO/RF/CO/FR、Fence/atomic/sync、source/targ
 - 剩余风险：runtime_internal 标记本身还没有接入 canonical removal ledger，
   library-mediated communication 的 legality-preserving proof 仍待 RU3/RU6。
 
+### C0.3 已完成
+
+- 提交：待本次提交生成。
+- finding：F04/F18；witness：W4。
+- `FUTEX_WAIT` 不再由 dynamic relation 自动生成 full-order edges；只有绑定
+  contract 显式声明 syscall ordering 时才允许后续实现提供该语义。当前
+  `dbt6-mo-off` contract 未声明时记录 typed `UnknownSynchronization`，并阻止
+  `TRACE_SAFE`/`COUNTEREXAMPLE`，包括单线程 shortcut。
+- `TraceValidation` 记录 event kind，contract parser 显式识别可选 syscall rule；
+  未声明 rule 不会被默认成 relaxed 或 full。
+- focused tests：`49 passed`（pipeline、relation differential、trace format）；
+  contract/invariant tests：`8 passed`；`git diff --check` 通过。
+- 剩余风险：显式 syscall ordering 尚未进入 canonical semantic kernel；
+  `SYNC_ACQUIRE/RELEASE/FULL` 与 lifecycle ordering 仍需 RU1/RU4 统一。
+
 ## 当前执行点
 
 RU1 的第一个 atomic commit 已完成：引入 `SemanticPrimitive` 和
@@ -443,8 +458,9 @@ FUTEX_WAIT 的无条件 full-order 风险写成严格 xfail characterization。�
 synchronization rule 关闭，或者继续返回 UNKNOWN。
 
 审计补充后，C0.1 已关闭：不完整 communication graph 只能产生 typed Unknown。
-下一提交进入 C0.3，令 FUTEX ordering 只来自 immutable、可绑定的 syscall
-contract；没有 rule 时生成 typed Unknown。`8ac64a0` 的 RU1 characterization
-保留，C0 完成后再继续为 PPO、same-address、RF/CO/FR、显式 Fence 和 atomic
-boundary 建立 fixed-execution characterization。C0 只收紧到 `UNKNOWN`，不能借机
-增加新的 fast path；这一阶段不运行大规模 PARSEC 或 2595 corpus。
+下一提交进入 C0.4，旧 certificate 缺少完整 universe/obligation/window ledger
+时只能 explain，不能 replay 成 `SAFE`/`TRACE_SAFE`。`8ac64a0` 的 RU1
+characterization 保留，C0 完成后再继续为 PPO、same-address、RF/CO/FR、显式
+Fence 和 atomic boundary 建立 fixed-execution characterization。C0 只收紧到
+`UNKNOWN`，不能借机增加新的 fast path；这一阶段不运行大规模 PARSEC 或 2595
+corpus。

@@ -114,7 +114,7 @@ def _boundary_edges(events: list[TraceEvent]) -> set[Edge]:
                 for right in after
                 if right.kind.is_memory
             )
-        elif boundary.kind in {EventKind.ATOMIC_RMW, EventKind.FUTEX_WAIT}:
+        elif boundary.kind == EventKind.ATOMIC_RMW:
             edges.update(
                 (left.event_id, boundary.event_id)
                 for left in before

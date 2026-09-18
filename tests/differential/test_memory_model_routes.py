@@ -379,13 +379,6 @@ def test_futex_ordering_is_a_named_characterization_boundary() -> None:
     assert reference.contract_version == "dbt6-mo-off-v2"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "RU1 must not treat FUTEX_WAIT as a full memory fence without a "
-        "contract-backed synchronization proof"
-    ),
-)
 def test_futex_wait_does_not_create_unconditional_full_memory_order() -> None:
     events = (
         TraceEvent(

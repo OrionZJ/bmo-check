@@ -32,6 +32,8 @@ class _Translation(_Strict):
     lfence: _Fence
     sfence: _Fence
     mfence: _Fence
+    # syscall ordering 必须显式出现在 immutable contract；缺失时保持 unknown。
+    syscall: _Ordering | None = None
 
 
 class DbtContract(_Strict):

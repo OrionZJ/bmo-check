@@ -22,6 +22,7 @@ from bmo_check_dynamic.analysis.communication import CommunicationLimitError
 from bmo_check_dynamic.model import (
     ApplicationPartitionEvidence,
     DynamicCertificate,
+    EventKind,
     TraceManifest,
     TraceScope,
     TraceVerdict,
@@ -70,10 +71,29 @@ def analyze_trace(
     manifest = TraceManifest.load(trace_dir / "manifest.json")
     validation = validate_trace(trace_dir)
     unknowns = list(validation.reasons)
+    unknown_kinds: list[UnknownKind] = []
     contract_sha256 = _file_digest(dbt_contract)
     contract, contract_error = load_supported_contract(dbt_contract)
     if contract_error is not None:
         unknowns.append(contract_error)
+    syscall_ordering = (
+        getattr(getattr(contract, "translation", None), "syscall", None)
+        if contract is not None
+        else None
+    )
+    futex_requires_contract = (
+        int(EventKind.FUTEX_WAIT) in validation.event_kinds
+        and (
+            contract_error is not None
+            or syscall_ordering is None
+            or syscall_ordering.target_ordering == "unknown"
+        )
+    )
+    if futex_requires_contract:
+        unknown_kinds.append(UnknownKind.UNKNOWN_SYNCHRONIZATION)
+        unknowns.append(
+            "FUTEX_WAIT ordering is not declared by the bound DBT contract"
+        )
     if unknowns:
         # 校验已经发现截断时，再次解码会抛异常并丢掉 UNKNOWN 报告。
         # 失败轨迹也不能凭一个局部 witness 越过完整性门槛。
@@ -97,10 +117,11 @@ def analyze_trace(
             unique_pc_count=0,
             communication_edge_count=0,
             indirect_target_count=0,
+            unknown_kinds=tuple(dict.fromkeys(unknown_kinds)),
             unknown_reasons=tuple(unknowns),
             assumptions=("analysis stopped at preflight; analysis counts are unavailable",),
         )
-    if len(validation.thread_ids) == 1:
+    if len(validation.thread_ids) == 1 and not futex_requires_contract:
         return _single_thread_certificate(
             manifest,
             validation,
@@ -350,7 +371,6 @@ def analyze_trace(
             unknowns.extend(
                 result.reason for result in results if result.status == "unknown"
             )
-            unknown_kinds: list[UnknownKind] = []
             if not communication_edges_complete:
                 # 分区、handoff 或空窗口只能说明某个局部条件，不能代替
                 # communication graph 的完整枚举；否则相关边被遗漏时会误报 TRACE_SAFE。

@@ -231,6 +231,25 @@ def test_application_only_cannot_skip_library_mediated_communication(
     assert certificate.unknown_kinds
 
 
+def test_futex_without_contract_ordering_is_unknown(
+    trace_manifest, tmp_path: Path
+) -> None:
+    trace_dir = tmp_path / "futex-without-contract"
+    trace_manifest(trace_dir)
+    with TraceWriter(trace_dir / "events-1.bin") as writer:
+        writer.write(TraceEvent(1, 1, 0, 0x10, EventKind.STORE, 0x1000, 4))
+        writer.write(TraceEvent(1, 2, 1, 0x14, EventKind.FUTEX_WAIT, 0x2000, 4))
+        writer.write(TraceEvent(1, 3, 2, 0x18, EventKind.LOAD, 0x3000, 4))
+
+    certificate = analyze_trace(trace_dir, dbt_contract=_contract(tmp_path))
+
+    assert certificate.verdict == TraceVerdict.UNKNOWN
+    assert "UnknownSynchronization" in {
+        item.value for item in certificate.unknown_kinds
+    }
+    assert any("FUTEX_WAIT ordering" in reason for reason in certificate.unknown_reasons)
+
+
 def test_application_atomic_scan_excludes_external_only_edges_but_keeps_mixed_edges(
     trace_manifest, tmp_path: Path
 ) -> None:
