@@ -137,13 +137,18 @@ def _campaign(args: argparse.Namespace) -> int:
     document = yaml.safe_load(args.manifest.read_text(encoding="utf-8")) or {}
     runs = document.get("runs")
     if not isinstance(runs, list) or not runs:
-        raise argparse.ArgumentTypeError("campaign manifest requires a non-empty runs list")
+        raise ValueError("campaign manifest requires a non-empty runs list")
     args.output.mkdir(parents=True, exist_ok=True)
     certificates: list[DynamicCertificate] = []
     for item in runs:
         if not isinstance(item, dict) or not isinstance(item.get("command"), list):
-            raise argparse.ArgumentTypeError("each campaign run requires command: [..]")
-        repeat = int(item.get("repeat", 1))
+            raise ValueError("each campaign run requires command: [..]")
+        try:
+            repeat = int(item.get("repeat", 1))
+        except (TypeError, ValueError) as error:
+            raise ValueError("campaign repeat must be a positive integer") from error
+        if repeat < 1:
+            raise ValueError("campaign repeat must be a positive integer")
         for iteration in range(repeat):
             name = str(item.get("name", "run"))
             trace_dir = args.output / f"{name}-{iteration:03d}-{uuid.uuid4().hex[:8]}"
@@ -179,6 +184,9 @@ def _campaign(args: argparse.Namespace) -> int:
                 certificate.model_dump_json(indent=2), encoding="utf-8"
             )
             certificates.append(certificate)
+    if not certificates:
+        # 不能让空 runs 或 repeat=0 经过 all/any 聚合后伪造成 TRACE_SAFE。
+        raise ValueError("campaign produced no trace certificates")
     if any(item.verdict == TraceVerdict.COUNTEREXAMPLE for item in certificates):
         verdict = TraceVerdict.COUNTEREXAMPLE
     elif any(item.verdict == TraceVerdict.UNKNOWN for item in certificates):

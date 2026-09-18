@@ -144,6 +144,16 @@ RU4 与 RU5 可在 RU2 的 identity 接口稳定后并行推进，但任何 veri
 - zero-run campaign 返回 input error 或 `UNKNOWN`。
 - 空 universe 只有在 subject manifest 证明没有 memory-order obligation 时才允许确定 verdict。
 
+**状态：已完成（提交待生成）。**
+
+- campaign manifest 的 `runs` 必须非空，且每项 `repeat >= 1`；`repeat: 0`
+  不再经过空集合聚合成 `TRACE_SAFE`，CLI 返回输入错误。
+- 动态 trace 预检已经把无 event file 或空 event file 记为不完整并返回
+  `UNKNOWN`，不会把空窗口当作安全证明。
+- 静态空 universe 的确定性 replay 仍被 C0.4 的 schema/completeness 门禁拦截；
+  只有 RU2 提供 subject obligation manifest 后才允许判断“确实没有义务”。
+- focused dynamic/invariant tests: `24 passed`。
+
 C0 可拆成 4～5 个原子提交。后续永久实现必须删除临时 gate，不能让两套判定规则并存。
 
 ## 目标领域模型

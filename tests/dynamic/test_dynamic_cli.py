@@ -73,3 +73,15 @@ def test_locate_command_reports_module_relative_site(
     payload = json.loads(capsys.readouterr().out)
     assert payload["event_count"] == 1
     assert payload["thread_event_counts"] == [[3, 1]]
+
+
+def test_campaign_rejects_zero_run_manifest(tmp_path: Path) -> None:
+    manifest = tmp_path / "campaign.yaml"
+    manifest.write_text(
+        "runs:\n  - name: empty\n    command: [/bin/true]\n    repeat: 0\n",
+        encoding="utf-8",
+    )
+
+    result = main(["campaign", str(manifest), "--output", str(tmp_path / "out")])
+
+    assert result == 3
