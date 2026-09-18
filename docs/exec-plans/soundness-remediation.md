@@ -127,6 +127,18 @@ RU4 与 RU5 可在 RU2 的 identity 接口稳定后并行推进，但任何 veri
 - 缺完整 universe/obligation/window ledger 的旧 schema 只能 explain，不能 replay 成 `SAFE`/`TRACE_SAFE`。
 - 使用 schema major version 明确拒绝，不能通过补空列表“升级”。
 
+**状态：已完成（提交待生成）。**
+
+- `verify_static_certificate` 和 `verify_trace_certificate` 对确定性旧 schema
+  一律拒绝 replay；`UNKNOWN` 旧证书仍可用于解释。
+- `*-certificate-v2` 但没有 completeness ledger 的占位证书同样拒绝，避免用
+  空列表或 `complete=True` 伪造新格式。
+- 静态应用服务遇到旧证书无法 replay 时把对外结论降级为 `UNKNOWN`，并保留
+  `canonical_error`；旧证书只作为报告输入，不能继续驱动 `SAFE`。
+- 覆盖 F07/F08/F09/F13 的第一道 schema 门禁；完整 universe、obligation、
+  window ledger 仍由 RU2/RU5/RU6 提供。
+- focused evidence/bridge/application tests: `22 passed`。
+
 ### C0.5 空 campaign 与空 subject
 
 - zero-run campaign 返回 input error 或 `UNKNOWN`。

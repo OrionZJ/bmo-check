@@ -149,39 +149,28 @@ def _empty_report(*, dbt_revision: str | None = REVISION):
     )
 
 
-def test_bridge_replays_legacy_safe_with_typed_slice() -> None:
+def test_bridge_rejects_legacy_safe_with_typed_slice() -> None:
     scope = "static.test"
     binding = binding_from_manifest(_manifest(), scope=scope)
-    result = build_static_certificate_with_evidence(
-        _empty_slice(scope),
-        _portability(scope),
-        binding,
-    )
-
-    assert result.certificate.verdict == CertificateVerdict.SAFE
-    assert result.verification.proof_closure == ()
-
-    snapshot = static_snapshot_from_certificate(result)
-    assert snapshot.verdict == CertificateVerdict.SAFE
-    assert snapshot.binary_closure == binding.binary_closure
-    assert snapshot.unknown_ids == ()
-    assert snapshot.ledger().nodes() == ()
+    with pytest.raises(CertificateBridgeError, match="explain-only"):
+        build_static_certificate_with_evidence(
+            _empty_slice(scope),
+            _portability(scope),
+            binding,
+        )
 
 
-def test_report_bridge_is_used_for_a_legacy_static_result() -> None:
+def test_report_bridge_rejects_a_legacy_static_result() -> None:
     scope = "static.test"
     report = _empty_report()
     legacy = verify_portability(report)
 
-    result = build_static_certificate_from_report(
-        report,
-        legacy,
-        binding_from_manifest(report.recovery.manifest, scope=scope),
-    )
-
-    assert legacy.verdict == Verdict.SAFE
-    assert result.certificate.verdict == CertificateVerdict.SAFE
-    assert result.verification.certificate == result.certificate
+    with pytest.raises(CertificateBridgeError, match="explain-only"):
+        build_static_certificate_from_report(
+            report,
+            legacy,
+            binding_from_manifest(report.recovery.manifest, scope=scope),
+        )
 
 
 def test_report_bridge_preserves_relevant_unknowns() -> None:
@@ -218,7 +207,7 @@ def test_report_bridge_preserves_relevant_unknowns() -> None:
     assert snapshot.blocking_unknown_ids == result.certificate.relevant_unknowns
 
 
-def test_report_bridge_records_proof_backed_unknown_discharge() -> None:
+def test_report_bridge_rejects_legacy_safe_even_after_unknown_discharge() -> None:
     event = MemoryEvent(
         id="event-1",
         module="/bin/litmus",
@@ -271,20 +260,12 @@ def test_report_bridge_records_proof_backed_unknown_discharge() -> None:
     legacy = verify_portability(report)
     scope = "static.test"
 
-    result = build_static_certificate_from_report(
-        report,
-        legacy,
-        binding_from_manifest(report.recovery.manifest, scope=scope),
-    )
-
-    assert legacy.verdict == Verdict.SAFE
-    assert result.certificate.verdict == CertificateVerdict.SAFE
-    assert result.ledger.discharges()
-    assert result.ledger.unresolved_unknowns(scope) == ()
-    snapshot = static_snapshot_from_certificate(result)
-    assert snapshot.blocking_unknown_ids == ()
-    assert len(snapshot.unknown_ids) == 1
-    assert len(snapshot.evidence.discharges) == 1
+    with pytest.raises(CertificateBridgeError, match="explain-only"):
+        build_static_certificate_from_report(
+            report,
+            legacy,
+            binding_from_manifest(report.recovery.manifest, scope=scope),
+        )
 
 
 def test_bridge_rejects_dynamic_observation() -> None:
@@ -326,32 +307,11 @@ def test_bridge_rejects_dynamic_observation() -> None:
         )
 
 
-def test_static_snapshot_rejects_observation_added_after_certificate_build() -> None:
+def test_legacy_certificate_cannot_reach_snapshot_replay() -> None:
     scope = "static.test"
-    result = build_static_certificate_with_evidence(
-        _empty_slice(scope),
-        _portability(scope),
-        binding_from_manifest(_manifest(), scope=scope),
-    )
-    trace = TraceId.from_parts(
-        "trace-v1",
-        HASH,
-        (ModuleId.from_parts(HASH, "executable"),),
-        ("synthetic",),
-        HASH,
-    )
-    observed = ObservedFact.create(
-        schema_version="trace-1",
-        producer=ProducerId("test", "1"),
-        trace_id=trace,
-        execution_id=ThreadInstanceId.from_parts(trace, 1),
-        subject=None,
-        observation_kind="memory",
-    )
-    result.ledger.add(observed)
-
-    with pytest.raises(
-        DiagnosticSnapshotAdapterError,
-        match="observations or hints",
-    ):
-        static_snapshot_from_certificate(result)
+    with pytest.raises(CertificateBridgeError, match="explain-only"):
+        build_static_certificate_with_evidence(
+            _empty_slice(scope),
+            _portability(scope),
+            binding_from_manifest(_manifest(), scope=scope),
+        )

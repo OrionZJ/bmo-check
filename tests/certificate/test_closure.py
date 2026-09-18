@@ -89,9 +89,8 @@ def test_static_safe_requires_reachable_proof_for_each_removed_event() -> None:
         removal_decisions=(RemovalDecision(event, proof.id, "scope-a"),),
     )
 
-    result = verify_static_certificate(certificate, ledger)
-
-    assert result.proof_closure == (proof,)
+    with pytest.raises(CertificateError, match="explain-only"):
+        verify_static_certificate(certificate, ledger)
 
 
 def test_static_safe_rejects_observed_or_diagnostic_root() -> None:
@@ -173,8 +172,8 @@ def test_static_safe_rejects_unresolved_unknown_and_accepts_explicit_discharge()
     from bmo_check_core import UnknownDischarge
 
     ledger.add_discharge(UnknownDischarge(unknown.id, proof.id, "scope-a"))
-    result = verify_static_certificate(certificate, ledger)
-    assert result.discharged_unknowns == (unknown.id,)
+    with pytest.raises(CertificateError, match="explain-only"):
+        verify_static_certificate(certificate, ledger)
 
 
 def test_static_safe_rejects_bounded_result_and_binding_mismatch() -> None:
@@ -221,9 +220,36 @@ def test_trace_certificate_accepts_only_same_trace_observed_roots() -> None:
         complete=True,
     )
 
-    result = verify_trace_certificate(certificate, ledger)
+    with pytest.raises(CertificateError, match="explain-only"):
+        verify_trace_certificate(certificate, ledger)
 
-    assert result.observed_roots == (observed,)
+
+def test_unknown_legacy_certificate_remains_explainable() -> None:
+    trace, _ = _trace()
+    certificate = TraceCertificate(
+        schema_version="trace-1",
+        verdict=TraceVerdict.UNKNOWN,
+        binding=_binding(),
+        trace_id=trace,
+    )
+
+    result = verify_trace_certificate(certificate, EvidenceLedger())
+
+    assert result.observed_roots == ()
+
+
+def test_v2_placeholder_cannot_be_upgraded_with_empty_completeness() -> None:
+    trace, _ = _trace()
+    certificate = TraceCertificate(
+        schema_version="trace-certificate-v2",
+        verdict=TraceVerdict.TRACE_SAFE,
+        binding=_binding(),
+        trace_id=trace,
+        complete=True,
+    )
+
+    with pytest.raises(CertificateError, match="completeness ledgers"):
+        verify_trace_certificate(certificate, EvidenceLedger())
 
 
 def test_trace_safe_rejects_incomplete_or_static_root() -> None:

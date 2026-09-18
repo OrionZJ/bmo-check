@@ -44,6 +44,34 @@ def _proof_covers_event(proof: ProofFact, event_id: MemoryEventId) -> bool:
     return event_id in proof.covered_events or proof.subject == event_id
 
 
+def _reject_legacy_determinate_schema(
+    schema_version: str,
+    *,
+    kind: str,
+    verdict: CertificateVerdict | TraceVerdict,
+) -> None:
+    """旧证书只能解释，不能借空字段通过新的 replay 门禁。"""
+
+    if verdict in {
+        CertificateVerdict.SAFE,
+        CertificateVerdict.COUNTEREXAMPLE,
+        TraceVerdict.TRACE_SAFE,
+        TraceVerdict.COUNTEREXAMPLE,
+    }:
+        expected = f"{kind}-certificate-v2"
+        if schema_version != expected:
+            raise CertificateError(
+                f"legacy {kind} certificate schema is explain-only; "
+                f"replay requires {expected} with completeness ledgers"
+            )
+        # C0.4 只建立拒绝门；universe/obligation/window ledger 会在 RU2/RU5/RU6
+        # 引入。现在不能用一个空 digest 或空列表冒充 v2 completeness。
+        raise CertificateError(
+            f"{kind} certificate v2 replay is unavailable until completeness "
+            "ledgers are bound"
+        )
+
+
 def verify_static_certificate(
     certificate: StaticCertificate,
     ledger: EvidenceLedger,
@@ -114,6 +142,12 @@ def verify_static_certificate(
     if certificate.verdict == CertificateVerdict.COUNTEREXAMPLE and certificate.relevant_unknowns:
         raise CertificateError("COUNTEREXAMPLE cannot contain relevant UnknownFacts")
 
+    _reject_legacy_determinate_schema(
+        certificate.schema_version,
+        kind="static",
+        verdict=certificate.verdict,
+    )
+
     return StaticVerification(
         certificate=certificate,
         proof_closure=closure,
@@ -144,6 +178,11 @@ def verify_trace_certificate(
         observed_roots.append(node)
     if certificate.verdict == TraceVerdict.TRACE_SAFE and not certificate.complete:
         raise CertificateError("incomplete trace cannot produce TRACE_SAFE")
+    _reject_legacy_determinate_schema(
+        certificate.schema_version,
+        kind="trace",
+        verdict=certificate.verdict,
+    )
     return TraceVerification(certificate, tuple(observed_roots))
 
 

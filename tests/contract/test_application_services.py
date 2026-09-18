@@ -186,7 +186,7 @@ def _static_service_request(tmp_path: Path) -> StaticRequest:
     )
 
 
-def test_static_analyze_service_replays_canonical_certificate(
+def test_static_analyze_service_downgrades_unreplayable_legacy_certificate(
     monkeypatch, tmp_path: Path
 ) -> None:
     request = _static_service_request(tmp_path)
@@ -195,10 +195,11 @@ def test_static_analyze_service_replays_canonical_certificate(
 
     result = analyze_with_evidence(request)
 
-    assert result.legacy_certificate.verdict.value == "SAFE"
-    assert result.canonical_certificate is not None
-    assert result.canonical_certificate.verification.certificate.verdict.value == "SAFE"
-    assert analyze_static(request).verdict.value == "SAFE"
+    assert result.legacy_certificate.verdict.value == "UNKNOWN"
+    assert result.canonical_certificate is None
+    assert result.canonical_error is not None
+    assert "explain-only" in result.canonical_error
+    assert analyze_static(request).verdict.value == "UNKNOWN"
 
 
 def test_static_analyze_service_records_unbound_revision_without_fabricating_binding(
