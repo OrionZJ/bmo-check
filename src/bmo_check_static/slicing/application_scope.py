@@ -13,15 +13,11 @@ from bmo_check_static.model import (
 def _is_runtime_boundary(event: MemoryEvent, executable_sha256: str) -> bool:
     """识别显式契约覆盖的运行库 effect。
 
-    application scope 只把已经命名为运行库内部状态的调用移出应用通信图。
-    未命名的 opaque call、syscall 和未知地址仍然留在 slice 中，避免把一个
-    可能访问应用对象的外部调用误当成安全。
+    module hash 只能说明事件来自另一个 ELF，不能说明它没有访问应用对象。
+    只有 effect contract 明确标记 runtime_internal 的事件才能移出应用图；
+    未命名的普通访存、opaque call、syscall 和未知地址继续留在 slice 中。
     """
 
-    if event.module_sha256 != executable_sha256:
-        return True
-    if event.kind != EventKind.OPAQUE_CALL:
-        return False
     return (
         event.provenance.get("runtime_internal") is True
         or (

@@ -417,6 +417,20 @@ COUNTEREXAMPLE必须包含events、PO/RF/CO/FR、Fence/atomic/sync、source/targ
   cross-module pruning、FUTEX ordering、certificate ledger 和 TraceStore identity
   仍未修复。完整默认 suite 尚未在本 unit 结束时运行。
 
+### C0.2 已完成
+
+- 提交：待本次提交生成。
+- finding：F01；witness：W1。
+- application scope 不再因 `module_sha256 != executable_sha256` 自动删除事件；
+  只有 `runtime_internal` effect/object provenance 才能进入 runtime boundary
+  removal。普通 dependency-library load/store、opaque call、syscall 和未知对象
+  继续留在 slice 中。
+- focused tests：`26 passed`（partition/slice 与 portability verifier）；相关
+  invariant/architecture tests：`14 passed`；`git diff --check` 通过。
+- 删除的旧结构：无；这是止血收紧，永久 projection ledger 仍待 RU3。
+- 剩余风险：runtime_internal 标记本身还没有接入 canonical removal ledger，
+  library-mediated communication 的 legality-preserving proof 仍待 RU3/RU6。
+
 ## 当前执行点
 
 RU1 的第一个 atomic commit 已完成：引入 `SemanticPrimitive` 和
@@ -429,8 +443,8 @@ FUTEX_WAIT 的无条件 full-order 风险写成严格 xfail characterization。�
 synchronization rule 关闭，或者继续返回 UNKNOWN。
 
 审计补充后，C0.1 已关闭：不完整 communication graph 只能产生 typed Unknown。
-下一提交进入 C0.2，暂停无 proof 的跨 module static pruning；不得把 module hash
-差异当作 removal proof。`8ac64a0` 的 RU1 characterization 保留，C0 完成后再
-继续为 PPO、same-address、RF/CO/FR、显式 Fence 和 atomic boundary 建立
-fixed-execution characterization。C0 只收紧到 `UNKNOWN`，不能借机增加新的 fast
-path；这一阶段不运行大规模 PARSEC 或 2595 corpus。
+下一提交进入 C0.3，令 FUTEX ordering 只来自 immutable、可绑定的 syscall
+contract；没有 rule 时生成 typed Unknown。`8ac64a0` 的 RU1 characterization
+保留，C0 完成后再继续为 PPO、same-address、RF/CO/FR、显式 Fence 和 atomic
+boundary 建立 fixed-execution characterization。C0 只收紧到 `UNKNOWN`，不能借机
+增加新的 fast path；这一阶段不运行大规模 PARSEC 或 2595 corpus。

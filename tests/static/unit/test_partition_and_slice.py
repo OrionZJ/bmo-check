@@ -322,6 +322,35 @@ def test_application_scope_removes_runtime_sync_edges_with_their_call() -> None:
     assert scoped.proof_objects[-1].reason == ProofReason.APPLICATION_RUNTIME_BOUNDARY
 
 
+def test_application_scope_keeps_dependency_event_without_ownership_proof() -> None:
+    """外部模块身份不能证明它没有读写应用拥有的对象。"""
+
+    dependency_load = MemoryEvent(
+        id="lib:load-app-object",
+        module="/lib/libworker.so",
+        module_sha256="b" * 64,
+        pc=0x3000,
+        kind=EventKind.LOAD,
+        address=AbstractAddress(
+            kind=AddressKind.GLOBAL,
+            base="application:shared",
+            offset=0,
+        ),
+        size=4,
+        thread_role="worker",
+    )
+    scoped = restrict_to_application_scope(
+        SharedMemorySlice(
+            events=(dependency_load,),
+            coverage=PruningCoverage(total_events=1, remaining_shared_events=1),
+        ),
+        executable_sha256="a" * 64,
+    )
+
+    assert tuple(event.id for event in scoped.events) == (dependency_load.id,)
+    assert scoped.proof_objects == ()
+
+
 def test_shared_state_proof_round_trip() -> None:
     proof = ProofObject(
         id="proof:tls",
