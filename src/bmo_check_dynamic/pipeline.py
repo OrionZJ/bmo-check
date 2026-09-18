@@ -5,6 +5,7 @@ import tempfile
 from itertools import chain
 from pathlib import Path
 
+from bmo_check_core import UnknownKind
 from bmo_check_dynamic import __version__
 from bmo_check_dynamic.analysis import (
     CompactCommunicationEdges,
@@ -349,6 +350,14 @@ def analyze_trace(
             unknowns.extend(
                 result.reason for result in results if result.status == "unknown"
             )
+            unknown_kinds: list[UnknownKind] = []
+            if not communication_edges_complete:
+                # 分区、handoff 或空窗口只能说明某个局部条件，不能代替
+                # communication graph 的完整枚举；否则相关边被遗漏时会误报 TRACE_SAFE。
+                unknown_kinds.append(UnknownKind.INCOMPLETE_RECOVERY)
+                unknowns.append(
+                    "communication graph is incomplete; trace-scoped ordering cannot be closed"
+                )
             if unknowns:
                 verdict = TraceVerdict.UNKNOWN
             elif any(result.status == "counterexample" for result in results):
@@ -402,6 +411,7 @@ def analyze_trace(
                 indirect_target_count=indirect_count,
                 application_partition=application_partition,
                 windows=results,
+                unknown_kinds=tuple(dict.fromkeys(unknown_kinds)),
                 unknown_reasons=tuple(dict.fromkeys(unknowns)),
                 assumptions=tuple(assumptions),
             )

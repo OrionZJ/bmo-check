@@ -144,9 +144,10 @@ def test_application_partition_can_close_without_runtime_graph(
         dbt_contract=_contract(tmp_path),
         config=DynamicConfig(application_only=True),
     )
-    assert certificate.verdict == TraceVerdict.TRACE_SAFE
+    assert certificate.verdict == TraceVerdict.UNKNOWN
     assert not certificate.communication_edges_complete
     assert certificate.windows == ()
+    assert certificate.unknown_kinds
 
 
 def test_application_atomic_event_does_not_use_partition_shortcut(
@@ -184,6 +185,50 @@ def test_application_atomic_event_does_not_use_partition_shortcut(
     )
     assert calls == 1
     assert certificate.communication_edges_complete
+
+
+def test_application_only_cannot_skip_library_mediated_communication(
+    trace_manifest, tmp_path: Path, monkeypatch
+) -> None:
+    """主模块分区不能证明外部库访问不会触碰应用拥有的对象。"""
+
+    trace_dir = tmp_path / "library-mediated-edge"
+    manifest = trace_manifest(trace_dir)
+    (trace_dir / "modules.tsv").write_text(
+        f"0x1000\t0x2000\t{manifest.executable.path}\n",
+        encoding="utf-8",
+    )
+    with TraceWriter(trace_dir / "events-1.bin") as writer:
+        writer.write(TraceEvent(1, 1, 1, 0x1100, EventKind.THREAD_START))
+        writer.write(TraceEvent(1, 2, 2, 0x1101, EventKind.THREAD_CREATE, address=2))
+        writer.write(TraceEvent(1, 3, 3, 0x1102, EventKind.THREAD_CREATE, address=3))
+        writer.write(TraceEvent(1, 4, 10, 0x1103, EventKind.THREAD_JOIN, address=2))
+        writer.write(TraceEvent(1, 5, 11, 0x1104, EventKind.THREAD_JOIN, address=3))
+        writer.write(TraceEvent(1, 6, 12, 0x1105, EventKind.THREAD_END))
+    with TraceWriter(trace_dir / "events-2.bin") as writer:
+        writer.write(TraceEvent(2, 1, 4, 0x1200, EventKind.THREAD_START))
+        writer.write(TraceEvent(2, 2, 5, 0x1201, EventKind.STORE, 0x5000, 4))
+        writer.write(TraceEvent(2, 3, 9, 0x1202, EventKind.THREAD_END))
+    with TraceWriter(trace_dir / "events-3.bin") as writer:
+        writer.write(TraceEvent(3, 1, 6, 0x3000, EventKind.THREAD_START))
+        writer.write(TraceEvent(3, 2, 7, 0x3001, EventKind.LOAD, 0x5000, 4))
+        writer.write(TraceEvent(3, 3, 8, 0x3002, EventKind.THREAD_END))
+
+    def unexpected_graph_scan(*_args, **_kwargs):
+        raise AssertionError("C0.1 fixture must expose the incomplete fast path")
+
+    monkeypatch.setattr(
+        "bmo_check_dynamic.pipeline.find_communication_edges", unexpected_graph_scan
+    )
+    certificate = analyze_trace(
+        trace_dir,
+        dbt_contract=_contract(tmp_path),
+        config=DynamicConfig(application_only=True),
+    )
+
+    assert certificate.verdict == TraceVerdict.UNKNOWN
+    assert not certificate.communication_edges_complete
+    assert certificate.unknown_kinds
 
 
 def test_application_atomic_scan_excludes_external_only_edges_but_keeps_mixed_edges(

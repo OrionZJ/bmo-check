@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from enum import Enum
 
+from bmo_check_core import UnknownKind
 from pydantic import Field, model_validator
 
 from .manifest import BinaryFingerprint, StrictModel
@@ -100,6 +101,9 @@ class DynamicCertificate(StrictModel):
     # 分区证据帮助解释应用访问；整体验证仍由所有 windows 决定。
     application_partition: ApplicationPartitionEvidence | None = None
     windows: tuple[WindowResult, ...] = ()
+    # unknown_kinds 给 machine-readable gate 一个稳定分类；unknown_reasons
+    # 继续保留具体上下文，但不能单靠自由文本决定是否允许 TRACE_SAFE。
+    unknown_kinds: tuple[UnknownKind, ...] = ()
     unknown_reasons: tuple[str, ...] = ()
     assumptions: tuple[str, ...] = ()
 
@@ -108,11 +112,21 @@ class DynamicCertificate(StrictModel):
         if self.verdict == TraceVerdict.TRACE_SAFE:
             if not self.trace_complete or self.unknown_reasons:
                 raise ValueError("TRACE_SAFE requires a complete trace without Unknowns")
+            if self.unknown_kinds:
+                raise ValueError("TRACE_SAFE cannot contain typed Unknowns")
+            if not self.communication_edges_complete:
+                raise ValueError(
+                    "TRACE_SAFE requires a complete communication graph"
+                )
             if any(window.status != "safe" for window in self.windows):
                 raise ValueError("TRACE_SAFE requires every window to be safe")
         if self.verdict == TraceVerdict.COUNTEREXAMPLE:
             if not self.trace_complete or self.unknown_reasons:
                 raise ValueError("COUNTEREXAMPLE requires complete evidence without Unknowns")
+            if self.unknown_kinds or not self.communication_edges_complete:
+                raise ValueError(
+                    "COUNTEREXAMPLE requires complete communication evidence"
+                )
             if not any(
                 window.witness is not None and window.witness.validated
                 for window in self.windows

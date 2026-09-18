@@ -402,6 +402,21 @@ COUNTEREXAMPLE必须包含events、PO/RF/CO/FR、Fence/atomic/sync、source/targ
 - application scope、trace completeness、lifecycle identity 和 certificate replay 仍可能产生 false confidence。
 - 完整测试在当前检查点没有本轮通过结论；后续必须按 unit 逐步补齐。
 
+### C0.1 已完成
+
+- 提交：待本次提交生成。
+- finding：F03、F13；witness：W2、W10。
+- `DynamicCertificate` 新增 typed `unknown_kinds`；不完整 communication graph
+  现在会记录 `IncompleteRecovery`，并阻止 `TRACE_SAFE`/`COUNTEREXAMPLE`。
+- pipeline 不再把 application partition、thread handoff 或空 windows 当成
+  graph completeness；application-only fast path 未新增，原有不完整路径只会收紧为
+  `UNKNOWN`。
+- focused/invariant tests：`25 passed`（pipeline、dynamic trace binding、current
+  verdict baseline）；`git diff --check` 通过。
+- 剩余风险：C0.1 只关闭 dynamic incomplete-graph 的错误接受路径；static
+  cross-module pruning、FUTEX ordering、certificate ledger 和 TraceStore identity
+  仍未修复。完整默认 suite 尚未在本 unit 结束时运行。
+
 ## 当前执行点
 
 RU1 的第一个 atomic commit 已完成：引入 `SemanticPrimitive` 和
@@ -413,8 +428,9 @@ FUTEX_WAIT 的无条件 full-order 风险写成严格 xfail characterization。�
 当前实现仍把 FUTEX_WAIT 当成全序边界，后续必须由 contract-backed
 synchronization rule 关闭，或者继续返回 UNKNOWN。
 
-审计补充后，下一提交先进入 C0.1：禁止 communication graph 不完整的路径产生
-`TRACE_SAFE`。`8ac64a0` 的 RU1 characterization 保留，C0 完成后再继续为 PPO、
-same-address、RF/CO/FR、显式 Fence 和 atomic boundary 建立 fixed-execution
-characterization。C0 只收紧到 `UNKNOWN`，不能借机增加新的 fast path；这一阶段
-不运行大规模 PARSEC 或 2595 corpus。
+审计补充后，C0.1 已关闭：不完整 communication graph 只能产生 typed Unknown。
+下一提交进入 C0.2，暂停无 proof 的跨 module static pruning；不得把 module hash
+差异当作 removal proof。`8ac64a0` 的 RU1 characterization 保留，C0 完成后再
+继续为 PPO、same-address、RF/CO/FR、显式 Fence 和 atomic boundary 建立
+fixed-execution characterization。C0 只收紧到 `UNKNOWN`，不能借机增加新的 fast
+path；这一阶段不运行大规模 PARSEC 或 2595 corpus。
