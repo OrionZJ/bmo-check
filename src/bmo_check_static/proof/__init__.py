@@ -1,6 +1,11 @@
 """最终 verdict 入口；其他分析层只能提供事实或 Unknown。"""
 
-from .verifier import explain_certificate, verify_certificate_scope, verify_portability
+from .verifier import (
+    downgrade_unreplayable_certificate,
+    explain_certificate,
+    verify_certificate_scope,
+    verify_portability,
+)
 from .evidence import StaticPortabilityEvidence, verify_portability_with_evidence
 from .certificate_bridge import (
     CertificateBridgeError,
@@ -26,6 +31,7 @@ __all__ = [
     "StaticFixedModelResult",
     "characterize_fixed_execution",
     "explain_certificate",
+    "downgrade_unreplayable_certificate",
     "verify_certificate_scope",
     "verify_portability",
     "verify_portability_with_evidence",

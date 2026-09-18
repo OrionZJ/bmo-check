@@ -24,6 +24,37 @@ from bmo_check_static.model import (
 from .encoding import BACKEND_NAME, BACKEND_VERSION, check_finite_portability
 
 
+def downgrade_unreplayable_certificate(
+    certificate: PortabilityCertificate,
+    reason: str,
+) -> PortabilityCertificate:
+    """旧证书无法重放时，由 verdict 层统一降级为 UNKNOWN。"""
+
+    if certificate.verdict == Verdict.UNKNOWN:
+        return certificate
+    blocker = UnknownFact(
+        kind=UnknownKind.PORTABILITY_CHECK_INCOMPLETE,
+        reason=reason,
+        impact="canonical certificate replay is unavailable for this result",
+        details={"certificate_schema": certificate.schema_version},
+    )
+    checker = certificate.checker.model_copy(
+        update={
+            "bounded": True,
+            "conclusion": CheckerConclusion.INCOMPLETE,
+            "reason": reason,
+        }
+    )
+    return PortabilityCertificate(
+        verdict=Verdict.UNKNOWN,
+        scope=certificate.scope,
+        coverage=certificate.coverage,
+        checker=checker,
+        proof_objects=certificate.proof_objects,
+        relevant_unknowns=certificate.relevant_unknowns + (blocker,),
+    )
+
+
 def _deduplicate_unknowns(unknowns: list[UnknownFact]) -> tuple[UnknownFact, ...]:
     seen: set[tuple[object, ...]] = set()
     result: list[UnknownFact] = []

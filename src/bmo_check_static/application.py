@@ -23,7 +23,6 @@ from bmo_check_static.binary.symbols import function_symbols
 from bmo_check_static.config import load_contract_version, load_function_effect_contract
 from bmo_check_static.controlflow import recover_control_flow
 from bmo_check_static.model import (
-    CheckerConclusion,
     CheckerLimits,
     ExecutionScope,
     FingerprintReport,
@@ -33,7 +32,6 @@ from bmo_check_static.model import (
     ProgramSliceReport,
     UnknownFact,
     UnknownKind,
-    Verdict,
 )
 from bmo_check_static.proof import (
     CertificateBridgeError,
@@ -41,6 +39,7 @@ from bmo_check_static.proof import (
     binding_from_manifest,
     build_static_certificate_from_report,
     verify_portability,
+    downgrade_unreplayable_certificate,
 )
 from bmo_check_static.slicing import build_shared_memory_slice, restrict_to_application_scope
 from bmo_check_static.synchronization import analyze_pthread_synchronization
@@ -49,42 +48,6 @@ from bmo_check_static.threading import discover_pthread_threads
 
 class StaticApplicationError(ValueError):
     """请求不能形成静态分析范围时抛出。"""
-
-
-def _downgrade_unreplayable_certificate(
-    certificate: PortabilityCertificate,
-    reason: str,
-) -> PortabilityCertificate:
-    """旧证书不能重放时，只返回可解释的 UNKNOWN。
-
-    旧 JSON 仍供报告查看，但不能把旧的确定结论继续传给 CLI 或评测。
-    这里新增的 UnknownFact 记录的是证书边界缺口，而不是静态分析已经
-    证明了某个内存关系。
-    """
-
-    if certificate.verdict == Verdict.UNKNOWN:
-        return certificate
-    blocker = UnknownFact(
-        kind=UnknownKind.PORTABILITY_CHECK_INCOMPLETE,
-        reason=reason,
-        impact="canonical certificate replay is unavailable for this result",
-        details={"certificate_schema": certificate.schema_version},
-    )
-    checker = certificate.checker.model_copy(
-        update={
-            "bounded": True,
-            "conclusion": CheckerConclusion.INCOMPLETE,
-            "reason": reason,
-        }
-    )
-    return PortabilityCertificate(
-        verdict=Verdict.UNKNOWN,
-        scope=certificate.scope,
-        coverage=certificate.coverage,
-        checker=checker,
-        proof_objects=certificate.proof_objects,
-        relevant_unknowns=certificate.relevant_unknowns + (blocker,),
-    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -426,7 +389,7 @@ def analyze_with_evidence(
         replay_error = f"canonical static certificate replay failed: {error}"
         return StaticAnalysisResult(
             report=report,
-            legacy_certificate=_downgrade_unreplayable_certificate(
+            legacy_certificate=downgrade_unreplayable_certificate(
                 legacy_certificate,
                 replay_error,
             ),
