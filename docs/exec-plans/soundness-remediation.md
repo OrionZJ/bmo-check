@@ -73,6 +73,246 @@ RU7 adversarial regression 与完整 suite
 
 RU4 与 RU5 可在 RU2 的 identity 接口稳定后并行推进，但任何 verifier 或 certificate 的完整性变更都必须等待它们提供稳定输入。RU3 依赖 RU1 的语义和 RU2 的 obligation，RU6 依赖 RU1～RU5 的 canonical ledger。旧的 application-only fast path 在 RU3、RU5、RU6 完成前视为停用或只能走保守边界。
 
+## 审计发现到修复单元的追踪矩阵
+
+本表是后续提交的范围依据。每个提交必须引用至少一个 finding ID；不能只写“提高完整性”而不说明关闭了哪条错误接受路径。
+
+| ID | 已确认问题 | 当前错误接受路径 | 永久修复单元 | 完成证据 |
+| --- | --- | --- | --- | --- |
+| F01 | static application scope 按 module 删除 dependency-library event | library event 消失 → conflict/Unknown 消失 → structural `SAFE` | RU2、RU3、RU6 | W1；每个 event 都 retained 或 removed-with-proof |
+| F02 | application-scope removal 没进入 canonical `RemovalDecision` | slice 已删除，但 certificate 不记账 | RU2、RU3、RU6 | 删除任一 decision 都让 replay 失败 |
+| F03 | dynamic application-only fast path 不枚举完整 communication graph | empty edges/windows → `TRACE_SAFE` | C0、RU3、RU5、RU6 | W2/W10；不完整 graph 必须 `UNKNOWN` |
+| F04 | FUTEX_WAIT 被无条件当 full boundary | target relation 被增强 → target-only execution 消失 | C0、RU1 | W4；ordering 只能来自 versioned contract rule |
+| F05 | pthread join 按出现顺序配对 | 错 worker 获得 join HB → 边被错误删除 | RU4 | W3；handle→thread instance→join 可追踪 |
+| F06 | lifecycle completeness 只覆盖已恢复线程子集 | 未记录 worker 不在 completeness universe | RU2、RU4、RU5 | W14；每个发出 event 的 thread 都有状态 |
+| F07 | SAFE certificate 无 event universe completeness | producer 漏 event 后仍可 `SAFE` | RU2、RU6 | W7；universe digest/count/accounting replay |
+| F08 | SAFE certificate 无 obligation completeness | producer 不产生 obligation 即视为不存在 | RU2、RU6 | obligation inventory 可独立核对 |
+| F09 | Unknown inventory 由 producer 控制 | producer 漏 Unknown 后仍可 `SAFE` | RU2、RU6 | W8；Unknown manifest 与 analysis stage 对账 |
+| F10 | Unknown discharge 只按 event coverage | 不相关 proof 覆盖同 event 即 discharge | RU2、RU6 | W9；proof conclusion 必须匹配 proposition |
+| F11 | legacy Unknown filtering 使用裸 PC | 不同 module/operand/event 同 PC 相互污染 | RU2 | W13；稳定 instruction+operand identity |
+| F12 | `ProofFact` 不重放 rule/premises | 任意 producer rule string 可进入 closure | RU2、RU6 | rule registry、premise replay、mutation test |
+| F13 | TRACE_SAFE certificate 无 import/graph/window completeness | `complete=True` + 空 roots 即通过 | RU5、RU6 | W10；逐层 manifest 与 digest 对账 |
+| F14 | COUNTEREXAMPLE 无 replayable witness | producer verdict 无法独立复核 | RU1、RU6 | W11；PO/RF/CO/FR 与双模型 legality replay |
+| F15 | binding 未绑定全部 semantic inputs | contract/config/spec 改变后证书仍有效 | RU1、RU5、RU6 | W12；canonical content digests |
+| F16 | TraceStore 无 subject identity/import ledger | 旧新 trace 混合但证书只绑定当前 trace | RU5 | stale/partial/repeated import fixtures |
+| F17 | static/dynamic memory semantics 漂移 | 同 fixed execution 得到不同 legality | RU1 | shared primitive matrix + herd oracle |
+| F18 | native `SYNC_*` 没有统一 consumer semantics | 同步被遗漏或由底层访问碰巧替代 | RU1、RU4 | API sync contract fixtures；无 contract 时 `UNKNOWN` |
+| F19 | zero-run campaign 可聚合为 `TRACE_SAFE` | 空集合上的 all 被当 proof | C0、RU6 | zero-run 必须 `UNKNOWN`/input error |
+| F20 | contract/spec 多次读取导致 TOCTOU binding | 分析 bytes 与最终 digest 可能不同 | RU1、RU6 | immutable artifact snapshot test |
+
+## 立即止血阶段 C0
+
+永久迁移会跨多个提交。在此期间，已知 unsound fast path 不能继续产生确定 verdict。C0 只把错误接受路径收紧为 `UNKNOWN`，不在旧抽象上伪造 proof。
+
+### C0.1 禁止 incomplete communication 产生 TRACE_SAFE
+
+- `communication_edges_complete == false` 时，无论 windows 是否为空，都生成 typed Unknown 并返回 `UNKNOWN`。
+- application partition 的 `status == safe` 只能作诊断，不能替代 graph completeness。
+- 覆盖 W2/W10；禁止再组合 `thread_handoffs_complete`、无 application atomic、地址不重叠形成 bypass。
+
+### C0.2 暂停无 proof 的跨 module static pruning
+
+- `module_sha256 != executable_sha256` 本身不构成 removal proof。
+- effect/object ownership 不能证明无关时，保留 event 或生成 relevant Unknown。
+- 覆盖 W1；禁止增加 libc、libpthread 或 benchmark 白名单。
+
+### C0.3 FUTEX ordering fail closed
+
+- 只有 immutable contract 中显式、可绑定的 syscall rule 才可生成 ordering。
+- contract 未说明时生成 `UnknownSynchronization`/unsupported boundary，不能默认 full Fence。
+- 覆盖 W4。
+
+### C0.4 旧 certificate 降级
+
+- 缺完整 universe/obligation/window ledger 的旧 schema 只能 explain，不能 replay 成 `SAFE`/`TRACE_SAFE`。
+- 使用 schema major version 明确拒绝，不能通过补空列表“升级”。
+
+### C0.5 空 campaign 与空 subject
+
+- zero-run campaign 返回 input error 或 `UNKNOWN`。
+- 空 universe 只有在 subject manifest 证明没有 memory-order obligation 时才允许确定 verdict。
+
+C0 可拆成 4～5 个原子提交。后续永久实现必须删除临时 gate，不能让两套判定规则并存。
+
+## 目标领域模型
+
+名称可按仓库约定调整，但职责不能重新混合。
+
+```text
+AnalysisSubject
+  subject_id
+  executable_closure_digest
+  immutable_contract_digest
+  analyzer_config_digest
+  specification_digests
+
+EventUniverse
+  universe_id / subject_id
+  ordered event identities
+  producer stage inventory
+  completeness status or UnknownFact
+
+MemoryEventIdentity
+  module + instruction + operand index
+  object generation + byte range
+  thread instance / role
+
+ProofObligation
+  obligation_id / proposition_id / kind / subjects
+  semantic model and policy version
+
+ProofFact
+  conclusion proposition_id
+  registered rule id/version
+  premise evidence ids
+  scope/subject
+
+UnknownFact
+  unresolved proposition_id
+  originating pass and stable reason kind
+  affected subject and relevant scope
+
+ProjectionLedger
+  input and retained universe ids
+  removed events/relations and proof per removal
+  preservation rule
+
+TraceImportLedger
+  trace id/digest and chunk inventory
+  expected/imported counts
+  start/complete/failure state
+  event/object/thread inventories
+
+ExecutionWitness
+  events, PO, RF, CO, FR
+  fences/atomic/synchronization
+  source and lowered-target legality
+```
+
+### Identity 与 completeness 规则
+
+- ID 不得依赖 Python object address、遍历顺序、临时 row id 或随机编号。
+- PC 必须和 module/load identity 一起使用；memory event 还要带 operand index。
+- 数值 thread ID 与稳定 `ThreadInstanceId` 分离。
+- object identity 包含 lifetime/generation；地址复用生成新对象。
+- proposition identity 包含 kind 和参数，不能用 event identity 代替。
+- 各层 completeness 使用 `COMPLETE`、`INCOMPLETE(reason, scope)`、`UNSUPPORTED(reason, scope)`，不能只用 bool。
+- 只有 `COMPLETE` 可进入确定 verdict；其余状态生成 typed Unknown。
+
+## 分单元详细实施方案
+
+### RU1：canonical memory-semantics kernel
+
+RU1 只规范 fixed execution legality，不负责 ELF recovery、alias proof、window选择或 certificate completeness。
+
+1. **RU1.1 Characterize vocabulary**：建立 `AccessRange`、`MemoryOperation`、`OrderingClass`、`RelationKind`、`ExecutionRelations`；先记录差异，不改 verdict。
+2. **RU1.2 Canonical byte-location**：统一 exact/overlap/disjoint/partial；static 暂不支持 mixed-width 时保持 `UNKNOWN`。
+3. **RU1.3 Canonical source PPO**：依据 x86-TSO specification与 herd oracle定义，删除 route-specific source legality 豁免。
+4. **RU1.4 Versioned translation policy**：plain、Fence、LOCK/XCHG/RMW、syscall规则来自同一 immutable parsed contract，其canonical内容进入digest。
+5. **RU1.5 Canonical RF/CO/FR**：共同 exact-width子集必须一致；byte-partial扩展带明确 capability。
+6. **RU1.6 Migrate consumers one at a time**：每迁移一个route都与旧实现differential；随后删除被替代的旧primitive。
+
+herd7只作独立execution oracle，不产生 BMoCheck `ProofFact`。无法由contract或oracle确定的ordering保持`UNKNOWN`。退出条件是W4～W6通过、E2.5 oracle不回归、共同支持范围不存在route-specific legality exception。
+
+### RU2：typed universe、obligation、proposition 与 evidence
+
+1. **RU2.1 Stable identities**：subject/event/instruction/operand/thread/object/proposition/obligation IDs及序列化。
+2. **RU2.2 Event universe ledger**：每个producer stage输入/输出对账，event只能retained、removed-with-proof或unresolved。
+3. **RU2.3 Obligation inventory**：checker前显式枚举 conflict/execution/projection obligations。
+4. **RU2.4 Typed Unknown propositions**：Unknown指向未证明命题，替换裸PC和字符串context。
+5. **RU2.5 Registered proof rules**：`ProofFact`带registered rule、premises和明确conclusion。
+6. **RU2.6 Typed discharge**：proof conclusion必须匹配Unknown proposition，或用registered rule证明obligation不再relevant。
+7. **RU2.7 Compatibility adapter**：旧模型只能转成legacy/incomplete representation，不能合成缺失proposition。
+
+`covered_events`只保留解释用途，不再具有discharge语义；`supporting_facts`迁移为真实premises。退出条件是W7～W9、W13通过，并有property test证明删除任意event/obligation/Unknown都会使verification失败。
+
+### RU4：thread/lifecycle/synchronization identity
+
+1. lifecycle characterization覆盖create/start/end/join/detach、失败返回、handle复用、反序调度。
+2. trace schema记录create operation id、pthread_t handle、callback、parent `ThreadInstanceId`；START绑定create。
+3. join通过handle解析唯一thread instance；ambiguous/missing保留typed Unknown。
+4. 任意产生event的thread必须进入lifecycle ledger，即使缺START/END。
+5. `SYNC_*`、futex、mutex/cond/barrier分别声明ordering来源，不依赖调度ticket。
+6. 只有精确create/join proof才能删除HB覆盖的communication edge。
+
+旧trace缺correlation字段时不能猜测，必须`UNKNOWN`。退出条件是W3/W14通过，且`thread_handoffs_complete`被全universe lifecycle state替代。
+
+### RU5：TraceStore subject 与 import completeness
+
+1. metadata schema记录trace ID/digest、schema、config、chunk ledger和state。
+2. transactional import从`CREATING`到`COMPLETE`；异常保持`FAILED/INCOMPLETE`。
+3. 复用store前严格比对subject；不匹配拒绝，不静默混入或清空。
+4. manifest、raw chunk、decoded event、object/thread inventory逐层count/digest对账。
+5. communication scan和window partition记录输入universe、输出覆盖和resource-limit状态。
+
+退出条件：partial、stale、mixed、duplicate、truncated store均保守失败；同trace复用完全可重现；W10在certificate前被拒绝。
+
+### RU3：legality-preserving projection
+
+projection按effect/object ownership与relation closure证明，不按module判断。
+
+1. W1/W2及runtime/harness/shared-object characterization。
+2. projection ledger对retained/removed event和relation逐项记账。
+3. static只有`ProofFact`证明thread-local、readonly、lifecycle-disjoint或contract-closed effect时才删除。
+4. dynamic保留所有与application-owned object或retained event连通的library-mediated communication。
+5. preservation checker验证source/target obligation closure；证明不了用full graph或`UNKNOWN`。
+6. 删除旧module-only scope与独立fast-path verdict规则。
+
+退出条件：F01～F03关闭，所有removal进入canonical ledger，application-only只是有证书的projection policy。
+
+### RU6：independently replayable certificates
+
+Static SAFE必须绑定immutable subject、complete event universe、retained/removal partition、complete obligation/Unknown inventory、registered proof graph、semantic digests和checker conclusion。
+
+TRACE_SAFE还必须绑定trace/chunk/import ledger、executable/library/argv/environment/thread config、tracer/client/analyzer identities、event/object/thread universe、communication/project/window coverage及trace-scoped Unknown。
+
+COUNTEREXAMPLE必须包含events、PO/RF/CO/FR、Fence/atomic/sync、source/target legality和translation rule。
+
+提交顺序：schema vNext与strict parser → immutable binding → static universe/obligation replay → proof rule replay → trace import/graph/window replay → counterexample replay → legacy reader → 删除旧verifier确定verdict入口。
+
+退出条件：W7～W12均被独立verifier正确拒绝；mutation tests覆盖所有mandatory field；contract/spec只读取一次immutable bytes。
+
+### RU7：回归、架构约束与恢复优化
+
+- W1～W14成为长期测试，不依赖benchmark名称。
+- core semantics不得导入static/dynamic/evaluation。
+- 未知schema major version必须失败。
+- Unknown不丢、removed event必有proof、ObservedFact不进入SAFE。
+- differential共同支持范围要求exact match；差异只能是显式capability/`UNKNOWN`。
+- fast path恢复时证明与reference path产生同一universe/obligation/verdict。
+- 最后运行完整suite、E2.5 representative+herd、2595 ELF和PARSEC；corpus只衡量回归/性能，不定义正确答案。
+
+## 建议 atomic commit 序列
+
+| Commit intent | 必须验证 | 失败时行为 |
+| --- | --- | --- |
+| Record detailed soundness remediation design | `git diff --check` | 不进入生产实现 |
+| Reject incomplete dynamic communication proof | W2/W10 | `UNKNOWN` |
+| Stop unproved cross-module static pruning | W1 | 保留event/Unknown |
+| Make FUTEX ordering contract-driven | W4+oracle | unsupported→`UNKNOWN` |
+| Introduce canonical range primitives | W5/W6 | 暂不迁移consumer |
+| Unify source PPO | herd/source fixtures | mismatch阻止提交 |
+| Unify target policy semantics | DBT contract+target oracle | missing rule→`UNKNOWN` |
+| Add stable subject/event/proposition IDs | roundtrip/stability | 旧adapter标legacy |
+| Add event/obligation ledgers | deletion mutation tests | incomplete→`UNKNOWN` |
+| Enforce typed Unknown discharge | W8/W9/W13 | 不匹配拒绝 |
+| Bind lifecycle by handle identity | W3/W14 | ambiguity→typed Unknown |
+| Bind TraceStore to one subject | stale/mixed fixtures | mismatch拒绝 |
+| Add projection ledger/preservation | W1/W2 | 无proof不投影 |
+| Add certificate schema vNext | strict version/binding | 旧证书legacy-only |
+| Replay SAFE/TRACE_SAFE completeness | W7～W10 | omission拒绝 |
+| Replay counterexample witness | W11 | 缺witness拒绝 |
+| Re-enable proven fast paths | optimized==reference | 不等价保持关闭 |
+| Run full soundness regression | full suite+E2.5 | 不修改预期掩盖失败 |
+
+每个提交至少运行focused unit/invariant/contract tests和`git diff --check`；涉及依赖边界时运行architecture tests。每个unit结束时运行完整pytest。大型corpus只在RU7执行。
+
+## 进度记录协议
+
+每个commit必须在本文末尾记录：日期、hash、finding IDs、witness IDs、修改的abstraction、测试结果、仍保留的Unknown/unsupported、删除的旧结构、下一提交边界。
+
+若暂时引入xfail，必须写明对应bug、为何不算完成、由哪个后续commit关闭，以及哪个gate阻止unit完成。
+
 ## Atomic commit plan
 
 ### RU1：canonical memory-semantics kernel
@@ -173,7 +413,8 @@ FUTEX_WAIT 的无条件 full-order 风险写成严格 xfail characterization。�
 当前实现仍把 FUTEX_WAIT 当成全序边界，后续必须由 contract-backed
 synchronization rule 关闭，或者继续返回 UNKNOWN。
 
-下一提交仍只推进 RU1：为 PPO、same-address、rf/co/fr、显式 fence 和 atomic
-boundary 建立同一组 fixed-execution characterization 输入，先把 static 与
-dynamic route 的差异逐项暴露出来，再迁移一个可由 DBT contract 和 herd oracle
-确定的 primitive。此阶段不运行大规模 PARSEC 或 2595 corpus。
+审计补充后，下一提交先进入 C0.1：禁止 communication graph 不完整的路径产生
+`TRACE_SAFE`。`8ac64a0` 的 RU1 characterization 保留，C0 完成后再继续为 PPO、
+same-address、RF/CO/FR、显式 Fence 和 atomic boundary 建立 fixed-execution
+characterization。C0 只收紧到 `UNKNOWN`，不能借机增加新的 fast path；这一阶段
+不运行大规模 PARSEC 或 2595 corpus。
