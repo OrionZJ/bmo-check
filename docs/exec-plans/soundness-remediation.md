@@ -554,7 +554,14 @@ scope/reason 并暴露 `missing_event_ids`。这是独立对账值对象，尚�
 universe/identity/certificate tests 为 `35 passed`，完整默认 suite 为
 `509 passed, 10 skipped`。
 
-下一提交继续 RU2.2：在 static slice evidence adapter 建立 canonical
-`MemoryEventId` 到 `EventUniverseLedger` 的显式映射；无法唯一映射的 legacy
-event、removed proof 或 unresolved Unknown 必须停在 `INCOMPLETE/UNKNOWN`，不填充
-空字段。
+RU2.2 的 static slice 接入已在 `524f85f` 完成：`StaticSliceEvidence` 新增可选
+`event_universe`。新 builder 用 canonical event link、实际 retained report 和
+逐事件 removal decision 生成 `EventUniverseLedger`；legacy Unknown 没有唯一
+canonical subject 时不猜测 UnknownFact，而是省略 entry、暴露 `missing_event_ids`
+并设为 `INCOMPLETE`。旧 certificate bridge 构造没有 universe 时保持
+`None`，因此没有借空字段升级旧报告。focused slice/bridge/universe tests 为
+`24 passed`，完整默认 suite 为 `511 passed, 10 skipped`。
+
+下一提交进入 RU2.3：为 static portability checker 建立显式 execution/projection
+obligation inventory；旧 `covered_events` 只保留回查用途，不能再单独 discharge
+Unknown 或证明 event universe 完整。
