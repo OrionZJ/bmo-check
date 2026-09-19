@@ -703,7 +703,21 @@ suite 为 `532 passed, 10 skipped`；`git diff --check` 通过。剩余风险：
 certificate verifier 调用，registered rule registry 也未绑定到 certificate
 digest；这些属于 RU2.6/RU6 的迁移边界。
 
-下一提交继续 RU2.6 的窄 characterization：定义 typed Unknown discharge
-只能引用同 proposition 的 ProofConclusion，并拒绝 ObservedFact、DiagnosticHint
-和 legacy proof；先扩展 EvidenceLedger 的显式检查接口，不改变旧 certificate
-schema 的 explain-only 行为。
+RU2.6 的 typed discharge gate 已在 `85b3b3b` 完成：
+`EvidenceLedger.add_typed_discharge()` 先检查 Unknown 与 obligation 的稳定
+proposition/scope，再检查 ProofFact 的 `ProofConclusion`、registered rule
+registry 和 premise 类型，最后才写入已有 discharge 表。legacy Unknown、裸
+rule proof、ObservedFact/DiagnosticHint 或 proposition mismatch 都会在 ledger
+状态改变前返回 `LedgerError`；旧 `add_discharge()` 保留为 legacy reader 接口，
+没有改变旧 certificate schema 的 explain-only 行为。
+
+本提交 focused proof-rule/evidence/obligation/certificate tests 为 `37 passed`；
+随后完整默认 suite 为 `534 passed, 10 skipped`；`git diff --check` 通过。剩余
+风险：certificate verifier 尚未强制所有 SAFE discharge 使用 typed gate，且
+typed inventory 尚未绑定到 certificate 的完整 obligation universe；RU6 replay
+仍需独立重算这些输入。
+
+下一提交继续 RU2.6 的窄边界：增加 certificate-side typed discharge
+characterization，证明 SAFE replay 不能绕过 `add_typed_discharge()` 或使用
+legacy proof；在没有完整 event/obligation ledger 时仍返回 legacy/incomplete，
+不修改现有 verdict 数量或 schema 语义。
