@@ -524,6 +524,14 @@ encoder；typed 与 legacy 参数禁止混用，端点、object/range 或 exact-
 路径尚未迁移。focused static/characterization/model tests 为 `26 passed`，
 完整默认 suite 为 `498 passed, 10 skipped`。
 
-下一提交继续只迁移一个 consumer：为 dynamic fixed-execution characterization
-增加等价 typed adapter，并与 static adapter 做同一 exact-width fixture 的
-differential；不改 dynamic window verdict、TraceStore 或 certificate。
+RU1.6 的第二步已在 `028857e` 完成：dynamic fixed-execution characterization
+增加与 static 对称的 `canonicalize_fixed_relations()` 和 typed `relations=`
+入口。动态地址只能绑定到唯一 `object_locations` 或稳定的地址/宽度标签；
+FUTEX、歧义 object label、端点不属于当前 window、partial-width 和 typed/legacy
+混用都会保守返回 `UNKNOWN`。旧 dynamic tuple/dict 入口和原有 window verdict
+保持不变；static/dynamic exact-width fixture 的 typed/legacy differential
+测试通过，完整默认 suite 为 `499 passed, 10 skipped`。
+
+下一步不扩大 consumer 迁移面：先为两个 adapter 增加统一的 relation
+completeness/obligation characterization，确认“all exact”不会被误解为
+RF/CO/FR universe 完整；随后才评审是否迁移正式 checker consumer。
