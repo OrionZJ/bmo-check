@@ -494,7 +494,16 @@ differential/characterization/oracle tests 为 `35 passed`，identity/architectu
 verdict invariant tests 为 `24 passed`。本提交没有迁移 consumer，也没有修改
 最终 verdict 或 ProofFact。
 
-下一提交只推进 RU1.4：把 plain、Fence、LOCK/XCHG/RMW 和 syscall ordering
-从同一个 immutable DBT contract 中读取并建立 versioned target-policy
-characterization；缺少 contract rule 时继续 `UNKNOWN`，不改 static/dynamic
-最终 verdict，不运行大规模 PARSEC 或 2595 corpus。
+RU1.4 已在 `6c215d6` 完成：`TranslationContract` 新增 typed
+`LoweringOperation`/`FenceOperation` 查询，plain load/store、LOCK/RMW、XCHG、
+syscall 和 LFENCE/SFENCE/MFENCE 都只能从同一个 immutable contract 取值；未声明
+syscall ordering 继续是 `UNKNOWN`，调用方不能用字符串或 API 名称猜排序。新增
+`MemoryOrderContract.semantic_digest()`，把 schema、revision、source/target model
+和所有 lowering 字段绑定到 canonical SHA-256 内容摘要，覆盖 W12 的 contract
+内容边界，但尚未把 digest 接入 certificate binding。RU1.4 focused contract、
+characterization、repository-boundary 和 verdict tests 为 `26 passed`；未修改
+static/dynamic checker consumer、最终 verdict 或 ProofFact。
+
+下一提交只推进 RU1.5：为 RF/CO/FR 建立 core-owned proposition identity 和
+共同 exact-width characterization；byte-partial overlap 若没有明确 capability
+仍返回 `UNKNOWN`，不运行大规模 PARSEC 或 2595 corpus。
