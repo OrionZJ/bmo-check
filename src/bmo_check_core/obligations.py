@@ -131,6 +131,16 @@ class UnknownObligationMatch:
     reason: str
 
 
+@dataclass(frozen=True, slots=True)
+class ProofObligationMatch:
+    """记录 ProofFact conclusion 是否覆盖同一 obligation。"""
+
+    # status 只表达 typed identity 是否相同，不表达 rule 是否已证明定理。
+    status: ObligationMatchStatus
+    # reason 说明 legacy 缺字段或 proposition/scope 冲突。
+    reason: str
+
+
 def match_unknown_to_obligation(
     unknown: object,
     obligation: ProofObligation,
@@ -164,6 +174,37 @@ def match_unknown_to_obligation(
             "Unknown proposition does not match obligation proposition",
         )
     return UnknownObligationMatch(ObligationMatchStatus.MATCH, "stable proposition matches")
+
+
+def match_proof_to_obligation(
+    proof: object,
+    obligation: ProofObligation,
+) -> ProofObligationMatch:
+    """按 registered rule、conclusion proposition 和 scope 检查 proof identity。"""
+
+    from .evidence import ProofFact
+
+    if not isinstance(proof, ProofFact):
+        return ProofObligationMatch(
+            ObligationMatchStatus.MISMATCH,
+            "binding subject is not a ProofFact",
+        )
+    if proof.registered_rule is None or proof.conclusion is None:
+        return ProofObligationMatch(
+            ObligationMatchStatus.INCOMPLETE,
+            "legacy proof is missing registered rule or conclusion",
+        )
+    if proof.scope != obligation.scope or proof.conclusion.scope != obligation.scope:
+        return ProofObligationMatch(
+            ObligationMatchStatus.MISMATCH,
+            "proof and obligation scopes differ",
+        )
+    if proof.conclusion.proposition_id != obligation.proposition_id:
+        return ProofObligationMatch(
+            ObligationMatchStatus.MISMATCH,
+            "proof conclusion does not match obligation proposition",
+        )
+    return ProofObligationMatch(ObligationMatchStatus.MATCH, "proof conclusion matches")
 
 
 @dataclass(frozen=True, slots=True)
@@ -539,8 +580,10 @@ __all__ = [
     "ObligationKind",
     "ObligationMatchStatus",
     "ProofObligation",
+    "ProofObligationMatch",
     "UnknownObligationMatch",
     "match_unknown_to_obligation",
+    "match_proof_to_obligation",
     "build_execution_obligation_inventory",
     "build_conflict_obligation_inventory",
     "build_projection_obligation_inventory",

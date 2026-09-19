@@ -18,8 +18,11 @@ from bmo_check_core import (
     ObligationKind,
     ObligationMatchStatus,
     PropositionId,
+    ProofConclusion,
     ProducerId,
     ProofObligation,
+    ProofFact,
+    RegisteredProofRule,
     ThreadRoleId,
     UnknownFact,
     UnknownKind,
@@ -27,6 +30,7 @@ from bmo_check_core import (
     build_conflict_obligation_inventory,
     build_projection_obligation_inventory,
     match_unknown_to_obligation,
+    match_proof_to_obligation,
 )
 
 
@@ -298,4 +302,47 @@ def test_unknown_obligation_match_requires_same_typed_proposition_and_scope() ->
     assert (
         match_unknown_to_obligation(unknown, wrong_scope).status
         is ObligationMatchStatus.MISMATCH
+    )
+
+
+def test_proof_conclusion_matches_only_the_same_typed_obligation() -> None:
+    subject = _event("proof-subject")
+    proposition = UnknownProposition.create(
+        kind=UnknownKind.UNKNOWN_ESCAPE.value,
+        scope="slice-1",
+        subjects=(subject,),
+    )
+    obligation = ProofObligation.create(
+        proposition_id=proposition.id,
+        kind=ObligationKind.PROJECTION,
+        scope="slice-1",
+        subjects=(subject,),
+    )
+    proof = ProofFact.create(
+        schema_version="2",
+        producer=ProducerId("static", "typed-test"),
+        subject=subject,
+        rule="EscapeClosed",
+        scope="slice-1",
+        registered_rule=RegisteredProofRule.create(name="EscapeClosed", version="1"),
+        conclusion=ProofConclusion.create(
+            proposition_id=proposition.id,
+            scope="slice-1",
+        ),
+    )
+
+    result = match_proof_to_obligation(proof, obligation)
+
+    assert result.status is ObligationMatchStatus.MATCH
+
+    legacy = ProofFact.create(
+        schema_version="1",
+        producer=ProducerId("static", "legacy-test"),
+        subject=subject,
+        rule="EscapeClosed",
+        scope="slice-1",
+    )
+    assert (
+        match_proof_to_obligation(legacy, obligation).status
+        is ObligationMatchStatus.INCOMPLETE
     )
