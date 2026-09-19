@@ -761,3 +761,23 @@ join/handle/futex），为 W3/W4/W14 建立 typed ledger 缺口，而不修改 p
   context 或完整 lifecycle universe 时仍必须走 typed `UNKNOWN`。下一窄步应
   先为现有 static/dynamic 输入做只读 adapter characterization，再决定如何
   让 producer 逐字段提供身份；不能直接按当前字段猜测 join 或同步排序。
+
+### RU4.1 static legacy adapter characterization 已完成
+
+- 提交：`d0acfc9`（`Characterize static lifecycle adapter boundary`）。
+- finding：F05、F06；witness：W3、W14。
+- 新增 `characterize_thread_discovery()`，把旧
+  `ThreadDiscoveryReport` 的 role、create site 和 join candidate 转为
+  `LifecycleLedger`。静态 `handle_locations` 被保留在旧报告中，但不伪造
+  `ThreadHandleId`；缺少运行时 generation、ThreadInstanceId、START/END 时，
+  record/join/ledger 均保持 `INCOMPLETE`。
+- wrapper/callback 的旧字符串 `context_id` 只用于操作 occurrence；适配器不
+  把它升级为 `LifecycleContextId`，因此多 caller 或 callback target 未闭合时
+  不会产生静态 proof。
+- 未修改 static recovery、shared-state slice 或 checker；该函数是显式 legacy
+  reader，调用者必须检查 ledger completeness。
+- focused static lifecycle/线程证据 tests：`10 passed`；完整默认 suite：
+  `542 passed, 10 skipped`；`git diff --check` 通过。
+- 剩余风险：静态 producer 仍未输出带 context/handle generation 的新字段；
+  下一窄步是 dynamic legacy trace adapter characterization，之后才评审
+  producer schema 扩展。任何只按静态 role/slot 的 join 仍只能是 UNKNOWN。
