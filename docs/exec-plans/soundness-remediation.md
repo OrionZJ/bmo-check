@@ -655,7 +655,19 @@ certificate verifier 仍未要求所有 relevant Unknown 都具备 typed proposi
 已有 legacy producer 仍会通过旧 adapter 进入报告；RU2.4 还需要在 verifier
 边界增加显式 legacy 降级检查。
 
-下一提交继续 RU2.4 的 verifier characterization：增加一个不改变 verdict 的
-certificate-side 检查，区分 typed Unknown、legacy Unknown 和 missing
-proposition；缺少新字段时只能生成 legacy/incomplete view，不能被
-`match_unknown_to_obligation()` 或 SAFE proof closure 当作已闭合命题。
+RU2.4 的 certificate-side audit 已在 `79e2930` 完成：
+`audit_unknown_propositions()` 和 `UnknownPropositionAudit` 在 replay 输入上
+单独盘点 typed、legacy、missing Unknown。`StaticVerification` 保留这份审计
+结果，但不把 legacy Unknown 变成 typed，也不把它从 unresolved 集合移除；
+真正的 SAFE gate 仍由既有 proof closure、discharge 和 schema 门禁执行。
+
+本提交 focused certificate/evidence/obligation tests 为 `30 passed`；随后完整
+默认 suite 为 `527 passed, 10 skipped`；`git diff --check` 通过。剩余风险：
+certificate schema 尚未携带完整 event/obligation universe，因而 audit 不能替代
+RU6 独立 replay；typed Unknown 也还没有 registered proof rule 可供 discharge。
+
+下一提交进入 RU2.5 的 characterization：定义 registered proof rule、静态
+premises 和 proposition conclusion 的 typed value object，先拒绝
+ObservedFact/DiagnosticHint 作为 premise，再评审如何让 rule closure 与
+Unknown obligation 匹配；不把 rule registration 直接接到旧 SAFE certificate
+入口。
