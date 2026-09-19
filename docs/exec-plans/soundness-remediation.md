@@ -734,3 +734,30 @@ certificate-side characterization，尚未替换旧 `verify_static_certificate()
 审计并固定 lifecycle/synchronization identity 的输入契约（create/start/end/
 join/handle/futex），为 W3/W4/W14 建立 typed ledger 缺口，而不修改 pthread
 恢复算法或按调度顺序猜 join 关系。
+
+### RU4.0 生命周期/同步身份 characterization 已完成
+
+- 提交：`8ba29ef`（`Characterize lifecycle identity contract`）。
+- finding：F05、F06、F18；witness：W3、W4、W14。
+- core 新增 `ThreadHandleId`、`LifecycleContextId` 和
+  `LifecycleOperationId`。句柄身份显式绑定 subject、token 和 generation；
+  生命周期操作显式绑定 site、caller/callback context 和 producer 提供的
+  occurrence，不能用调度 ticket 或遍历顺序替代。
+- 新增 `ThreadLifecycleRecord`、`LifecycleJoinRelation` 和
+  `LifecycleLedger`。账本先接收产生事件的完整 thread universe；缺少某条
+  START/END 或第三线程记录时只能是 `INCOMPLETE`，不会把空记录解释成没有线程。
+  `resolve_handle()` 只按 `ThreadHandleId` 找唯一 child，不读取 worker/join
+  出现顺序。
+- 新增 `SynchronizationIdentity` 和 `SyncOperationKind`。它们只记录同步
+  对象与 immutable contract digest/rule 的绑定，不定义 acquire/release/full
+  ordering；FUTEX 缺少 contract rule 时不能构造 COMPLETE identity。
+- 未修改 static pthread recovery、dynamic TraceEvent/TraceStore、通信窗口、
+  checker 或任何 SAFE/TRACE_SAFE verdict 路径；这些类型目前是迁移输入契约，
+  不是现有 producer 的自动证明。
+- focused lifecycle/identity/universe tests：`23 passed`；完整默认 suite：
+  `540 passed, 10 skipped`；`git diff --check` 通过。
+- 仍保留的风险：现有 static `ThreadRole`/`ThreadJoinFact` 和 dynamic
+  `TraceEvent` 尚未填充这些身份；旧 trace 没有 handle generation、callback
+  context 或完整 lifecycle universe 时仍必须走 typed `UNKNOWN`。下一窄步应
+  先为现有 static/dynamic 输入做只读 adapter characterization，再决定如何
+  让 producer 逐字段提供身份；不能直接按当前字段猜测 join 或同步排序。
