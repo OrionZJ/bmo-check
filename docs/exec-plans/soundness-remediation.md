@@ -516,7 +516,14 @@ unit/differential tests 与 architecture/verdict tests 通过，完整默认 sui
 `496 passed, 10 skipped`。本阶段没有迁移 checker consumer、没有改变 verdict，
 也没有把 relation observation 变成 ProofFact。
 
-下一提交只推进 RU1.6：一次只迁移一个 consumer（优先 fixed-execution
-characterization adapter），用 canonical `ExecutionRelations` 与旧 tuple/dict
-做 differential；缺少 proposition、范围或 contract identity 时继续 `UNKNOWN`，
-不运行大规模 PARSEC 或 2595 corpus。
+RU1.6 的第一步已在 `0c5cd71` 完成：static fixed-execution characterization
+新增 `canonicalize_fixed_relations()` 和 typed `relations=` 入口。adapter 只把
+能够唯一绑定到同一 `SharedMemorySlice` 的 RF/CO/FR 命题转回现有 tuple/dict
+encoder；typed 与 legacy 参数禁止混用，端点、object/range 或 exact-width
+不匹配时返回 `UNKNOWN`。旧入口仍保持原行为，dynamic consumer 和正式 verdict
+路径尚未迁移。focused static/characterization/model tests 为 `26 passed`，
+完整默认 suite 为 `498 passed, 10 skipped`。
+
+下一提交继续只迁移一个 consumer：为 dynamic fixed-execution characterization
+增加等价 typed adapter，并与 static adapter 做同一 exact-width fixture 的
+differential；不改 dynamic window verdict、TraceStore 或 certificate。
