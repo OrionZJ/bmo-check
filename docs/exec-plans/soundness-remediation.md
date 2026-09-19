@@ -629,8 +629,20 @@ DiagnosticHint 没有新入口进入 Unknown 或 SAFE closure。
 producer 尚未为每个 Unknown 生成 proposition，旧 `supporting_context` 仍可能
 是唯一定位信息；因此本提交没有收紧旧 SAFE 路径，也没有声称 RU2.4 已完成。
 
-下一提交继续 RU2.4 的窄迁移：为一个不涉及 checker verdict 的 static
-recovery evidence adapter 从已有稳定 instruction/event/object 事实构造
-`UnknownProposition`，缺少唯一 subject 时明确保持 legacy/incomplete；同时
-增加 verifier/invariant 测试，证明无 proposition 的旧 Unknown 不能被新 typed
-discharge 伪装成已闭合命题。
+RU2.4 的 static recovery adapter 已在 `3486b8a` 完成：
+`emit_static_unknown()` 增加显式 `canonical_subject`/
+`canonical_proposition` 输入；只有 caller 已经拥有稳定 identity 时才创建
+`UnknownProposition`，模块路径、函数名或裸 PC 不会在 adapter 内被猜成
+instruction identity。旧调用点不传 subject 时仍生成 legacy/incomplete
+Unknown，未改变旧 producer 的 verdict。
+
+本提交 focused static evidence tests 为 `13 passed`；随后完整默认 suite 为
+`524 passed, 10 skipped`；`git diff --check` 通过。剩余风险：当前正式
+recovery producer 大多仍未把 event/object/thread identity 传入 adapter，因而
+其 Unknown 仍只能作为 legacy/incomplete view；typed proposition 还不能参与
+SAFE discharge。
+
+下一提交继续 RU2.4：增加一个只读的 typed/legacy Unknown bridge，能够在
+proposition 缺失时显式返回 `INCOMPLETE` 而不是合成 proposition；同时把
+`UnknownFact` 与 `ProofObligation` 的匹配接口限定为同一 scope、稳定
+proposition identity，继续不改变最终 SAFE/UNKNOWN 判定。
