@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from bmo_check_core import (
+    CompletenessState,
     CompletenessStatus,
     CertificateVerdict,
     EvidenceLedger,
     ModuleId,
     ObservedFact,
+    ProjectionLedger,
     ProducerId,
     TraceId,
     ThreadInstanceId,
@@ -162,6 +166,29 @@ def test_bridge_rejects_legacy_safe_with_typed_slice() -> None:
             _empty_slice(scope),
             _portability(scope),
             binding,
+        )
+
+
+def test_bridge_rejects_determinate_incomplete_projection() -> None:
+    scope = "static.test"
+    incomplete = ProjectionLedger(
+        stage=scope,
+        input_relation_ids=(),
+        entries=(),
+        preservation_rule=None,
+        completeness=CompletenessState(
+            CompletenessStatus.INCOMPLETE,
+            scope,
+            reason="fixture omitted relation universe",
+        ),
+    )
+    slice_evidence = replace(_empty_slice(scope), projection_ledger=incomplete)
+
+    with pytest.raises(CertificateBridgeError, match="relation universe is incomplete"):
+        build_static_certificate_with_evidence(
+            slice_evidence,
+            _portability(scope),
+            binding_from_manifest(_manifest(), scope=scope),
         )
 
 

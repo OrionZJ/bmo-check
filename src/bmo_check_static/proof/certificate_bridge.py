@@ -21,12 +21,14 @@ from bmo_check_core import (
     ObservedFact,
     DiagnosticHint,
     ProjectionLedger,
+    ProjectionError,
     StaticCertificate,
     StaticVerification,
     UnknownFact as CanonicalUnknownFact,
     ProofFact,
     RemovalDecision,
     UnknownDischarge,
+    verify_projection_ledger,
     verify_static_certificate,
 )
 from bmo_check_static.binary.evidence import emit_static_unknown
@@ -189,6 +191,20 @@ def build_static_certificate_with_evidence(
         relevant_unknowns=unknown_ids,
         bounded=portability_evidence.certificate.checker.bounded,
     )
+    if slice_evidence.projection_ledger is not None:
+        try:
+            verify_projection_ledger(
+                slice_evidence.projection_ledger,
+                ledger,
+                expected_scope=binding.scope,
+            )
+        except ProjectionError as error:
+            # UNKNOWN 可以携带未闭合账本供诊断；确定性 verdict 不能把
+            # 不完整 relation universe 当成 projection proof。
+            if verdict is not CertificateVerdict.UNKNOWN:
+                raise CertificateBridgeError(
+                    f"canonical static projection replay failed: {error}"
+                ) from error
     try:
         verification = verify_static_certificate(
             certificate,
