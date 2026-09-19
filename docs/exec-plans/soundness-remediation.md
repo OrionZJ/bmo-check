@@ -127,7 +127,7 @@ RU4 与 RU5 可在 RU2 的 identity 接口稳定后并行推进，但任何 veri
 - 缺完整 universe/obligation/window ledger 的旧 schema 只能 explain，不能 replay 成 `SAFE`/`TRACE_SAFE`。
 - 使用 schema major version 明确拒绝，不能通过补空列表“升级”。
 
-**状态：已完成（提交待生成）。**
+**状态：已完成。**
 
 - `verify_static_certificate` 和 `verify_trace_certificate` 对确定性旧 schema
   一律拒绝 replay；`UNKNOWN` 旧证书仍可用于解释。
@@ -138,13 +138,14 @@ RU4 与 RU5 可在 RU2 的 identity 接口稳定后并行推进，但任何 veri
 - 覆盖 F07/F08/F09/F13 的第一道 schema 门禁；完整 universe、obligation、
   window ledger 仍由 RU2/RU5/RU6 提供。
 - focused evidence/bridge/application tests: `22 passed`。
+- 提交：`60e7b13`（replay gate）、`7ddbb19`（由 verifier 统一构造保守降级）。
 
 ### C0.5 空 campaign 与空 subject
 
 - zero-run campaign 返回 input error 或 `UNKNOWN`。
 - 空 universe 只有在 subject manifest 证明没有 memory-order obligation 时才允许确定 verdict。
 
-**状态：已完成（提交待生成）。**
+**状态：已完成。**
 
 - campaign manifest 的 `runs` 必须非空，且每项 `repeat >= 1`；`repeat: 0`
   不再经过空集合聚合成 `TRACE_SAFE`，CLI 返回输入错误。
@@ -153,6 +154,7 @@ RU4 与 RU5 可在 RU2 的 identity 接口稳定后并行推进，但任何 veri
 - 静态空 universe 的确定性 replay 仍被 C0.4 的 schema/completeness 门禁拦截；
   只有 RU2 提供 subject obligation manifest 后才允许判断“确实没有义务”。
 - focused dynamic/invariant tests: `24 passed`。
+- 提交：`557db2f`。
 
 C0 可拆成 4～5 个原子提交。后续永久实现必须删除临时 gate，不能让两套判定规则并存。
 
@@ -419,14 +421,15 @@ COUNTEREXAMPLE必须包含events、PO/RF/CO/FR、Fence/atomic/sync、source/targ
 
 ### 未关闭
 
-- RU1 的 canonical primitive 尚未实现；static/dynamic semantics 漂移仍可能存在。
+- RU1 已建立 primitive 身份和 byte-range 关系边界，但 static/dynamic PPO、
+  RF/CO/FR、Fence 和 atomic boundary 仍未迁移到 canonical consumer。
 - event universe、obligation、proposition identity 尚未贯穿所有 certificate 路径。
 - application scope、trace completeness、lifecycle identity 和 certificate replay 仍可能产生 false confidence。
-- 完整测试在当前检查点没有本轮通过结论；后续必须按 unit 逐步补齐。
+- C0 后完整默认 suite 已通过；后续仍需按 RU1～RU7 的 unit 逐步补齐。
 
 ### C0.1 已完成
 
-- 提交：待本次提交生成。
+- 提交：`3d98045`。
 - finding：F03、F13；witness：W2、W10。
 - `DynamicCertificate` 新增 typed `unknown_kinds`；不完整 communication graph
   现在会记录 `IncompleteRecovery`，并阻止 `TRACE_SAFE`/`COUNTEREXAMPLE`。
@@ -441,7 +444,7 @@ COUNTEREXAMPLE必须包含events、PO/RF/CO/FR、Fence/atomic/sync、source/targ
 
 ### C0.2 已完成
 
-- 提交：待本次提交生成。
+- 提交：`5ce5994`。
 - finding：F01；witness：W1。
 - application scope 不再因 `module_sha256 != executable_sha256` 自动删除事件；
   只有 `runtime_internal` effect/object provenance 才能进入 runtime boundary
@@ -455,7 +458,7 @@ COUNTEREXAMPLE必须包含events、PO/RF/CO/FR、Fence/atomic/sync、source/targ
 
 ### C0.3 已完成
 
-- 提交：待本次提交生成。
+- 提交：`658d2a4`。
 - finding：F04/F18；witness：W4。
 - `FUTEX_WAIT` 不再由 dynamic relation 自动生成 full-order edges；只有绑定
   contract 显式声明 syscall ordering 时才允许后续实现提供该语义。当前
@@ -470,19 +473,17 @@ COUNTEREXAMPLE必须包含events、PO/RF/CO/FR、Fence/atomic/sync、source/targ
 
 ## 当前执行点
 
-RU1 的第一个 atomic commit 已完成：引入 `SemanticPrimitive` 和
-`SemanticPrimitiveRef` 作为 static、dynamic、oracle 共享的身份边界，并把
-FUTEX_WAIT 的无条件 full-order 风险写成严格 xfail characterization。该提交
-没有修改任何 checker verdict 规则，也没有改变 E2.5 baseline。
+RU1.1 的 `SemanticPrimitive`/`SemanticPrimitiveRef` 身份边界由 `8ac64a0`
+引入；C0.1～C0.5 已分别在 `3d98045`、`5ce5994`、`658d2a4`、
+`60e7b13`/`7ddbb19` 和 `557db2f` 收紧为保守失败。
 
-最小测试结果：`19 passed, 1 xfailed`。这个 xfail 不是通过条件；它明确记录
-当前实现仍把 FUTEX_WAIT 当成全序边界，后续必须由 contract-backed
-synchronization rule 关闭，或者继续返回 UNKNOWN。
+RU1.2 已在 `4608221` 完成：新增 core-owned `AccessRange`、`RangeRelation`、
+`relate_ranges` 和 `ranges_overlap`。它只描述带 object identity 的精确字节范围，
+尚未迁移 static/dynamic checker；W5/W6 characterization 明确覆盖不同对象、
+同对象不重叠、完全相等、包含和 partial overlap。focused differential/contract
+tests 为 `30 passed`，identity/architecture/verdict invariant tests 为
+`24 passed`，C0 收口后的完整 suite 为 `480 passed, 10 skipped`。
 
-审计补充后，C0.1 已关闭：不完整 communication graph 只能产生 typed Unknown。
-下一提交进入 C0.4，旧 certificate 缺少完整 universe/obligation/window ledger
-时只能 explain，不能 replay 成 `SAFE`/`TRACE_SAFE`。`8ac64a0` 的 RU1
-characterization 保留，C0 完成后再继续为 PPO、same-address、RF/CO/FR、显式
-Fence 和 atomic boundary 建立 fixed-execution characterization。C0 只收紧到
-`UNKNOWN`，不能借机增加新的 fast path；这一阶段不运行大规模 PARSEC 或 2595
-corpus。
+下一提交只推进 RU1.3：为 source PPO 建立 canonical characterization 和 herd
+oracle 对照；不改 static/dynamic 最终 verdict，不把 dynamic observation 写入
+ProofFact，也不运行大规模 PARSEC 或 2595 corpus。
