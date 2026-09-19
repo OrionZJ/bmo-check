@@ -11,8 +11,10 @@ from bmo_check_core.evidence import (
     EvidenceLedger,
     LedgerError,
     ObservedFact,
+    ProofConclusion,
     ProofFact,
     ProducerId,
+    RegisteredProofRule,
     UnknownDischarge,
     UnknownFact,
     UnknownKind,
@@ -115,6 +117,53 @@ def test_unknown_can_bind_a_typed_proposition_without_legacy_id_guessing(
                 kind=UnknownKind.UNKNOWN_ESCAPE.value,
                 scope="scope-b",
                 subjects=(subject,),
+            ),
+        )
+
+
+def test_proof_fact_can_bind_a_registered_rule_and_conclusion(
+    identities: dict[str, object],
+) -> None:
+    subject = identities["instruction"]
+    assert isinstance(subject, InstructionId)
+    proposition = UnknownProposition.create(
+        kind=UnknownKind.UNKNOWN_ESCAPE.value,
+        scope="scope-a",
+        subjects=(subject,),
+    )
+    rule = RegisteredProofRule.create(name="EscapeClosed", version="1")
+    conclusion = ProofConclusion.create(
+        proposition_id=proposition.id,
+        scope="scope-a",
+    )
+    proof = ProofFact.create(
+        schema_version="2",
+        producer=ProducerId("static-analysis", "c4"),
+        subject=subject,
+        rule="EscapeClosed",
+        scope="scope-a",
+        registered_rule=rule,
+        conclusion=conclusion,
+    )
+    ledger = EvidenceLedger()
+
+    ledger.add(proof)
+
+    assert proof.registered_rule == rule
+    assert proof.conclusion == conclusion
+    assert proof.id == proof.expected_id()
+
+    with pytest.raises(EvidenceMaterialError, match="conclusion scope"):
+        ProofFact.create(
+            schema_version="2",
+            producer=ProducerId("static-analysis", "c4"),
+            subject=subject,
+            rule="EscapeClosed",
+            scope="scope-a",
+            registered_rule=rule,
+            conclusion=ProofConclusion.create(
+                proposition_id=proposition.id,
+                scope="scope-b",
             ),
         )
 

@@ -223,6 +223,65 @@ class EvidenceAttribute:
 
 
 @dataclass(frozen=True, slots=True)
+class RegisteredProofRule:
+    """静态 proof rule 的稳定注册身份。"""
+
+    # name 是规则注册表中的 canonical 名称，不接受动态 observation 名称。
+    name: str
+    # version 绑定规则解释，避免同名规则静默改变含义。
+    version: str
+
+    def __post_init__(self) -> None:
+        _text("proof rule name", self.name)
+        _text("proof rule version", self.version)
+
+    @classmethod
+    def create(cls, *, name: str, version: str) -> "RegisteredProofRule":
+        return cls(name=name, version=version)
+
+    @property
+    def value(self) -> str:
+        return f"{self.name}@{self.version}"
+
+
+@dataclass(frozen=True, slots=True)
+class ProofConclusion:
+    """一个 ProofFact 明确声称已经证明的 proposition。"""
+
+    # proposition_id 必须与 obligation/Unknown 的 canonical proposition 相同。
+    proposition_id: PropositionId
+    # scope 防止跨 binary 或分析阶段借用 proof。
+    scope: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.proposition_id, PropositionId):
+            raise EvidenceMaterialError("proof conclusion must use a PropositionId")
+        _text("proof conclusion scope", self.scope)
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        proposition_id: PropositionId,
+        scope: str,
+    ) -> "ProofConclusion":
+        return cls(proposition_id=proposition_id, scope=scope)
+
+
+def _proof_rule_content(rule: RegisteredProofRule | None) -> str | None:
+    return None if rule is None else rule.value
+
+
+def _proof_conclusion_content(conclusion: ProofConclusion | None) -> dict[str, str] | None:
+    if conclusion is None:
+        return None
+    return {
+        "proposition_id": conclusion.proposition_id.value,
+        "scope": conclusion.scope,
+    }
+
+
+@dataclass(frozen=True, slots=True)
 class ProofFact:
     # id 必须等于当前字段重算出的 EvidenceId，ledger 会再次检查。
     id: EvidenceId
@@ -236,6 +295,10 @@ class ProofFact:
     rule: str
     # scope 限定证明可以覆盖的二进制、线程或分析范围。
     scope: str
+    # registered_rule 是可复核的规则身份；None 仅供旧证书 adapter 使用。
+    registered_rule: RegisteredProofRule | None = None
+    # conclusion 把 proof 绑定到明确 proposition；None 仅供旧证书 adapter 使用。
+    conclusion: ProofConclusion | None = None
     # premises 只能引用其他 ProofFact，具体类别由 ledger 检查。
     premises: tuple[EvidenceId, ...] = ()
     # covered_events 保存一份证明覆盖的静态访存事件，避免旧适配器把
@@ -251,6 +314,17 @@ class ProofFact:
         _subject_value(self.subject, self.scope)
         _text("proof rule", self.rule)
         _text("proof scope", self.scope)
+        if self.registered_rule is not None and not isinstance(
+            self.registered_rule, RegisteredProofRule
+        ):
+            raise EvidenceMaterialError("ProofFact registered_rule must be typed")
+        if self.conclusion is not None:
+            if not isinstance(self.conclusion, ProofConclusion):
+                raise EvidenceMaterialError("ProofFact conclusion must be typed")
+            if self.conclusion.scope != self.scope:
+                raise EvidenceMaterialError(
+                    "ProofFact conclusion scope must match proof scope"
+                )
         object.__setattr__(self, "premises", _evidence_ids("proof premises", self.premises))
         object.__setattr__(
             self,
@@ -267,6 +341,8 @@ class ProofFact:
         subject: StableId | None,
         rule: str,
         scope: str,
+        registered_rule: RegisteredProofRule | None = None,
+        conclusion: ProofConclusion | None = None,
         premises: tuple[EvidenceId, ...] = (),
         covered_events: tuple[MemoryEventId, ...] = (),
     ) -> "ProofFact":
@@ -275,6 +351,23 @@ class ProofFact:
         _text("proof scope", scope)
         if not isinstance(producer, ProducerId):
             raise EvidenceMaterialError("ProofFact producer must be a ProducerId")
+        if registered_rule is not None and not isinstance(
+            registered_rule, RegisteredProofRule
+        ):
+            raise EvidenceMaterialError("ProofFact registered_rule must be typed")
+        if conclusion is not None and not isinstance(conclusion, ProofConclusion):
+            raise EvidenceMaterialError("ProofFact conclusion must be typed")
+        content = {
+            "covered_events": [item.value for item in _memory_event_ids(
+                "proof covered_events", covered_events
+            )],
+            "rule": rule,
+            "scope": scope,
+        }
+        if registered_rule is not None:
+            content["registered_rule"] = _proof_rule_content(registered_rule)
+        if conclusion is not None:
+            content["conclusion"] = _proof_conclusion_content(conclusion)
         return cls(
             id=_make_id(
                 EvidenceCategory.PROOF_FACT,
@@ -283,24 +376,29 @@ class ProofFact:
                 subject,
                 scope,
                 normalized,
-                {
-                    "covered_events": [item.value for item in _memory_event_ids(
-                        "proof covered_events", covered_events
-                    )],
-                    "rule": rule,
-                    "scope": scope,
-                },
+                content,
             ),
             schema_version=schema_version,
             producer=producer,
             subject=subject,
             rule=rule,
             scope=scope,
+            registered_rule=registered_rule,
+            conclusion=conclusion,
             premises=normalized,
             covered_events=_memory_event_ids("proof covered_events", covered_events),
         )
 
     def expected_id(self) -> EvidenceId:
+        content = {
+            "covered_events": [item.value for item in self.covered_events],
+            "rule": self.rule,
+            "scope": self.scope,
+        }
+        if self.registered_rule is not None:
+            content["registered_rule"] = _proof_rule_content(self.registered_rule)
+        if self.conclusion is not None:
+            content["conclusion"] = _proof_conclusion_content(self.conclusion)
         return _make_id(
             EvidenceCategory.PROOF_FACT,
             self.schema_version,
@@ -308,11 +406,7 @@ class ProofFact:
             self.subject,
             self.scope,
             self.premises,
-            {
-                "covered_events": [item.value for item in self.covered_events],
-                "rule": self.rule,
-                "scope": self.scope,
-            },
+            content,
         )
 
 
