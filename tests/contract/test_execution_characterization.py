@@ -1,5 +1,13 @@
 from __future__ import annotations
 
+from bmo_check_core import (
+    AccessRange,
+    ExecutionRelations,
+    MemoryAccessKind,
+    MemoryOperation,
+    MemoryRelation,
+    RelationKind,
+)
 from bmo_check_dynamic.analysis import AnalysisWindow
 from bmo_check_dynamic.model import EventKind as DynamicEventKind, TraceEvent
 from bmo_check_dynamic.proof.characterization import (
@@ -20,6 +28,7 @@ from bmo_check_static.model import (
     SharedMemorySlice,
 )
 from bmo_check_static.proof.characterization import (
+    canonicalize_fixed_relations,
     check_fixed_execution as check_static,
 )
 from bmo_check_static.proof.encoding import _object_id
@@ -185,6 +194,79 @@ def test_fixed_full_fence_blocks_message_passing_in_both_routes() -> None:
     assert dynamic_result.source.status == dynamic_result.target.status == "forbidden"
     comparison = compare_fixed_execution(static_result, dynamic_result)
     assert comparison.status is DifferentialStatus.MATCH
+
+
+def test_static_typed_relations_match_legacy_fixed_execution() -> None:
+    static = _static_slice(
+        (
+            (
+                _static_event("w-data", "t0", 0x10, StaticEventKind.STORE, "data"),
+                _static_event("w-flag", "t0", 0x14, StaticEventKind.STORE, "flag"),
+            ),
+            (
+                _static_event("r-flag", "t1", 0x20, StaticEventKind.LOAD, "flag"),
+                _static_event("r-data", "t1", 0x24, StaticEventKind.LOAD, "data"),
+            ),
+        )
+    )
+    legacy = check_static(
+        static,
+        read_from={"r-flag": "w-flag", "r-data": None},
+    )
+    relations = canonicalize_fixed_relations(
+        static,
+        read_from={"r-flag": "w-flag", "r-data": None},
+    )
+    typed = check_static(static, relations=relations)
+
+    assert typed == legacy
+
+
+def test_static_typed_partial_relation_is_unknown_not_a_new_execution() -> None:
+    write = _static_event("w", "t0", 0x10, StaticEventKind.STORE, "x").model_copy(
+        update={"size": 8}
+    )
+    read = _static_event("r", "t1", 0x20, StaticEventKind.LOAD, "x").model_copy(
+        update={
+            "address": AbstractAddress(
+                kind=AddressKind.GLOBAL,
+                base="x",
+                offset=4,
+            )
+        }
+    )
+    static = _static_slice(
+        (
+            (write,),
+            (read,),
+        )
+    )
+    object_id = f"{HASH}:Global:x"
+    relations = ExecutionRelations(
+        read_from=(
+            MemoryRelation(
+                RelationKind.READ_FROM,
+                MemoryOperation(
+                    event_id="w",
+                    thread_id="t0",
+                    sequence=0,
+                    access=AccessRange(object_id=object_id, offset=0, size=8),
+                    kind=MemoryAccessKind.STORE,
+                ),
+                MemoryOperation(
+                    event_id="r",
+                    thread_id="t1",
+                    sequence=0,
+                    access=AccessRange(object_id=object_id, offset=4, size=4),
+                    kind=MemoryAccessKind.LOAD,
+                ),
+            ),
+        )
+    )
+    result = check_static(static, relations=relations)
+
+    assert result.source.status == result.target.status == "unknown"
+    assert "exact-width" in result.source.reason
 
 
 def test_incomplete_fixed_relations_are_unknown_not_an_allowed_execution() -> None:

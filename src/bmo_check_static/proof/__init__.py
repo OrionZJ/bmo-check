@@ -17,6 +17,7 @@ from .certificate_bridge import (
 from .characterization import (
     FixedExecutionResult as StaticFixedExecutionResult,
     FixedModelResult as StaticFixedModelResult,
+    canonicalize_fixed_relations,
     check_fixed_execution as characterize_fixed_execution,
 )
 
@@ -29,6 +30,7 @@ __all__ = [
     "build_static_certificate_with_evidence",
     "StaticFixedExecutionResult",
     "StaticFixedModelResult",
+    "canonicalize_fixed_relations",
     "characterize_fixed_execution",
     "explain_certificate",
     "downgrade_unreplayable_certificate",

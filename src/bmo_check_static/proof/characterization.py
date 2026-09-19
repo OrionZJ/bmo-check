@@ -12,7 +12,15 @@ from typing import Mapping
 
 import z3
 
-from bmo_check_static.model import CheckerLimits, SharedMemorySlice
+from bmo_check_core import (
+    AccessRange,
+    ExecutionRelations,
+    MemoryAccessKind,
+    MemoryOperation,
+    MemoryRelation,
+    RelationKind,
+)
+from bmo_check_static.model import CheckerLimits, EventKind, SharedMemorySlice
 
 from .encoding import (
     _RelationAssignment,
@@ -40,6 +48,169 @@ class FixedExecutionResult:
 
     source: FixedModelResult
     target: FixedModelResult
+
+
+def _canonical_operations(
+    shared_slice: SharedMemorySlice,
+) -> dict[str, MemoryOperation]:
+    """为 static slice 建立一次稳定的 relation 端点表。"""
+
+    operations: dict[str, MemoryOperation] = {}
+    sequences: dict[str, int] = {}
+    for event in shared_slice.events:
+        if not _is_memory(event):
+            continue
+        if (
+            event.thread_role is None
+            or event.address is None
+            or event.address.base is None
+            or event.address.offset is None
+            or event.size is None
+        ):
+            raise ValueError(f"event {event.id!r} lacks canonical relation address")
+        if event.kind is EventKind.LOAD:
+            kind = MemoryAccessKind.LOAD
+        elif event.kind is EventKind.STORE:
+            kind = MemoryAccessKind.STORE
+        elif event.kind is EventKind.ATOMIC_RMW:
+            kind = MemoryAccessKind.RMW
+        else:
+            raise ValueError(f"event {event.id!r} is not a relation memory operation")
+        sequence = sequences.get(event.thread_role, 0)
+        sequences[event.thread_role] = sequence + 1
+        object_id = (
+            f"{event.module_sha256}:{event.address.kind.value}:"
+            f"{event.address.base}"
+        )
+        operations[event.id] = MemoryOperation(
+            event_id=event.id,
+            thread_id=event.thread_role,
+            sequence=sequence,
+            access=AccessRange(
+                object_id=object_id,
+                offset=event.address.offset,
+                size=event.size,
+            ),
+            kind=kind,
+        )
+    return operations
+
+
+def canonicalize_fixed_relations(
+    shared_slice: SharedMemorySlice,
+    *,
+    read_from: Mapping[str, str | None],
+    coherence: tuple[tuple[str, str, str], ...] = (),
+    from_read: tuple[tuple[str, str, str], ...] = (),
+) -> ExecutionRelations:
+    """把旧 fixed-execution 输入转成 typed RF/CO/FR 命题。
+
+    这是 characterization adapter，不执行 x86/RVWMO legality。调用方仍须
+    由 checker 验证 RF 覆盖、CO 全序和 execution completeness；无法把关系
+    唯一绑定到本 slice 时抛出输入错误，不能猜一个 event 或 object。
+    """
+
+    operations = _canonical_operations(shared_slice)
+
+    def operation(event_id: str) -> MemoryOperation:
+        try:
+            return operations[event_id]
+        except KeyError as error:
+            raise ValueError(f"relation references unknown event {event_id!r}") from error
+
+    typed_read_from = tuple(
+        MemoryRelation(
+            RelationKind.READ_FROM,
+            None if source_id is None else operation(source_id),
+            operation(load_id),
+        )
+        for load_id, source_id in sorted(read_from.items())
+    )
+
+    events = {event.id: event for event in shared_slice.events}
+
+    def check_object_label(label: str, before: str, after: str) -> None:
+        if not isinstance(label, str) or not label:
+            raise ValueError("relation object label must be non-empty")
+        if before not in events or after not in events:
+            raise ValueError("relation object label references an unknown event")
+        if _object_id(events[before]) != label:
+            raise ValueError("relation object label does not match source event")
+        if _object_id(events[after]) != label:
+            raise ValueError("relation object label does not match target event")
+
+    typed_coherence = tuple(
+        (
+            check_object_label(label, before, after),
+            MemoryRelation(
+                RelationKind.COHERENCE,
+                operation(before),
+                operation(after),
+            ),
+        )[1]
+        for label, before, after in coherence
+    )
+    typed_from_read = tuple(
+        (
+            check_object_label(label, read, after),
+            MemoryRelation(
+                RelationKind.FROM_READ,
+                operation(read),
+                operation(after),
+            ),
+        )[1]
+        for label, read, after in from_read
+    )
+    return ExecutionRelations(
+        read_from=typed_read_from,
+        coherence=typed_coherence,
+        from_read=typed_from_read,
+    )
+
+
+def _legacy_relations(
+    shared_slice: SharedMemorySlice,
+    relations: ExecutionRelations,
+) -> tuple[Mapping[str, str | None], tuple[tuple[str, str, str], ...], tuple[tuple[str, str, str], ...]]:
+    """把已绑定到本 slice 的 typed relation 交给现有 encoder。"""
+
+    expected = _canonical_operations(shared_slice)
+    events = {event.id: event for event in shared_slice.events}
+    if not relations.all_exact_width:
+        raise ValueError("typed relation is outside the exact-width support boundary")
+
+    def event_for(operation: MemoryOperation) -> str:
+        expected_operation = expected.get(operation.event_id)
+        if expected_operation != operation:
+            raise ValueError(
+                f"typed relation endpoint {operation.event_id!r} does not match slice"
+            )
+        return operation.event_id
+
+    read_from = {
+        event_for(relation.target):
+        (None if relation.source is None else event_for(relation.source))
+        for relation in relations.read_from
+    }
+    coherence = tuple(
+        (
+            _object_id(events[event_for(relation.source)]),
+            event_for(relation.source),
+            event_for(relation.target),
+        )
+        for relation in relations.coherence
+        if relation.source is not None
+    )
+    from_read = tuple(
+        (
+            _object_id(events[event_for(relation.target)]),
+            event_for(relation.source),
+            event_for(relation.target),
+        )
+        for relation in relations.from_read
+        if relation.source is not None
+    )
+    return read_from, coherence, from_read
 
 
 def _unknown(model: str, reason: str) -> FixedModelResult:
@@ -75,9 +246,10 @@ def _check_model(
 def check_fixed_execution(
     shared_slice: SharedMemorySlice,
     *,
-    read_from: Mapping[str, str | None],
+    read_from: Mapping[str, str | None] | None = None,
     coherence: tuple[tuple[str, str, str], ...] = (),
     from_read: tuple[tuple[str, str, str], ...] = (),
+    relations: ExecutionRelations | None = None,
     timeout_ms: int = 10_000,
 ) -> FixedExecutionResult:
     """检查一组已给定的 ``rf/co``，不搜索其它关系赋值。
@@ -85,6 +257,22 @@ def check_fixed_execution(
     这个入口只报告底层 execution legality。它不会把 ``allowed`` 转成
     ``SAFE``，也不会把一次 fixture 的关系写入静态证据账本。
     """
+
+    if relations is not None:
+        if read_from is not None or coherence or from_read:
+            reason = "typed relations cannot be mixed with legacy relation arguments"
+            return FixedExecutionResult(_unknown("x86-tso", reason), _unknown("rvwmo", reason))
+        if not isinstance(relations, ExecutionRelations):
+            reason = "typed relations must be an ExecutionRelations value"
+            return FixedExecutionResult(_unknown("x86-tso", reason), _unknown("rvwmo", reason))
+        try:
+            read_from, coherence, from_read = _legacy_relations(shared_slice, relations)
+        except ValueError as error:
+            reason = f"typed relation binding is incomplete: {error}"
+            return FixedExecutionResult(_unknown("x86-tso", reason), _unknown("rvwmo", reason))
+    elif read_from is None:
+        reason = "fixed execution requires legacy or typed relation input"
+        return FixedExecutionResult(_unknown("x86-tso", reason), _unknown("rvwmo", reason))
 
     roles = {
         event.thread_role
