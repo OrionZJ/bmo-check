@@ -978,3 +978,23 @@ join/handle/futex），为 W3/W4/W14 建立 typed ledger 缺口，而不修改 p
   `communication_edges_complete`。下一原子边界应先给 certificate verifier
   增加 coverage closure/legacy downgrade tests，再决定如何对旧 schema 保守
   返回 `UNKNOWN`。
+
+### RU5.5 determinate dynamic certificate coverage gate 已完成
+
+- 提交：`cff890a`（`Reject unbound determinate trace certificates`）。
+- finding：F13、F16；witness：旧 schema/手工 `TRACE_SAFE` certificate 没有
+  event、communication、window coverage。
+- `verify_dynamic_certificate_coverage()` 现在是 dynamic evidence binding 的
+  只读 gate：`TRACE_SAFE` 或 `COUNTEREXAMPLE` 缺 coverage、trace digest、event
+  count、candidate edge count 任一不匹配，或 communication/window state 不是
+  `COMPLETE`，都会被拒绝并标为 legacy explain-only；UNKNOWN certificate 仍可
+  读取和诊断。
+- `bind_dynamic_certificate_to_trace()` 在构造 `ObservedFact` snapshot 前调用
+  该 gate，因此诊断链不能把不可独立验证的确定性证书当作完整 trace evidence。
+  没有改变 dynamic pipeline 的 checker、verdict 计算或 static SAFE closure。
+- focused binding/coverage tests：`9 passed`；完整默认 suite：`569 passed,
+  10 skipped`；`git diff --check` 通过。
+- 剩余风险：gate 还没有重算 communication/window ledger 本身，也没有进入
+  CLI `explain` 或独立 certificate replay 命令；旧动态 schema 仍可被普通
+  Pydantic reader 载入，但不得通过此 determinate binding gate。下一窄步是
+  为 coverage ledger 增加从 trace/store 的独立 replay，并覆盖 mutation cases。
