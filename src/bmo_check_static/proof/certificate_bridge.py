@@ -20,6 +20,7 @@ from bmo_check_core import (
     MemoryEventId,
     ObservedFact,
     DiagnosticHint,
+    ProjectionLedger,
     StaticCertificate,
     StaticVerification,
     UnknownFact as CanonicalUnknownFact,
@@ -40,6 +41,7 @@ from bmo_check_static.model import (
 )
 
 from ..slicing.evidence import SliceProofLink, StaticSliceEvidence
+from ..slicing import build_projection_ledger, build_shared_memory_slice
 from .evidence import StaticPortabilityEvidence
 
 
@@ -55,6 +57,8 @@ class StaticCertificateEvidence:
     ledger: EvidenceLedger
     # verification 保存本次构造时的 replay 结果，避免调用者跳过门禁。
     verification: StaticVerification
+    # projection_ledger 供后续 preservation replay 使用；不绕过当前 schema gate。
+    projection_ledger: ProjectionLedger | None = None
 
 
 def binding_from_manifest(
@@ -199,6 +203,7 @@ def build_static_certificate_with_evidence(
         certificate=certificate,
         ledger=ledger,
         verification=verification,
+        projection_ledger=slice_evidence.projection_ledger,
     )
 
 
@@ -298,6 +303,35 @@ def build_static_certificate_from_report(
         link.legacy_id for link in snapshot.unknown_links
     }
 
+    projection_ledger: ProjectionLedger | None = None
+    if (
+        report.memory_events is not None
+        and report.shared_state is not None
+        and report.shared_slice is not None
+        and report.recovery.thread_roles is not None
+    ):
+        source_slice = build_shared_memory_slice(
+            report.memory_events,
+            report.shared_state,
+            report.recovery.thread_roles,
+        )
+        event_identities = {
+            link.legacy_id: link.canonical_id
+            for link in snapshot.event_links
+            if isinstance(link.canonical_id, MemoryEventId)
+        }
+        try:
+            projection_ledger = build_projection_ledger(
+                source_slice,
+                report.shared_slice,
+                event_identities=event_identities,
+                scope=binding.scope,
+            )
+        except ValueError as error:
+            raise CertificateBridgeError(
+                f"static projection relation replay failed: {error}"
+            ) from error
+
     # 报告里的 Unknown 不能因为旧 verifier 的过滤就凭空消失。只有它明确
     # 指向一个已被 ProofFact 覆盖的事件时，才追加可回放的 discharge；其余
     # Unknown 会继续作为 canonical certificate 的 unresolved obligation。
@@ -373,6 +407,7 @@ def build_static_certificate_from_report(
             for link in snapshot.proof_links
         ),
         removal_decisions=tuple(decisions),
+        projection_ledger=projection_ledger,
     )
     portability_evidence = StaticPortabilityEvidence(
         certificate=portability_certificate,

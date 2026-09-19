@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from bmo_check_core import (
+    CompletenessStatus,
     CertificateVerdict,
     EvidenceLedger,
     ModuleId,
@@ -26,6 +27,7 @@ from bmo_check_static.model import (
     ProofObject,
     ProofReason,
     ProgramManifest,
+    ProgramOrderEdge,
     ProgramRecoveryReport,
     PruningCoverage,
     SharedStateReport,
@@ -323,6 +325,88 @@ def test_application_projection_records_removed_event_decision() -> None:
 
     assert len(result.certificate.removal_decisions) == 1
     assert result.certificate.removal_decisions[0].scope == "application"
+
+
+def test_bridge_exposes_incomplete_projection_relations() -> None:
+    runtime = MemoryEvent(
+        id="runtime-effect",
+        module="/lib/runtime.so",
+        module_sha256="c" * 64,
+        pc=0x3000,
+        kind=EventKind.OPAQUE_CALL,
+        address=AbstractAddress(
+            kind=AddressKind.GLOBAL,
+            base="runtime:private",
+            provenance={"runtime_internal": True},
+        ),
+        thread_role="worker",
+        provenance={"runtime_internal": True},
+    )
+    application = MemoryEvent(
+        id="application-load",
+        module="/bin/litmus",
+        module_sha256=HASH,
+        pc=0x3100,
+        kind=EventKind.LOAD,
+        address=AbstractAddress(
+            kind=AddressKind.GLOBAL,
+            base="application:shared",
+            offset=0,
+        ),
+        size=4,
+        thread_role="main",
+    )
+    source = SharedMemorySlice(
+        events=(runtime, application),
+        program_order=(
+            ProgramOrderEdge(
+                source_event=runtime.id,
+                target_event=application.id,
+                thread_role="worker",
+                evidence="synthetic edge",
+            ),
+        ),
+        coverage=PruningCoverage(total_events=2, remaining_shared_events=2),
+    )
+    unknown = UnknownFact(
+        kind=UnknownKind.UNKNOWN_MEMORY_EFFECT,
+        reason="an unrelated effect remains unresolved",
+        impact="the full process is not closed",
+        module="/bin/litmus",
+        pc=0x4000,
+    )
+    base = _empty_report().model_copy(
+        update={
+            "recovery": _empty_report().recovery.model_copy(
+                update={"thread_roles": ThreadDiscoveryReport()}
+            ),
+            "memory_events": MemoryEventReport(
+                module_path="/bin/litmus",
+                module_sha256=HASH,
+                events=(runtime, application),
+                program_order=source.program_order,
+            ),
+            "shared_state": SharedStateReport(
+                kept_event_ids=(runtime.id, application.id),
+            ),
+            "shared_slice": restrict_to_application_scope(
+                source,
+                executable_sha256=HASH,
+            ),
+            "unknowns": (unknown,),
+        }
+    )
+    legacy = verify_portability(base, analysis_options={"scope": "application"})
+
+    result = build_static_certificate_from_report(
+        base,
+        legacy,
+        binding_from_manifest(base.recovery.manifest, scope="application"),
+    )
+
+    assert result.projection_ledger is not None
+    assert result.projection_ledger.completeness.status is CompletenessStatus.INCOMPLETE
+    assert result.projection_ledger.missing_relation_ids
 
 
 def test_bridge_rejects_dynamic_observation() -> None:

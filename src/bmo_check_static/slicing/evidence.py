@@ -14,6 +14,7 @@ from bmo_check_core import (
     EvidenceLedger,
     MemoryEventId,
     ProducerId,
+    ProjectionLedger,
     ProofFact,
     RemovalDecision,
 )
@@ -55,6 +56,8 @@ class StaticSliceEvidence:
     removal_decisions: tuple[RemovalDecision, ...] = ()
     # event_universe 是新 producer 的逐事件对账；None 只允许旧 bridge 使用。
     event_universe: EventUniverseLedger | None = None
+    # projection_ledger 对账 PO/conflict/synchronization 的投影边界；不直接产生 verdict。
+    projection_ledger: ProjectionLedger | None = None
 
     @property
     def proof_ids(self) -> tuple[EvidenceId, ...]:
