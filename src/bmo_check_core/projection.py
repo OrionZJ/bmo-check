@@ -10,8 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
-from .evidence import RegisteredProofRule
-from .identity import EvidenceId, RelationId
+from .evidence import EvidenceLedger, ProofFact, RegisteredProofRule
+from .identity import EvidenceId, PropositionId, RelationId
 from .universe import CompletenessState, CompletenessStatus
 
 
@@ -21,6 +21,10 @@ class ProjectionRelationKind(StrEnum):
     PROGRAM_ORDER = "program_order"
     CONFLICT = "conflict"
     SYNCHRONIZATION = "synchronization"
+
+
+class ProjectionError(ValueError):
+    """投影账本或其 preservation proof 不能无损回放。"""
 
 
 class ProjectionRelationDisposition(StrEnum):
@@ -147,9 +151,107 @@ class ProjectionLedger:
         return tuple(item for item in self.input_relation_ids if item not in accounted)
 
 
+def projection_proposition_id(
+    relation_id: RelationId,
+    preservation_rule: RegisteredProofRule,
+) -> PropositionId:
+    """为一条 relation 的 preservation proof 生成稳定命题身份。"""
+
+    if not isinstance(relation_id, RelationId):
+        raise ProjectionError("projection proposition requires a RelationId")
+    if not isinstance(preservation_rule, RegisteredProofRule):
+        raise ProjectionError("projection proposition requires a registered rule")
+    return PropositionId.from_parts(
+        "projection-preserved",
+        (relation_id.value, preservation_rule.value),
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectionVerification:
+    """一组已通过 relation proof contract 的删除关系。"""
+
+    ledger: ProjectionLedger
+    verified_relation_ids: tuple[RelationId, ...]
+
+
+def verify_projection_ledger(
+    ledger: ProjectionLedger,
+    evidence: EvidenceLedger,
+    *,
+    expected_scope: str | None = None,
+) -> ProjectionVerification:
+    """独立复核投影 completeness 与 relation-level ProofFact。
+
+    这里只检查 proof 的身份、命题、规则和 premises 是否闭合；规则本身的
+    theorem replay 仍由后续 registered-rule verifier 负责。缺少任一输入关系、
+    unresolved relation 或把 event proof 当 relation proof 都会失败。
+    """
+
+    if not isinstance(ledger, ProjectionLedger):
+        raise ProjectionError("verify_projection_ledger expects a ProjectionLedger")
+    if not isinstance(evidence, EvidenceLedger):
+        raise ProjectionError("verify_projection_ledger expects an EvidenceLedger")
+    if expected_scope is not None and ledger.stage != expected_scope:
+        raise ProjectionError("projection ledger scope does not match expected scope")
+    if ledger.completeness.status is not CompletenessStatus.COMPLETE:
+        raise ProjectionError("projection relation universe is incomplete")
+    unresolved = ledger.unresolved_relation_ids
+    if unresolved:
+        raise ProjectionError("projection ledger contains unresolved relations")
+
+    proof_ids = tuple(
+        proof_id
+        for entry in ledger.entries
+        if entry.disposition is ProjectionRelationDisposition.REMOVED_WITH_PROOF
+        for proof_id in entry.proof_ids
+    )
+    if proof_ids:
+        try:
+            evidence.proof_closure(tuple(sorted(set(proof_ids), key=lambda item: item.value)))
+        except ValueError as error:
+            raise ProjectionError(f"projection proof closure is invalid: {error}") from error
+
+    verified: list[RelationId] = []
+    for entry in ledger.entries:
+        if entry.disposition is not ProjectionRelationDisposition.REMOVED_WITH_PROOF:
+            continue
+        if ledger.preservation_rule is None:
+            raise ProjectionError("removed relation has no preservation rule")
+        for proof_id in entry.proof_ids:
+            proof = evidence.get(proof_id)
+            if not isinstance(proof, ProofFact):
+                raise ProjectionError("relation removal proof is not a ProofFact")
+            if proof.scope != ledger.stage:
+                raise ProjectionError("relation removal proof scope does not match ledger")
+            if proof.subject != entry.relation_id:
+                raise ProjectionError("relation removal proof subject is not the relation")
+            if proof.registered_rule != ledger.preservation_rule:
+                raise ProjectionError("relation removal proof rule does not match ledger")
+            if proof.rule != ledger.preservation_rule.name:
+                raise ProjectionError("relation removal proof legacy rule does not match")
+            conclusion = proof.conclusion
+            if conclusion is None:
+                raise ProjectionError("relation removal proof has no proposition")
+            if conclusion.proposition_id != projection_proposition_id(
+                entry.relation_id,
+                ledger.preservation_rule,
+            ):
+                raise ProjectionError("relation removal proof proposition does not match")
+        verified.append(entry.relation_id)
+    return ProjectionVerification(
+        ledger=ledger,
+        verified_relation_ids=tuple(sorted(verified, key=lambda item: item.value)),
+    )
+
+
 __all__ = [
+    "ProjectionError",
     "ProjectionLedger",
     "ProjectionRelationDisposition",
     "ProjectionRelationEntry",
     "ProjectionRelationKind",
+    "ProjectionVerification",
+    "projection_proposition_id",
+    "verify_projection_ledger",
 ]

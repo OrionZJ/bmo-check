@@ -126,10 +126,14 @@ from .trace_import import (
     TraceLayerRecord,
 )
 from .projection import (
+    ProjectionError,
     ProjectionLedger,
     ProjectionRelationDisposition,
     ProjectionRelationEntry,
     ProjectionRelationKind,
+    ProjectionVerification,
+    projection_proposition_id,
+    verify_projection_ledger,
 )
 from .obligations import (
     ObligationInventory,
@@ -251,9 +255,13 @@ __all__ = [
     "TraceImportState",
     "TraceLayerRecord",
     "ProjectionLedger",
+    "ProjectionError",
     "ProjectionRelationDisposition",
     "ProjectionRelationEntry",
     "ProjectionRelationKind",
+    "ProjectionVerification",
+    "projection_proposition_id",
+    "verify_projection_ledger",
     "ObligationInventory",
     "ObligationKind",
     "ObligationMatchStatus",
