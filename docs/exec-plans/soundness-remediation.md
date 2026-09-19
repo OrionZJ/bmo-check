@@ -506,6 +506,17 @@ static/dynamic checker consumer、最终 verdict 或 ProofFact。
 RU1.4 focused tests 为 `26 passed`，随后完整默认 suite 为 `491 passed, 10 skipped`；
 跳过项仅依赖未配置的 DynamoRIO/native capture 或显式 opt-in 的真实 litmus ELF。
 
-下一提交只推进 RU1.5：为 RF/CO/FR 建立 core-owned proposition identity 和
-共同 exact-width characterization；byte-partial overlap 若没有明确 capability
-仍返回 `UNKNOWN`，不运行大规模 PARSEC 或 2595 corpus。
+RU1.5 的 characterization 已在 `f98a0bf` 完成，core typed relation 边界在
+`b2f0325` 完成：新增 `RelationKind`、`MemoryRelation` 和 `ExecutionRelations`，
+显式区分 RF/CO/FR 方向、初始写、端点访问类型和 proposition key。已提交的
+partial/disjoint relation 不会被当作 exact-width；`all_exact_width` 只检查已提交
+命题的范围，刻意不声称 RF/CO/FR universe 完整。静态和动态 fixed-execution
+characterization 对共同 exact-width RF/CO/FR fixture 均为 allowed；新增 relation
+unit/differential tests 与 architecture/verdict tests 通过，完整默认 suite 为
+`496 passed, 10 skipped`。本阶段没有迁移 checker consumer、没有改变 verdict，
+也没有把 relation observation 变成 ProofFact。
+
+下一提交只推进 RU1.6：一次只迁移一个 consumer（优先 fixed-execution
+characterization adapter），用 canonical `ExecutionRelations` 与旧 tuple/dict
+做 differential；缺少 proposition、范围或 contract identity 时继续 `UNKNOWN`，
+不运行大规模 PARSEC 或 2595 corpus。
