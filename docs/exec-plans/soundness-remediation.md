@@ -913,3 +913,23 @@ join/handle/futex），为 W3/W4/W14 建立 typed ledger 缺口，而不修改 p
   chunk、DuckDB events、objects 和 thread inventory 重算输入；不接受 producer
   单独提交的 `complete=True`。在此之前，旧 pipeline store 仍只能作为
   legacy/unbound storage 使用。
+
+### RU5.2 独立重算 TraceStore 导入完整性已完成
+
+- 提交：`bce27ce`（`Verify trace import completeness`）。
+- finding：F13、F16；witness：W10 以及 tampered/truncated/producer-claim
+  fixtures。
+- `TraceStore.complete_import()` 不接受 producer 的 `complete=True` 作为结论，
+  而是从实际 `manifest.json`、每个 raw event chunk、DuckDB `events`、
+  `objects` 和 distinct thread inventory 重新计算 count/digest。raw chunk
+  内容、trace digest、每层 ledger 任一不匹配，或解码事件为空，都会把绑定置为
+  `INCOMPLETE` 并拒绝 COMPLETE。
+- 完整状态转换与 chunk/layer 行写入在同一事务中完成；异常路径不会留下可复用的
+  COMPLETE 状态。截断记录由 `TraceReader` 拒绝，篡改文件由 trace digest 拒绝，
+  伪造 layer count/digest 与重算结果不一致时拒绝。
+- 该提交仍未把 `complete_import()` 接入动态 pipeline，也没有修改
+  `TRACE_SAFE` 构造；未绑定旧 store 和尚未完成 import 的 store 仍不能作为
+  完整 trace 证明。下一窄步才评审 pipeline 如何创建 binding、导入事件、物化
+  object 后调用这个 verifier，并在失败时输出 typed `UNKNOWN`。
+- focused storage/import tests：`7 passed`；完整默认 suite：`565 passed,
+  10 skipped`；`git diff --check` 通过。
