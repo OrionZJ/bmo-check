@@ -1223,3 +1223,26 @@ join/handle/futex），为 W3/W4/W14 建立 typed ledger 缺口，而不修改 p
   projection obligation 与 event universe 的绑定；缺少 relation-level ProofFact、
   premise 或 obligation closure 时继续保留完整图/`UNKNOWN`，再进入 RU6 的可重放
   certificate schema。
+
+### RU3.8 relation-level projection obligation inventory 已完成
+
+- 提交：`94c9dbd`（`Add relation projection obligations`）。
+- finding：F01/F02；witness：旧的 `build_projection_obligation_inventory()` 只
+  能从 event universe 生成 event-level subjects，无法表达被删除 PO/conflict/
+  synchronization relation 的 source/target preservation obligation。
+- core 新增 `build_projection_relation_obligation_inventory()`。它只对
+  `REMOVED_WITH_PROOF` entry 生成 `ObligationKind.PROJECTION`，subject 是同一
+  `RelationId`，proposition 直接复用 `projection_proposition_id()`；retained
+  relation 不会被伪造为删除义务。ledger scope、缺失 relation、unresolved
+  relation 或 incomplete 输入都会把 inventory 标为 `INCOMPLETE`，即使能列出
+  部分已观察 obligation 也不降级为 complete。
+- 新增 characterization 覆盖 relation identity/proposition 对齐，以及关系端点
+  被过滤时 obligation inventory 不能退化为空 proof。没有改 checker、certificate
+  verdict、动态事实或 preservation theorem。
+- focused obligation/projection/bridge tests：`32 passed`；完整默认 suite：
+  `591 passed, 10 skipped`；`git diff --check` 通过。
+- 剩余风险：该 inventory 目前还没有进入 `StaticCertificate` 的独立序列化和
+  replay；relation-level ProofFact 仍没有通用 producer。下一原子边界应在
+  `StaticSliceEvidence` 中同时绑定 event universe 与 relation obligation
+  inventory，并让 bridge 对两者 scope/completeness 做一致性检查；缺少任一侧时
+  继续保留完整图/`UNKNOWN`，不能凭 inventory 数量产生 SAFE。
