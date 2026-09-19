@@ -678,7 +678,18 @@ ProofFact，因此 ObservedFact/DiagnosticHint 不能成为 proof premise；本�
 尚无 rule registry/replay evaluator 来核对 conclusion 是否真正由 premises
 推出，旧 certificate 仍可能只携带裸 rule 字符串；RU2.5 尚未完成。
 
-下一提交继续 RU2.5 的窄边界：增加不可变的 registered-rule registry 与
-最小 replay contract，要求 rule name/version、premise 类型和 conclusion
-proposition 明确匹配；未注册或缺 conclusion 的 legacy proof 只能返回
-`INCOMPLETE`，不改变旧 certificate 的解释路径。
+RU2.5 的最小 rule registry/replay contract 已在 `9726583` 完成：新增不可变
+`ProofRuleRegistry`、`ProofRuleDefinition` 和 `replay_proof_rule()`。replay
+要求 registered rule 的 name/version 已注册、与 legacy rule name 对应、
+conclusion 已存在且 scope 相同，并重新检查每个 premise 仍是 ProofFact；
+legacy、未注册和 typed 字段冲突分别保留为 `INCOMPLETE` 或 `MISMATCH`。这个
+接口只检查输入 contract，不执行规则定理，也没有接管旧 certificate verdict。
+
+本提交 focused proof-rule/evidence/certificate tests 为 `23 passed`；随后完整
+默认 suite 为 `531 passed, 10 skipped`；`git diff --check` 通过。剩余风险：
+registry 目前只验证身份和 premise 类别，没有声明每条 rule 的具体证明语义；
+现有 SAFE certificate 仍未绑定 rule registry digest，RU6 replay 仍待完成。
+
+下一提交继续 RU2.5 的 characterization：为 proof rule conclusion 与
+`ProofObligation` 建立只读匹配检查，缺 conclusion、未注册 rule 或 proposition
+不一致时不能 discharge Unknown；不把 registry 检查结果直接升级为 SAFE。
