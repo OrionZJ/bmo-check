@@ -1098,3 +1098,23 @@ join/handle/futex），为 W3/W4/W14 建立 typed ledger 缺口，而不修改 p
   RU3.2 必须增加 retained/removed event 与 relation 的完整 universe，以及
   legality-preserving preservation check；证明不了的 projection 仍返回
   `UNKNOWN`，不能由这条 `RemovalDecision` 单独推出 SAFE。
+
+### RU3.2 投影关系账本基础已完成
+
+- 提交：`e36c1ef`（`Add projection relation ledger`）。
+- finding：F01/F02 的关系闭包缺口；witness：W1/W2 的 library-mediated
+  communication、program-order 和 synchronization 边在投影后不能只靠事件
+  数量回推。
+- core 新增稳定 `RelationId`，显式区分有向关系和对称关系；新增
+  `ProjectionRelationEntry`/`ProjectionLedger`，逐项记录 retained、
+  removed-with-proof 和 unresolved 关系，并暴露 missing relation universe。
+  removed relation 必须带 `EvidenceId` 和 versioned preservation rule；完整账本
+  缺少任一输入关系会拒绝。该账本只是 canonical completeness input，不会把
+  entry 自动当作 legality proof，也没有接入 checker 或任何 verdict 入口。
+- focused core/identity/obligation/closure tests：`54 passed`；完整默认 suite：
+  `580 passed, 10 skipped`；`git diff --check` 通过。
+- 剩余风险：static application projection 还没有生成这份关系账本，现有
+  `SharedMemorySlice` 仍会过滤边后只保留事件级 proof object。下一原子边界应
+  先为 program-order/conflict/synchronization 建立从旧切片到 `RelationId` 的
+  characterization 和无损 adapter；relation universe 不完整时只能保留 full
+  graph 或返回 `UNKNOWN`，不能仅凭新增类型恢复 SAFE。
