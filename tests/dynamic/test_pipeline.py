@@ -31,6 +31,29 @@ def test_no_cross_thread_communication_is_trace_safe(
     assert certificate.communication_edge_count == 0
 
 
+def test_pipeline_persists_complete_trace_import_ledger(
+    trace_manifest, tmp_path: Path
+) -> None:
+    trace_dir = tmp_path / "bound-import"
+    trace_manifest(trace_dir)
+    with TraceWriter(trace_dir / "events-1.bin") as writer:
+        writer.write(TraceEvent(1, 1, 0, 0x10, EventKind.LOAD, 0x1000, 4))
+    database_path = tmp_path / "bound-import.duckdb"
+
+    certificate = analyze_trace(
+        trace_dir,
+        dbt_contract=_contract(tmp_path),
+        config=DynamicConfig(database_path=database_path),
+    )
+
+    assert certificate.verdict == TraceVerdict.TRACE_SAFE
+    with TraceStore(database_path) as store:
+        ledger = store.import_ledger()
+        assert ledger is not None
+        assert ledger.state.value == "COMPLETE"
+        assert ledger.missing_layers == ()
+
+
 def test_application_scope_records_and_excludes_external_runtime_edges(
     trace_manifest, tmp_path: Path
 ) -> None:

@@ -1,11 +1,19 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import tempfile
+from dataclasses import fields
 from itertools import chain
 from pathlib import Path
 
-from bmo_check_core import UnknownKind
+from bmo_check_core import (
+    ModuleId,
+    TraceId,
+    TraceImportLedger,
+    TraceImportState,
+    UnknownKind,
+)
 from bmo_check_dynamic import __version__
 from bmo_check_dynamic.analysis import (
     CompactCommunicationEdges,
@@ -28,7 +36,7 @@ from bmo_check_dynamic.model import (
     TraceVerdict,
 )
 from bmo_check_dynamic.proof import check_window, load_supported_contract
-from bmo_check_dynamic.storage import TraceStore
+from bmo_check_dynamic.storage import TraceStore, TraceStoreError
 from bmo_check_dynamic.trace import TraceReader, trace_digest, validate_trace
 from bmo_check_dynamic.trace.format import event_files
 
@@ -121,16 +129,10 @@ def analyze_trace(
             unknown_reasons=tuple(unknowns),
             assumptions=("analysis stopped at preflight; analysis counts are unavailable",),
         )
-    if len(validation.thread_ids) == 1 and not futex_requires_contract:
-        return _single_thread_certificate(
-            manifest,
-            validation,
-            trace_dir,
-            config,
-            contract_sha256,
-            contract.contract_version if contract else "invalid",
-        )
-    if validation.event_count > config.max_object_events:
+    if (
+        validation.event_count > config.max_object_events
+        and len(validation.thread_ids) > 1
+    ):
         unknowns.append(
             "object identity materialization requires "
             f"{validation.event_count} events, exceeding budget "
@@ -159,6 +161,20 @@ def analyze_trace(
         with TraceStore(
             database_path, memory_limit_mb=config.database_memory_limit_mb
         ) as store:
+            import_binding = _trace_import_ledger(trace_dir, manifest, config)
+            try:
+                store.begin_import(import_binding)
+            except TraceStoreError as error:
+                return _unknown_certificate(
+                    manifest,
+                    validation,
+                    trace_dir,
+                    config,
+                    contract_sha256,
+                    (f"trace store import binding failed: {error}",),
+                    event_count=0,
+                    assumption="trace storage subject could not be established",
+                )
             readers = (TraceReader(path) for path in event_files(trace_dir))
             _count, storage_unknowns = store.add_events(
                 chain.from_iterable(readers),
@@ -167,7 +183,10 @@ def analyze_trace(
             )
             unknowns.extend(storage_unknowns)
             stored_event_count = store.event_count()
-            if stored_event_count > config.max_object_events:
+            if (
+                stored_event_count > config.max_object_events
+                and len(validation.thread_ids) > 1
+            ):
                 unknowns.append(
                     "object identity materialization requires "
                     f"{stored_event_count} events, exceeding budget "
@@ -207,6 +226,31 @@ def analyze_trace(
                         "analysis stopped when object identity materialization hit "
                         "the storage memory limit; communication counts are unavailable"
                     ),
+                )
+            try:
+                store.complete_import(trace_dir)
+            except TraceStoreError as error:
+                return _unknown_certificate(
+                    manifest,
+                    validation,
+                    trace_dir,
+                    config,
+                    contract_sha256,
+                    (f"trace import completeness failed: {error}",),
+                    event_count=store.event_count(),
+                    assumption=(
+                        "trace storage could not independently close manifest, "
+                        "chunk, event, object and thread inventories"
+                    ),
+                )
+            if len(validation.thread_ids) == 1 and not futex_requires_contract:
+                return _single_thread_certificate(
+                    manifest,
+                    validation,
+                    trace_dir,
+                    config,
+                    contract_sha256,
+                    contract.contract_version if contract else "invalid",
                 )
             application_partition = analyze_application_partition(
                 store, trace_dir / "modules.tsv", manifest.executable.path
@@ -446,6 +490,54 @@ def _file_digest(path: Path) -> str:
         while chunk := stream.read(1024 * 1024):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _trace_import_ledger(
+    trace_dir: Path,
+    manifest: TraceManifest,
+    config: DynamicConfig,
+) -> TraceImportLedger:
+    """为 pipeline 创建单一 subject 的 CREATING import binding。"""
+
+    modules = (
+        ModuleId.from_parts(manifest.executable.sha256, "executable"),
+        *tuple(
+            ModuleId.from_parts(item.sha256, "library")
+            for item in manifest.libraries
+        ),
+    )
+    records_digest = trace_digest(trace_dir)
+    subject = TraceId.from_parts(
+        "trace-1.2",
+        _file_digest(trace_dir / "manifest.json"),
+        modules,
+        (manifest.trace_id, "complete" if manifest.complete else "incomplete"),
+        records_digest,
+    )
+    semantic_config = {
+        field.name: (
+            str(value)
+            if isinstance(value, Path)
+            else value
+        )
+        for field in fields(config)
+        if field.name != "database_path"
+        for value in (getattr(config, field.name),)
+    }
+    config_digest = hashlib.sha256(
+        json.dumps(
+            semantic_config,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    return TraceImportLedger(
+        subject=subject,
+        trace_digest=records_digest,
+        schema_version="trace-1.2",
+        config_digest=config_digest,
+        state=TraceImportState.CREATING,
+    )
 
 
 def _is_resource_exhaustion(error: Exception) -> bool:
