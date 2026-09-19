@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -43,3 +45,33 @@ class DynamicConfig:
         )
         if any(value <= 0 for value in values):
             raise ValueError("dynamic analysis limits must be positive")
+
+
+def semantic_config_digest(config: DynamicConfig) -> str:
+    """摘要会影响分析结果的配置字段。
+
+    database_path 只是落盘位置，不应让同一条 trace 在不同目录重放时
+    得到不同的语义身份。其余字段都属于资源边界或作用域，必须绑定到
+    certificate；否则用更宽的预算重放旧证书可能把 UNKNOWN 变成确定结论。
+    """
+
+    if not isinstance(config, DynamicConfig):
+        raise TypeError("semantic_config_digest expects DynamicConfig")
+    material = {
+        field.name: (
+            str(value) if isinstance(value, Path) else value
+        )
+        for field in config.__dataclass_fields__.values()
+        if field.name != "database_path"
+        for value in (getattr(config, field.name),)
+    }
+    return hashlib.sha256(
+        json.dumps(
+            material,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+__all__ = ["DynamicConfig", "semantic_config_digest"]

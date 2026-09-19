@@ -10,6 +10,7 @@ from bmo_check_dynamic.adapters import (
     DynamicTraceBindingError,
     bind_dynamic_certificate_to_trace,
     replay_dynamic_coverage,
+    verify_dynamic_certificate_binding,
     verify_dynamic_certificate_coverage,
 )
 from bmo_check_dynamic.model import DynamicCertificate, TraceScope, TraceVerdict
@@ -129,6 +130,43 @@ def test_binding_replays_decoded_event_inventory(
 
     with pytest.raises(DynamicTraceBindingError, match="event digest"):
         bind_dynamic_certificate_to_trace(tampered, trace_dir, contract)
+
+
+def test_determinate_certificate_has_replayable_top_level_binding(
+    trace_manifest, tmp_path: Path
+) -> None:
+    trace_dir = tmp_path / "binding-v2"
+    manifest = trace_manifest(trace_dir)
+    _write_trace(trace_dir, Path(manifest.executable.path))
+    contract = _contract_path()
+
+    certificate = analyze_trace(trace_dir, dbt_contract=contract)
+
+    assert certificate.verdict == TraceVerdict.TRACE_SAFE
+    assert certificate.schema_version == "dynamic-certificate-v2"
+    assert certificate.binding is not None
+    verify_dynamic_certificate_binding(certificate, trace_dir, contract)
+
+    tampered_binding = certificate.binding.model_copy(
+        update={"manifest_sha256": "f" * 64}
+    )
+    tampered = certificate.model_copy(update={"binding": tampered_binding})
+    with pytest.raises(DynamicTraceBindingError, match="manifest_sha256"):
+        verify_dynamic_certificate_binding(tampered, trace_dir, contract)
+
+
+def test_legacy_determinate_schema_cannot_use_new_binding_gate(
+    trace_manifest, tmp_path: Path
+) -> None:
+    trace_dir = tmp_path / "legacy-v2-gate"
+    manifest = trace_manifest(trace_dir)
+    _write_trace(trace_dir, Path(manifest.executable.path))
+    contract = _contract_path()
+    certificate = analyze_trace(trace_dir, dbt_contract=contract)
+    legacy = certificate.model_copy(update={"schema_version": "1.2"})
+
+    with pytest.raises(DynamicTraceBindingError, match="legacy dynamic certificate"):
+        verify_dynamic_certificate_binding(legacy, trace_dir, contract)
 
 
 def test_determinate_coverage_without_config_digest_is_legacy(

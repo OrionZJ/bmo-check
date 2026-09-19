@@ -1309,3 +1309,24 @@ join/handle/futex），为 W3/W4/W14 建立 typed ledger 缺口，而不修改 p
   workflow JSON 仍不能序列化 v2 completeness；下一步需先建立 obligation
   producer 与 event/projection digest 的 immutable snapshot，再实现 v2 replay，
   不能绕过缺失 inventory 直接切换默认 schema。
+
+### RU6.3 dynamic certificate immutable binding gate 已完成
+
+- 提交边界：动态证书 v2 的 binding 与独立输入核对；静态 RU6.2 不变。
+- finding：F13/F15/F16；witness：旧 dynamic certificate 只把配置摘要放在
+  coverage 中，manifest、模块闭包、环境和工具版本没有同一顶层 binding，
+  因而同一 trace 的旧证书可能被另一套输入解释。
+- `DynamicCertificateBinding` 现在绑定 manifest、trace subject/digest、
+  executable/library closure、环境、DBT contract、analyzer、DynamoRIO/client
+  和分析配置摘要。pipeline 只从实际 manifest/coverage 生成该对象；路径本身
+  不进入身份。
+- `verify_dynamic_certificate_binding()` 从调用者提供的 trace、contract 和
+  `DynamicConfig` 重新计算摘要。缺 binding、旧 schema、配置/模块/环境或
+  contract 不匹配时拒绝 determinate certificate；UNKNOWN 仍可作为解释输入。
+- `bind_dynamic_certificate_to_trace()` 先经过该 gate，再建立诊断 snapshot；
+  没有新增 application-only shortcut，也没有修改 memory-model verdict。
+- focused dynamic binding tests：`13 passed`；`git diff --check` 通过。
+- 剩余风险：这一步只关闭了顶层输入绑定缺口；RU6 仍需从原始 trace 独立
+  重放 thread/object universe、window result 和 COUNTEREXAMPLE witness，并把
+  这些结果纳入同一 certificate verifier。下一原子提交不得以 binding 摘要
+  代替内容重放。

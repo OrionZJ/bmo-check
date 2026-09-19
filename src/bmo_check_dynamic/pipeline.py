@@ -40,6 +40,7 @@ from bmo_check_dynamic.model import (
 from bmo_check_dynamic.proof import check_window, load_supported_contract
 from bmo_check_dynamic.storage import TraceStore, TraceStoreError
 from bmo_check_dynamic.trace import TraceReader, trace_digest, validate_trace
+from bmo_check_dynamic.trace import build_dynamic_certificate_binding
 from bmo_check_dynamic.trace.format import event_files
 
 
@@ -498,6 +499,14 @@ def analyze_trace(
                 unknown_reasons=tuple(dict.fromkeys(unknowns)),
                 assumptions=tuple(assumptions),
                 coverage=coverage,
+                binding=build_dynamic_certificate_binding(
+                    trace_dir,
+                    manifest,
+                    coverage,
+                    dbt_contract_sha256=contract_sha256,
+                    config=config,
+                    analyzer_version=__version__,
+                ),
             )
     finally:
         if temporary is not None:
@@ -618,6 +627,14 @@ def _single_thread_certificate(
         unknown_reasons=(),
         assumptions=tuple(assumptions),
         coverage=coverage,
+        binding=build_dynamic_certificate_binding(
+            trace_dir,
+            manifest,
+            coverage,
+            dbt_contract_sha256=contract_sha256,
+            config=config,
+            analyzer_version=__version__,
+        ),
     )
 
 

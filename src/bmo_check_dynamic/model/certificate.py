@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import re
 from enum import Enum
 
+from bmo_check_core import TraceId
 from bmo_check_core import UnknownKind
 from pydantic import Field, model_validator
 
@@ -29,6 +31,64 @@ class TraceScope(StrictModel):
         "结论只覆盖已记录的线程内事件、实际地址和控制流骨架；"
         "不覆盖未执行路径、其他输入或未来调度。"
     )
+
+
+_SHA256 = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _digest(name: str, value: str) -> str:
+    if not isinstance(value, str) or not _SHA256.fullmatch(value):
+        raise ValueError(f"{name} must be a lowercase SHA-256 digest")
+    return value
+
+
+class DynamicCertificateBinding(StrictModel):
+    """动态确定性证书必须绑定的不可变输入摘要。
+
+    scope 和 coverage 记录具体对象与事件全集；这里再绑定生成这些事实的
+    manifest、分析配置和工具版本。少一层时，独立 verifier 不能判断证书
+    是否来自同一条 trace 或同一组资源边界，只能退回 UNKNOWN。
+    """
+
+    schema_version: str = "dynamic-binding-v1"
+    manifest_sha256: str
+    trace_subject: str
+    trace_sha256: str
+    executable_sha256: str
+    library_closure_sha256: str
+    environment_sha256: str
+    dbt_contract_sha256: str
+    config_sha256: str
+    analyzer_version: str
+    dynamorio_version: str
+    client_version: str
+
+    @model_validator(mode="after")
+    def validate_binding(self) -> "DynamicCertificateBinding":
+        for name in (
+            "manifest_sha256",
+            "trace_sha256",
+            "executable_sha256",
+            "library_closure_sha256",
+            "environment_sha256",
+            "dbt_contract_sha256",
+            "config_sha256",
+        ):
+            _digest(name, getattr(self, name))
+        try:
+            TraceId.from_value(self.trace_subject)
+        except (TypeError, ValueError) as error:
+            raise ValueError("trace_subject must be a TraceId") from error
+        for name in (
+            "schema_version",
+            "analyzer_version",
+            "dynamorio_version",
+            "client_version",
+        ):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not value or "\x00" in value:
+                raise ValueError(f"{name} must be a non-empty string")
+        return self
 
 
 class ReadFromWitness(StrictModel):
@@ -81,7 +141,8 @@ class ApplicationPartitionEvidence(StrictModel):
 
 
 class DynamicCertificate(StrictModel):
-    schema_version: str = "1.2"
+    # v2 才允许确定性证书进入独立 replay；旧 schema 仍可作为 explain-only。
+    schema_version: str = "dynamic-certificate-v2"
     verdict: TraceVerdict
     scope: TraceScope
     dbt_contract_sha256: str
@@ -109,10 +170,16 @@ class DynamicCertificate(StrictModel):
     assumptions: tuple[str, ...] = ()
     # RU5 coverage ledger；旧手工 certificate 缺少它时仍只能作为 legacy reader。
     coverage: TraceCoverage | None = None
+    # 顶层 binding 把 manifest、配置和工具版本固定到同一份证书。
+    binding: DynamicCertificateBinding | None = None
 
     @model_validator(mode="after")
     def keep_verdict_strict(self) -> "DynamicCertificate":
         if self.verdict == TraceVerdict.TRACE_SAFE:
+            if self.schema_version != "dynamic-certificate-v2" or self.binding is None:
+                raise ValueError(
+                    "TRACE_SAFE requires dynamic-certificate-v2 immutable binding"
+                )
             if not self.trace_complete or self.unknown_reasons:
                 raise ValueError("TRACE_SAFE requires a complete trace without Unknowns")
             if self.unknown_kinds:
@@ -124,6 +191,10 @@ class DynamicCertificate(StrictModel):
             if any(window.status != "safe" for window in self.windows):
                 raise ValueError("TRACE_SAFE requires every window to be safe")
         if self.verdict == TraceVerdict.COUNTEREXAMPLE:
+            if self.schema_version != "dynamic-certificate-v2" or self.binding is None:
+                raise ValueError(
+                    "COUNTEREXAMPLE requires dynamic-certificate-v2 immutable binding"
+                )
             if not self.trace_complete or self.unknown_reasons:
                 raise ValueError("COUNTEREXAMPLE requires complete evidence without Unknowns")
             if self.unknown_kinds or not self.communication_edges_complete:

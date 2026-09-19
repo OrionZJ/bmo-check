@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass, fields
+from dataclasses import dataclass
 from itertools import chain
 from pathlib import Path
 
@@ -29,10 +28,15 @@ from ..analysis import (
     max_communication_page_events,
 )
 from ..analysis.communication import CommunicationLimitError
-from ..config import DynamicConfig
+from ..config import DynamicConfig, semantic_config_digest
 from ..model import CoverageState, DynamicCertificate, TraceManifest, TraceVerdict
 from ..storage import TraceStore, TraceStoreError
-from ..trace import trace_digest
+from ..trace import (
+    environment_digest,
+    file_sha256,
+    module_closure_digest,
+    trace_digest,
+)
 from ..trace.format import TraceReader, event_files
 from .diagnostic_snapshot import dynamic_snapshot_from_trace
 
@@ -86,6 +90,85 @@ def verify_dynamic_certificate_coverage(certificate: DynamicCertificate) -> None
     if coverage.windows.state is not CoverageState.COMPLETE:
         raise DynamicTraceBindingError(
             "determinate dynamic certificate has incomplete window coverage"
+        )
+
+
+def verify_dynamic_certificate_binding(
+    certificate: DynamicCertificate,
+    trace_dir: Path,
+    dbt_contract: Path,
+    *,
+    config: DynamicConfig | None = None,
+) -> None:
+    """独立重算动态证书的 manifest/config/tool binding。
+
+    证书中的摘要只作为待核对值；manifest、contract 和配置必须从调用者
+    提供的实际文件/对象重新计算。缺失或不匹配不能由 scope/coverage 的
+    重复字段补齐，否则同一 trace 可能在另一套预算下被错误重放。
+    """
+
+    if certificate.verdict not in {
+        TraceVerdict.TRACE_SAFE,
+        TraceVerdict.COUNTEREXAMPLE,
+    }:
+        return
+    verify_dynamic_certificate_coverage(certificate)
+    if certificate.schema_version != "dynamic-certificate-v2":
+        raise DynamicTraceBindingError(
+            "legacy dynamic certificate is explain-only; replay requires dynamic-certificate-v2"
+        )
+    binding = certificate.binding
+    if binding is None:
+        raise DynamicTraceBindingError(
+            "determinate dynamic certificate lacks immutable binding"
+        )
+    config = config or DynamicConfig()
+    config.validate()
+    try:
+        manifest = TraceManifest.load(trace_dir / "manifest.json")
+        actual_manifest = file_sha256(trace_dir / "manifest.json")
+        actual_contract = file_sha256(dbt_contract)
+        actual_trace = trace_digest(trace_dir)
+        expected_config = semantic_config_digest(config)
+    except (OSError, ValueError, TypeError) as error:
+        raise DynamicTraceBindingError(
+            f"cannot derive dynamic certificate binding: {error}"
+        ) from error
+    coverage = certificate.coverage
+    assert coverage is not None
+    expected = {
+        "manifest_sha256": actual_manifest,
+        "trace_subject": coverage.trace_subject,
+        "trace_sha256": actual_trace,
+        "executable_sha256": manifest.executable.sha256,
+        "library_closure_sha256": module_closure_digest(manifest),
+        "environment_sha256": environment_digest(manifest),
+        "dbt_contract_sha256": actual_contract,
+        "config_sha256": expected_config,
+        "analyzer_version": certificate.analyzer_version,
+        "dynamorio_version": manifest.dynamorio_version,
+        "client_version": manifest.client_version,
+    }
+    for field, actual in expected.items():
+        if getattr(binding, field) != actual:
+            raise DynamicTraceBindingError(
+                f"dynamic certificate binding {field} differs from supplied inputs"
+            )
+    if binding.dbt_contract_sha256 != certificate.dbt_contract_sha256:
+        raise DynamicTraceBindingError(
+            "dynamic certificate binding contract digest differs from certificate"
+        )
+    if binding.trace_sha256 != certificate.scope.trace_sha256[0]:
+        raise DynamicTraceBindingError(
+            "dynamic certificate binding trace digest differs from scope"
+        )
+    if binding.executable_sha256 != certificate.scope.executable.sha256:
+        raise DynamicTraceBindingError(
+            "dynamic certificate binding executable differs from scope"
+        )
+    if tuple(manifest.libraries) != certificate.scope.libraries:
+        raise DynamicTraceBindingError(
+            "dynamic certificate binding libraries differ from scope"
         )
 
 
@@ -282,21 +365,7 @@ def _replayed_trace_store(
             ),
         )
         records_digest = trace_digest(trace_dir)
-        semantic_config = {
-            field.name: (
-                str(value) if isinstance(value, Path) else value
-            )
-            for field in fields(config)
-            if field.name != "database_path"
-            for value in (getattr(config, field.name),)
-        }
-        config_digest = hashlib.sha256(
-            json.dumps(
-                semantic_config,
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode("utf-8")
-        ).hexdigest()
+        config_digest = semantic_config_digest(config)
         subject = TraceId.from_parts(
             "trace-1.2",
             _sha256(trace_dir / "manifest.json", label="trace manifest"),
@@ -443,9 +512,14 @@ def bind_dynamic_certificate_to_trace(
         raise DynamicTraceBindingError(
             "bind_dynamic_certificate_to_trace expects DynamicCertificate"
         )
-    verify_dynamic_certificate_coverage(certificate)
     if not isinstance(trace_dir, Path) or not isinstance(dbt_contract, Path):
         raise DynamicTraceBindingError("trace_dir and dbt_contract must be Paths")
+    verify_dynamic_certificate_binding(
+        certificate,
+        trace_dir,
+        dbt_contract,
+        config=config,
+    )
     if len(certificate.scope.trace_ids) != 1 or len(certificate.scope.trace_sha256) != 1:
         raise DynamicTraceBindingError(
             "dynamic certificate must bind exactly one trace for diagnostics"
