@@ -3,10 +3,15 @@ from __future__ import annotations
 from bmo_check_core import (
     AccessRange,
     ExecutionRelations,
+    InstructionId,
     MemoryAccessKind,
+    MemoryEventId,
     MemoryOperation,
     MemoryRelation,
+    MemoryOperandId,
+    ModuleId,
     RelationKind,
+    ThreadRoleId,
 )
 from bmo_check_dynamic.analysis import AnalysisWindow
 from bmo_check_dynamic.model import EventKind as DynamicEventKind, TraceEvent
@@ -29,6 +34,7 @@ from bmo_check_static.model import (
     SharedMemorySlice,
 )
 from bmo_check_static.proof.characterization import (
+    build_execution_obligation_inventory,
     canonicalize_fixed_relations,
     check_fixed_execution as check_static,
 )
@@ -36,6 +42,30 @@ from bmo_check_static.proof.encoding import _object_id
 
 
 HASH = "a" * 64
+
+
+def _static_event_ids(static: SharedMemorySlice) -> dict[str, MemoryEventId]:
+    module = ModuleId.from_parts(HASH, "executable")
+    result: dict[str, MemoryEventId] = {}
+    for event in static.events:
+        if event.address is None:
+            continue
+        instruction = InstructionId.from_parts(module, event.pc)
+        operand_index = event.operand_index if event.operand_index is not None else 0
+        discriminator = (
+            event.kind.value
+            if event.operand_index is not None
+            else f"{event.kind.value}:implicit"
+        )
+        operand = MemoryOperandId.from_parts(instruction, operand_index, discriminator)
+        role = ThreadRoleId.from_legacy(event.thread_role or "legacy-unknown-thread-role")
+        result[event.id] = MemoryEventId.from_parts(
+            operand,
+            role,
+            event.kind.value,
+            event.id,
+        )
+    return result
 
 
 def _static_event(
@@ -218,9 +248,42 @@ def test_static_typed_relations_match_legacy_fixed_execution() -> None:
         static,
         read_from={"r-flag": "w-flag", "r-data": None},
     )
-    typed = check_static(static, relations=relations)
+    obligations = build_execution_obligation_inventory(
+        static,
+        relations,
+        event_ids=_static_event_ids(static),
+    )
+    typed = check_static(
+        static,
+        relations=relations,
+        obligation_inventory=obligations,
+    )
 
     assert typed == legacy
+
+
+def test_static_typed_adapter_rejects_incomplete_execution_inventory() -> None:
+    static = _static_slice(
+        (
+            (_static_event("w", "t0", 0x10, StaticEventKind.STORE, "x"),),
+            (_static_event("r", "t1", 0x20, StaticEventKind.LOAD, "x"),),
+        )
+    )
+    relations = canonicalize_fixed_relations(static, read_from={})
+    inventory = build_execution_obligation_inventory(
+        static,
+        relations,
+        event_ids=_static_event_ids(static),
+    )
+
+    result = check_static(
+        static,
+        relations=relations,
+        obligation_inventory=inventory,
+    )
+
+    assert not inventory.is_enumerated
+    assert result.source.status == result.target.status == "unknown"
 
 
 def test_dynamic_typed_relations_match_legacy_fixed_execution() -> None:
@@ -293,10 +356,20 @@ def test_static_typed_partial_relation_is_unknown_not_a_new_execution() -> None:
             ),
         )
     )
-    result = check_static(static, relations=relations)
+    inventory = build_execution_obligation_inventory(
+        static,
+        relations,
+        event_ids=_static_event_ids(static),
+    )
+    result = check_static(
+        static,
+        relations=relations,
+        obligation_inventory=inventory,
+    )
 
     assert result.source.status == result.target.status == "unknown"
-    assert "exact-width" in result.source.reason
+    assert not inventory.is_enumerated
+    assert "exact-width" in inventory.completeness.reason
 
 
 def test_incomplete_fixed_relations_are_unknown_not_an_allowed_execution() -> None:
