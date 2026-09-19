@@ -17,6 +17,13 @@ from .model import (
     UnknownProposition,
 )
 from .ledger import EvidenceLedger, LedgerError
+from .rules import (
+    ProofRuleDefinition,
+    ProofRuleRegistry,
+    ProofRuleReplay,
+    ProofRuleReplayStatus,
+    replay_proof_rule,
+)
 
 __all__ = [
     "DiagnosticHint",
@@ -26,6 +33,10 @@ __all__ = [
     "EvidenceMaterialError",
     "EvidenceNode",
     "LedgerError",
+    "ProofRuleDefinition",
+    "ProofRuleRegistry",
+    "ProofRuleReplay",
+    "ProofRuleReplayStatus",
     "ObservedFact",
     "ProofConclusion",
     "ProofFact",
@@ -35,4 +46,5 @@ __all__ = [
     "UnknownFact",
     "UnknownKind",
     "UnknownProposition",
+    "replay_proof_rule",
 ]
