@@ -1200,3 +1200,26 @@ join/handle/futex），为 W3/W4/W14 建立 typed ledger 缺口，而不修改 p
   由 `verify_projection_ledger()` 接受 `REMOVED_WITH_PROOF`。下一窄步应继续审计
   projection consumer/replay 是否真正调用该 verifier，不能用本次事件保留重新开放
   SAFE 或 TRACE_SAFE。
+
+### RU3.7 静态证书 bridge 重放 projection 完整性已完成
+
+- 提交：`e83f0b0`（`Replay static projection completeness`）。
+- finding：F01/F02；witness：`ProjectionLedger` 已经被 bridge 携带，但此前
+  只作为 sidecar 返回，certificate consumer 没有调用独立 verifier；不完整
+  relation universe 因而可能在未来确定性 schema 接入时被忽略。
+- `build_static_certificate_with_evidence()` 现在对存在的 projection ledger
+  调用唯一的 `verify_projection_ledger()`，核对 scope、输入 relation universe、
+  retained/removed disposition 和 relation-level proof closure。账本不完整时，
+  确定性 verdict 直接拒绝；已经是 `UNKNOWN` 的结果保留不完整账本供诊断，不能
+  被改写成 SAFE。没有新增 memory-model rule、application-only fast path 或
+  benchmark 分支。
+- 新增 bridge adversarial test：确定性 portability result 携带不完整 projection
+  ledger 必须失败；现有不完整 projection 的 UNKNOWN 报告仍可构造并暴露缺口。
+- focused projection/bridge tests：`34 passed`；完整默认 suite：`589 passed,
+  10 skipped`；`git diff --check` 通过。
+- 剩余风险：当前 `StaticCertificate` schema 还没有把 projection ledger 和
+  source/target obligation inventory 作为可独立序列化字段；本提交只在内存 bridge
+  处止住确定性出口。下一步需在不发明 preservation theorem 的前提下，characterize
+  projection obligation 与 event universe 的绑定；缺少 relation-level ProofFact、
+  premise 或 obligation closure 时继续保留完整图/`UNKNOWN`，再进入 RU6 的可重放
+  certificate schema。
