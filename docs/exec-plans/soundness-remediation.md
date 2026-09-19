@@ -1246,3 +1246,24 @@ join/handle/futex），为 W3/W4/W14 建立 typed ledger 缺口，而不修改 p
   `StaticSliceEvidence` 中同时绑定 event universe 与 relation obligation
   inventory，并让 bridge 对两者 scope/completeness 做一致性检查；缺少任一侧时
   继续保留完整图/`UNKNOWN`，不能凭 inventory 数量产生 SAFE。
+
+### RU3.9 projection sidecar 与 event universe 绑定已完成
+
+- 提交：`fe64a78`（`Bind projection obligation sidecars`）。
+- finding：F01/F02/F07/F08；witness：relation ledger、event universe 和
+  obligation inventory 之前可以各自存在，bridge 没有检查它们是否属于同一 scope
+  或同一 relation proposition。
+- `StaticSliceEvidence` 与 `StaticCertificateEvidence` 现在显式携带
+  `projection_obligations` 和 `event_universe` sidecar。bridge 由 relation ledger
+  重算 expected relation obligations，并逐项比较 scope、completeness 和
+  proposition identity；确定性结果缺少 projection obligation 或 event universe
+  时拒绝。旧报告在这些字段缺失时只能保留 `UNKNOWN`，不补空 ledger。
+- report bridge 对已有 projection ledger 生成同一 canonical relation-obligation
+  inventory；不改变旧事件切片、memory-model checker 或 verdict 语义。
+- focused sidecar/obligation/projection tests：`36 passed`；完整默认 suite：
+  `591 passed, 10 skipped`；`git diff --check` 通过。
+- 剩余风险：这些字段目前仍是内存 sidecar，不是 `StaticCertificate` 的版本化、
+  独立序列化输入；event universe 与 relation universe 的 endpoint closure 也
+  还没有在 certificate replay 中逐项对账。下一步进入 RU3/RU6 交界的
+  characterization：定义 certificate schema vNext 需要保存的 universe/obligation
+  digest 和 replay 失败条件，但不在本轮发明 relation preservation theorem。
