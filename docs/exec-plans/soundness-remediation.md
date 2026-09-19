@@ -484,6 +484,17 @@ RU1.2 已在 `4608221` 完成：新增 core-owned `AccessRange`、`RangeRelation
 tests 为 `30 passed`，identity/architecture/verdict invariant tests 为
 `24 passed`，C0 收口后的完整 suite 为 `480 passed, 10 skipped`。
 
-下一提交只推进 RU1.3：为 source PPO 建立 canonical characterization 和 herd
-oracle 对照；不改 static/dynamic 最终 verdict，不把 dynamic observation 写入
-ProofFact，也不运行大规模 PARSEC 或 2595 corpus。
+RU1.3 已在 `0a70c89` 完成：新增 core-owned `MemoryAccessKind`、
+`MemoryOperation` 和 `source_ppo_preserved`。普通 Load/Store 的 source PPO
+现在有独立 characterization：同址或 partial-overlap Store→Load 保留，异址
+Store→Load 可放松，跨线程不产生程序顺序；Fence、LOCK/XCHG、同步事件仍不在
+这个窄接口内。现有 static/dynamic same-address 路由差异不再标为“预期例外”，
+而是显式记录为 `UNRESOLVED_MODEL_DRIFT`，对应 F17 的后续迁移边界。focused
+differential/characterization/oracle tests 为 `35 passed`，identity/architecture/
+verdict invariant tests 为 `24 passed`。本提交没有迁移 consumer，也没有修改
+最终 verdict 或 ProofFact。
+
+下一提交只推进 RU1.4：把 plain、Fence、LOCK/XCHG/RMW 和 syscall ordering
+从同一个 immutable DBT contract 中读取并建立 versioned target-policy
+characterization；缺少 contract rule 时继续 `UNKNOWN`，不改 static/dynamic
+最终 verdict，不运行大规模 PARSEC 或 2595 corpus。
