@@ -192,6 +192,18 @@ def test_bridge_rejects_determinate_incomplete_projection() -> None:
         )
 
 
+def test_v2_bridge_rejects_missing_static_completeness_ledgers() -> None:
+    scope = "static.test"
+
+    with pytest.raises(CertificateBridgeError, match="requires an obligation inventory"):
+        build_static_certificate_with_evidence(
+            _empty_slice(scope),
+            _portability(scope),
+            binding_from_manifest(_manifest(), scope=scope),
+            schema_version="static-certificate-v2",
+        )
+
+
 def test_report_bridge_rejects_a_legacy_static_result() -> None:
     scope = "static.test"
     report = _empty_report()

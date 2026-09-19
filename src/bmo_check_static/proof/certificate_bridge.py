@@ -14,6 +14,7 @@ from bmo_check_core import (
     BinaryClosureId,
     CertificateBinding,
     CertificateError,
+    CertificateCompleteness,
     CertificateVerdict,
     CompletenessStatus,
     EvidenceLedger,
@@ -33,6 +34,10 @@ from bmo_check_core import (
     UnknownDischarge,
     verify_projection_ledger,
     build_projection_relation_obligation_inventory,
+    digest_event_universe,
+    digest_obligation_inventory,
+    digest_projection_ledger,
+    digest_unknown_ids,
     verify_static_certificate,
 )
 from bmo_check_static.binary.evidence import emit_static_unknown
@@ -63,6 +68,8 @@ class StaticCertificateEvidence:
     ledger: EvidenceLedger
     # verification 保存本次构造时的 replay 结果，避免调用者跳过门禁。
     verification: StaticVerification
+    # obligation_inventory 是 checker 命题全集；v2 缺失时不能伪造空列表。
+    obligation_inventory: ObligationInventory | None = None
     # event_universe 是静态输入事件的完整性账本；缺失时不能补成空集合。
     event_universe: EventUniverseLedger | None = None
     # projection_ledger 供后续 preservation replay 使用；不绕过当前 schema gate。
@@ -190,15 +197,6 @@ def build_static_certificate_with_evidence(
         node.id
         for node in ledger.unresolved_unknowns(binding.scope)
     )
-    certificate = StaticCertificate(
-        schema_version=schema_version,
-        verdict=verdict,
-        binding=binding,
-        proof_roots=slice_evidence.proof_ids,
-        removal_decisions=slice_evidence.removal_decisions,
-        relevant_unknowns=unknown_ids,
-        bounded=portability_evidence.certificate.checker.bounded,
-    )
     projection_ledger = slice_evidence.projection_ledger
     projection_obligations = slice_evidence.projection_obligations
     if projection_ledger is not None:
@@ -237,6 +235,42 @@ def build_static_certificate_with_evidence(
             and verdict is not CertificateVerdict.UNKNOWN
         ):
             raise CertificateBridgeError("projection event universe is incomplete")
+    completeness: CertificateCompleteness | None = None
+    if schema_version == "static-certificate-v2":
+        event_universe = slice_evidence.event_universe
+        obligation_inventory = portability_evidence.obligation_inventory
+        if event_universe is None:
+            raise CertificateBridgeError(
+                "static-certificate-v2 requires an event universe"
+            )
+        if obligation_inventory is None:
+            raise CertificateBridgeError(
+                "static-certificate-v2 requires an obligation inventory"
+            )
+        if projection_ledger is None or projection_obligations is None:
+            raise CertificateBridgeError(
+                "static-certificate-v2 requires projection ledgers"
+            )
+        if obligation_inventory.scope != binding.scope:
+            raise CertificateBridgeError(
+                "static obligation inventory scope does not match certificate"
+            )
+        completeness = CertificateCompleteness(
+            event_universe_sha256=digest_event_universe(event_universe),
+            obligation_sha256=digest_obligation_inventory(obligation_inventory),
+            unknown_sha256=digest_unknown_ids(binding.scope, unknown_ids),
+            projection_sha256=digest_projection_ledger(projection_ledger),
+        )
+    certificate = StaticCertificate(
+        schema_version=schema_version,
+        verdict=verdict,
+        binding=binding,
+        proof_roots=slice_evidence.proof_ids,
+        removal_decisions=slice_evidence.removal_decisions,
+        relevant_unknowns=unknown_ids,
+        bounded=portability_evidence.certificate.checker.bounded,
+        completeness=completeness,
+    )
     try:
         verification = verify_static_certificate(
             certificate,
@@ -251,6 +285,7 @@ def build_static_certificate_with_evidence(
         certificate=certificate,
         ledger=ledger,
         verification=verification,
+        obligation_inventory=portability_evidence.obligation_inventory,
         event_universe=slice_evidence.event_universe,
         projection_ledger=projection_ledger,
         projection_obligations=projection_obligations,
@@ -468,6 +503,7 @@ def build_static_certificate_from_report(
     portability_evidence = StaticPortabilityEvidence(
         certificate=portability_certificate,
         ledger=portability_ledger,
+        obligation_inventory=None,
     )
     return build_static_certificate_with_evidence(
         slice_evidence,

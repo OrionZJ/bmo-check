@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from bmo_check_core import EvidenceId, EvidenceLedger, UnknownFact
+from bmo_check_core import EvidenceId, EvidenceLedger, ObligationInventory, UnknownFact
 from bmo_check_static.binary.evidence import emit_static_unknown
 from bmo_check_static.model import (
     CheckerLimits,
@@ -21,6 +21,8 @@ class StaticPortabilityEvidence:
     certificate: PortabilityCertificate
     # ledger 保存 portability 入口确认仍未闭合的静态 Unknown。
     ledger: EvidenceLedger
+    # obligation_inventory 是 checker 枚举的完整命题集合；旧 producer 缺失时不能补空。
+    obligation_inventory: ObligationInventory | None = None
 
     @property
     def unknown_ids(self) -> tuple[EvidenceId, ...]:
