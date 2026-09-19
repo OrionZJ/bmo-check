@@ -1175,3 +1175,28 @@ join/handle/futex），为 W3/W4/W14 建立 typed ledger 缺口，而不修改 p
   为 SAFE。下一原子边界应把 preservation rule 的实际 producer 接到
   application boundary，并用 source/target obligation closure 验证它；rule
   未注册或 premise 不足时继续 `UNKNOWN`。
+
+### RU3.6 关系连接的 runtime effect 保守保留已完成
+
+- 提交：`43f745f`（`Retain relation-connected runtime effects`）。
+- finding：F01/F02；witness：application scope 原先可以删除带有
+  `runtime_internal` 标记、但仍参与 program-order、conflict 或
+  synchronization 的事件，随后把被过滤的关系当成不存在。这样会缩小
+  relation universe，却只有 event-level boundary proof，不能支持
+  legality-preserving projection。
+- `restrict_to_application_scope()` 现在只移除没有参与任何现有 PO、conflict
+  或 synchronization 关系的 runtime-internal 事件。关系端点保持在完整切片中，
+  因而不会通过删除一端来伪造空边或闭合 projection；真正移除的孤立事件仍保留
+  `APPLICATION_RUNTIME_BOUNDARY` proof object。该规则不检查 module 名称、库白名单
+  或 benchmark 名称，也没有新增 application-only verdict fast path。
+- 新增回归覆盖：关系连接的 runtime effect 必须保留；孤立 runtime effect 才能
+  进入 event-level removal proof；projection adapter 对手工缺失关系仍返回
+  `INCOMPLETE`，不能把旧式过滤升级成 relation proof。
+- focused static tests：`38 passed`；完整默认 suite：`588 passed, 10 skipped`；
+  `git diff --check` 通过。
+- 剩余风险：这只是保守止血，不是 relation-level preservation theorem。连接的
+  runtime effect 仍可能让切片保持 `UNKNOWN`；只有后续 producer 能为每条被删除的
+  relation 提供注册规则、premise 和 source/target obligation closure 后，才可
+  由 `verify_projection_ledger()` 接受 `REMOVED_WITH_PROOF`。下一窄步应继续审计
+  projection consumer/replay 是否真正调用该 verifier，不能用本次事件保留重新开放
+  SAFE 或 TRACE_SAFE。
