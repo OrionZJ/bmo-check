@@ -83,6 +83,13 @@ from .diagnostics import (
     SnapshotError,
     StaticDiagnosticSnapshot,
 )
+from .universe import (
+    CompletenessState,
+    CompletenessStatus,
+    EventDisposition,
+    EventUniverseEntry,
+    EventUniverseLedger,
+)
 
 __all__ = [
     "AbstractObjectId",
@@ -154,4 +161,9 @@ __all__ = [
     "EvidenceSnapshot",
     "SnapshotError",
     "StaticDiagnosticSnapshot",
+    "CompletenessState",
+    "CompletenessStatus",
+    "EventDisposition",
+    "EventUniverseEntry",
+    "EventUniverseLedger",
 ]
