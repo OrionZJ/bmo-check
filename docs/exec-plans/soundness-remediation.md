@@ -1289,3 +1289,23 @@ join/handle/futex），为 W3/W4/W14 建立 typed ledger 缺口，而不修改 p
   仍是旧 summary。下一原子边界应先让 static bridge 生成 immutable v2 completeness
   sidecar，并用同一 typed ledger 重算后再考虑放行 v2 replay；任何缺失或摘要不匹配
   必须保留 `UNKNOWN`/legacy explain-only。
+
+### RU6.2 static v2 bridge completeness 输入门已完成
+
+- 提交：`ed4aa2e`（`Gate v2 bridge completeness inputs`）。
+- finding：F07/F08/F09；witness：即使 core model 要求 v2 certificate 有四类
+  digest，static bridge 仍可能在没有 event universe、checker obligation
+  inventory 或 projection ledger 的情况下被调用。
+- `StaticPortabilityEvidence`、`StaticCertificateEvidence` 现在显式携带
+  checker obligation inventory；bridge 只有在 v2 调用同时提供 event universe、
+  obligation inventory、projection ledger 和 relation obligation sidecar 时才
+  计算 `CertificateCompleteness`。缺少任一项立即抛出 typed bridge error；v1
+  兼容路径和已有 UNKNOWN sidecar 不受影响。
+- 这一步没有放行 v2 replay。`_reject_legacy_determinate_schema()` 仍会阻止
+  v2 进入最终 verdict，避免“有摘要但尚未独立重放”被误当作 SAFE。
+- focused bridge/completeness tests：`16 passed`；完整默认 suite：`598 passed,
+  10 skipped`；`git diff --check` 通过。
+- 剩余风险：当前 static producer 尚未生成完整 checker obligation inventory，
+  workflow JSON 仍不能序列化 v2 completeness；下一步需先建立 obligation
+  producer 与 event/projection digest 的 immutable snapshot，再实现 v2 replay，
+  不能绕过缺失 inventory 直接切换默认 schema。
