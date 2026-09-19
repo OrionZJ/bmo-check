@@ -2,12 +2,19 @@
 
 from .model import (
     CertificateBinding,
+    CertificateCompleteness,
     CertificateError,
     CertificateVerdict,
     RemovalDecision,
     StaticCertificate,
     TraceCertificate,
     TraceVerdict,
+)
+from .digests import (
+    digest_event_universe,
+    digest_obligation_inventory,
+    digest_projection_ledger,
+    digest_unknown_ids,
 )
 from .verification import (
     StaticVerification,
@@ -22,6 +29,7 @@ from .verification import (
 
 __all__ = [
     "CertificateBinding",
+    "CertificateCompleteness",
     "CertificateError",
     "CertificateVerdict",
     "RemovalDecision",
@@ -36,4 +44,8 @@ __all__ = [
     "TraceVerdict",
     "verify_static_certificate",
     "verify_trace_certificate",
+    "digest_event_universe",
+    "digest_obligation_inventory",
+    "digest_projection_ledger",
+    "digest_unknown_ids",
 ]

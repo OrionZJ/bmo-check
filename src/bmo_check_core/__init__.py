@@ -86,6 +86,7 @@ from .contracts import (
 )
 from .certificate import (
     CertificateBinding,
+    CertificateCompleteness,
     CertificateError,
     CertificateVerdict,
     RemovalDecision,
@@ -100,6 +101,10 @@ from .certificate import (
     verify_typed_discharge,
     verify_static_certificate,
     verify_trace_certificate,
+    digest_event_universe,
+    digest_obligation_inventory,
+    digest_projection_ledger,
+    digest_unknown_ids,
 )
 from .diagnostics import (
     BindingCheck,
@@ -223,6 +228,7 @@ __all__ = [
     "relate_ranges",
     "source_ppo_preserved",
     "CertificateBinding",
+    "CertificateCompleteness",
     "CertificateError",
     "CertificateVerdict",
     "RemovalDecision",
@@ -237,6 +243,10 @@ __all__ = [
     "verify_typed_discharge",
     "verify_static_certificate",
     "verify_trace_certificate",
+    "digest_event_universe",
+    "digest_obligation_inventory",
+    "digest_projection_ledger",
+    "digest_unknown_ids",
     "BindingCheck",
     "BindingDimension",
     "BindingStatus",

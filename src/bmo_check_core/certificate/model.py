@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from enum import StrEnum
 
 from ..identity import BinaryClosureId, EvidenceId, MemoryEventId, StableId, TraceId
+
+
+_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 
 class CertificateError(ValueError):
@@ -31,6 +35,12 @@ class TraceVerdict(StrEnum):
 def _text(name: str, value: str) -> str:
     if not isinstance(value, str) or not value or "\x00" in value:
         raise CertificateError(f"{name} must be a non-empty string without NUL")
+    return value
+
+
+def _sha256(name: str, value: str) -> str:
+    if not isinstance(value, str) or not _SHA256.fullmatch(value):
+        raise CertificateError(f"{name} must be a lowercase SHA-256 digest")
     return value
 
 
@@ -80,6 +90,26 @@ class RemovalDecision:
 
 
 @dataclass(frozen=True, slots=True)
+class CertificateCompleteness:
+    """v2 certificate 必须绑定的四类 universe/obligation 摘要。"""
+
+    # event_universe_sha256 对账静态输入 event 的完整集合和 disposition。
+    event_universe_sha256: str
+    # obligation_sha256 对账 checker 实际需要闭合的 proposition 集合。
+    obligation_sha256: str
+    # unknown_sha256 对账 scope 内所有 relevant Unknown identity。
+    unknown_sha256: str
+    # projection_sha256 对账 relation projection 及其 preservation disposition。
+    projection_sha256: str
+
+    def __post_init__(self) -> None:
+        _sha256("event universe digest", self.event_universe_sha256)
+        _sha256("obligation digest", self.obligation_sha256)
+        _sha256("Unknown digest", self.unknown_sha256)
+        _sha256("projection digest", self.projection_sha256)
+
+
+@dataclass(frozen=True, slots=True)
 class StaticCertificate:
     # schema_version 让 replay verifier 可以拒绝未知证书格式。
     schema_version: str
@@ -95,6 +125,8 @@ class StaticCertificate:
     relevant_unknowns: tuple[EvidenceId, ...] = ()
     # bounded=True 的有限搜索不能伪装成 SAFE。
     bounded: bool = False
+    # v2 才允许携带 completeness；v1 缺字段只能走 legacy/UNKNOWN 边界。
+    completeness: CertificateCompleteness | None = None
 
     def __post_init__(self) -> None:
         _text("certificate schema version", self.schema_version)
@@ -127,6 +159,12 @@ class StaticCertificate:
         )
         if not isinstance(self.bounded, bool):
             raise CertificateError("certificate bounded must be boolean")
+        if self.schema_version == "static-certificate-v2" and self.completeness is None:
+            raise CertificateError("static-certificate-v2 requires completeness")
+        if self.schema_version != "static-certificate-v2" and self.completeness is not None:
+            raise CertificateError(
+                "certificate completeness requires static-certificate-v2"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -163,6 +201,7 @@ class TraceCertificate:
 
 __all__ = [
     "CertificateBinding",
+    "CertificateCompleteness",
     "CertificateError",
     "CertificateVerdict",
     "RemovalDecision",
