@@ -12,6 +12,8 @@ from .model import (
 from .verification import (
     StaticVerification,
     TraceVerification,
+    UnknownPropositionAudit,
+    audit_unknown_propositions,
     verify_static_certificate,
     verify_trace_certificate,
 )
@@ -25,6 +27,8 @@ __all__ = [
     "StaticVerification",
     "TraceCertificate",
     "TraceVerification",
+    "UnknownPropositionAudit",
+    "audit_unknown_propositions",
     "TraceVerdict",
     "verify_static_certificate",
     "verify_trace_certificate",

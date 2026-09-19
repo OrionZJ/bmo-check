@@ -26,6 +26,8 @@ from bmo_check_core import (
     TraceVerdict,
     UnknownFact,
     UnknownKind,
+    UnknownProposition,
+    audit_unknown_propositions,
     verify_static_certificate,
     verify_trace_certificate,
 )
@@ -174,6 +176,60 @@ def test_static_safe_rejects_unresolved_unknown_and_accepts_explicit_discharge()
     ledger.add_discharge(UnknownDischarge(unknown.id, proof.id, "scope-a"))
     with pytest.raises(CertificateError, match="explain-only"):
         verify_static_certificate(certificate, ledger)
+
+
+def test_certificate_unknown_audit_distinguishes_typed_legacy_and_missing() -> None:
+    event = _event()
+    producer = ProducerId("static-test", "c6")
+    legacy = UnknownFact.create(
+        schema_version="1",
+        producer=producer,
+        kind=UnknownKind.UNKNOWN_ESCAPE,
+        reason="legacy escape gap",
+        subject=event,
+        scope="scope-a",
+    )
+    proposition = UnknownProposition.create(
+        kind=UnknownKind.UNKNOWN_AFFINE_BOUNDS.value,
+        scope="scope-a",
+        subjects=(event,),
+    )
+    typed = UnknownFact.create(
+        schema_version="2",
+        producer=producer,
+        kind=UnknownKind.UNKNOWN_AFFINE_BOUNDS,
+        reason="typed bounds gap",
+        subject=event,
+        scope="scope-a",
+        proposition=proposition,
+    )
+    ledger = EvidenceLedger()
+    ledger.add(legacy)
+    ledger.add(typed)
+    missing = MemoryEventId.from_parts(
+        MemoryOperandId.from_parts(
+            InstructionId.from_parts(ModuleId.from_parts(B, "executable"), 0x128),
+            0,
+            "Load",
+        ),
+        ThreadRoleId.from_legacy("missing"),
+        "Load",
+        "missing",
+    )
+    missing_id = UnknownFact.create(
+        schema_version="1",
+        producer=producer,
+        kind=UnknownKind.UNKNOWN_MEMORY_EFFECT,
+        reason="missing node id fixture",
+        subject=missing,
+        scope="scope-a",
+    ).id
+
+    audit = audit_unknown_propositions(ledger, (legacy.id, typed.id, missing_id))
+
+    assert audit.typed_ids == (typed.id,)
+    assert audit.legacy_ids == (legacy.id,)
+    assert audit.missing_ids == (missing_id,)
 
 
 def test_static_safe_rejects_bounded_result_and_binding_mismatch() -> None:

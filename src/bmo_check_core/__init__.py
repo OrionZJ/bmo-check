@@ -71,6 +71,8 @@ from .certificate import (
     TraceCertificate,
     TraceVerification,
     TraceVerdict,
+    UnknownPropositionAudit,
+    audit_unknown_propositions,
     verify_static_certificate,
     verify_trace_certificate,
 )
@@ -164,6 +166,8 @@ __all__ = [
     "TraceCertificate",
     "TraceVerification",
     "TraceVerdict",
+    "UnknownPropositionAudit",
+    "audit_unknown_propositions",
     "verify_static_certificate",
     "verify_trace_certificate",
     "BindingCheck",

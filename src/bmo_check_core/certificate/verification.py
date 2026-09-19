@@ -22,6 +22,20 @@ class StaticVerification:
     proof_closure: tuple[ProofFact, ...]
     # discharged_unknowns 记录本次 scope 中真正被 ProofFact 关闭的 Unknown。
     discharged_unknowns: tuple[EvidenceId, ...]
+    # unknown_propositions 只报告 typed/legacy/missing 分布，不改变 verdict。
+    unknown_propositions: "UnknownPropositionAudit"
+
+
+@dataclass(frozen=True, slots=True)
+class UnknownPropositionAudit:
+    """certificate replay 对 relevant Unknown 的 proposition 字段盘点。"""
+
+    # typed_ids 可以进入后续 proposition/obligation identity 检查。
+    typed_ids: tuple[EvidenceId, ...]
+    # legacy_ids 没有 proposition，只能作为 explain-only/incomplete view。
+    legacy_ids: tuple[EvidenceId, ...]
+    # missing_ids 指向证书声明但 ledger 没有提供的 Unknown；不能静默补齐。
+    missing_ids: tuple[EvidenceId, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,6 +44,30 @@ class TraceVerification:
     certificate: TraceCertificate
     # observed_roots 是与 trace_id 相同的动态事实。
     observed_roots: tuple[ObservedFact, ...]
+
+
+def audit_unknown_propositions(
+    ledger: EvidenceLedger,
+    unknown_ids: tuple[EvidenceId, ...],
+) -> UnknownPropositionAudit:
+    """区分 typed、legacy 和 missing Unknown，不从旧字段合成 proposition。"""
+
+    typed: list[EvidenceId] = []
+    legacy: list[EvidenceId] = []
+    missing: list[EvidenceId] = []
+    for evidence_id in unknown_ids:
+        node = ledger.get(evidence_id)
+        if not isinstance(node, UnknownFact):
+            missing.append(evidence_id)
+        elif node.proposition is None:
+            legacy.append(evidence_id)
+        else:
+            typed.append(evidence_id)
+    return UnknownPropositionAudit(
+        typed_ids=tuple(sorted(set(typed), key=lambda item: item.value)),
+        legacy_ids=tuple(sorted(set(legacy), key=lambda item: item.value)),
+        missing_ids=tuple(sorted(set(missing), key=lambda item: item.value)),
+    )
 
 
 def _check_binding(
@@ -114,6 +152,11 @@ def verify_static_certificate(
         )
         raise CertificateError(f"relevant UnknownFact was omitted: {omitted}")
 
+    unknown_propositions = audit_unknown_propositions(
+        ledger,
+        certificate.relevant_unknowns,
+    )
+
     discharged: list[EvidenceId] = []
     for unknown_id in certificate.relevant_unknowns:
         unknown = ledger.get(unknown_id)
@@ -152,6 +195,7 @@ def verify_static_certificate(
         certificate=certificate,
         proof_closure=closure,
         discharged_unknowns=tuple(sorted(discharged, key=lambda item: item.value)),
+        unknown_propositions=unknown_propositions,
     )
 
 
@@ -189,6 +233,8 @@ def verify_trace_certificate(
 __all__ = [
     "StaticVerification",
     "TraceVerification",
+    "UnknownPropositionAudit",
+    "audit_unknown_propositions",
     "verify_static_certificate",
     "verify_trace_certificate",
 ]
