@@ -717,7 +717,20 @@ rule proof、ObservedFact/DiagnosticHint 或 proposition mismatch 都会在 ledg
 typed inventory 尚未绑定到 certificate 的完整 obligation universe；RU6 replay
 仍需独立重算这些输入。
 
-下一提交继续 RU2.6 的窄边界：增加 certificate-side typed discharge
-characterization，证明 SAFE replay 不能绕过 `add_typed_discharge()` 或使用
-legacy proof；在没有完整 event/obligation ledger 时仍返回 legacy/incomplete，
-不修改现有 verdict 数量或 schema 语义。
+RU2.6 的 certificate-side typed discharge replay 已在 `2dcc508` 完成：新增
+`verify_typed_discharge()`，在不修改 ledger 的前提下重新检查 discharge 是否
+存在、Unknown/Proof 是否匹配同一 obligation、rule registry 是否可 replay，
+并拒绝 legacy proof 或 ObservedFact/DiagnosticHint 路径。该接口仍是
+certificate-side characterization，尚未替换旧 `verify_static_certificate()`
+的 schema/verdict 入口。
+
+本提交 focused certificate/evidence/obligation/rule tests 为 `28 passed`；随后
+完整默认 suite 为 `535 passed, 10 skipped`；`git diff --check` 通过。剩余风险：
+旧 static certificate verifier 还没有 obligation inventory 参数，不能独立核对
+所有 discharge 是否覆盖完整 obligation universe；RU6 仍需把这个只读 gate
+绑定到新 schema。
+
+下一提交离开 RU2 的 core identity 增量，进入 RU4 前的 characterization：先
+审计并固定 lifecycle/synchronization identity 的输入契约（create/start/end/
+join/handle/futex），为 W3/W4/W14 建立 typed ledger 缺口，而不修改 pthread
+恢复算法或按调度顺序猜 join 关系。
