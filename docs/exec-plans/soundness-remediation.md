@@ -891,3 +891,25 @@ join/handle/futex），为 W3/W4/W14 建立 typed ledger 缺口，而不修改 p
   用 stale、mixed、duplicate、truncated fixture 验证拒绝路径，再把 pipeline
   的导入过程接到这个账本；不能先修改 verdict 或增加新的 application-only
   shortcut。
+
+### RU5.1 TraceStore subject-bound import reservation 已完成
+
+- 提交：`a1855ef`（`Bind TraceStore to import subject`）。
+- finding：F16；witness：stale/mixed store 与 duplicate active import。
+- `TraceStore` 新增持久化 binding、chunk/layer ledger 表和只读
+  `import_ledger()`。`begin_import()` 只接受 `CREATING` ledger；已有 store
+  的 subject、schema 或 config 任一不匹配即拒绝，同一绑定重复占用也拒绝。
+  这防止不同 trace 在同一个 DuckDB 文件中静默混合。
+- `record_import_layers()` 在单事务中替换当前导入的 chunk/layer 行，但只允许
+  `CREATING` 状态；失败会回滚。没有 binding 的旧 store 明确返回 `None`，不被
+  当作“空而完整”的 trace，也没有新增 legacy fast path。
+- 本提交没有让 pipeline 自动声明 `COMPLETE`，也没有改变
+  `SAFE/TRACE_SAFE/COUNTEREXAMPLE`。raw chunk 实际 digest、decoded/object/
+  thread inventory 的独立核对，以及 CREATING→COMPLETE 的最终状态转换仍待
+  后续窄步完成。
+- focused storage/import tests：`7 passed`；完整默认 suite：`561 passed,
+  10 skipped`；`git diff --check` 通过。
+- 下一原子边界：实现 import ledger 的分层计数/digest verifier，从实际 raw
+  chunk、DuckDB events、objects 和 thread inventory 重算输入；不接受 producer
+  单独提交的 `complete=True`。在此之前，旧 pipeline store 仍只能作为
+  legacy/unbound storage 使用。
