@@ -292,7 +292,7 @@ def test_acq_rel_atomic_boundary_has_matching_route_legality() -> None:
     )
 
 
-def test_same_address_store_load_difference_is_explicitly_route_specific() -> None:
+def test_same_address_store_load_drift_is_not_an_intended_exception() -> None:
     static = _static_slice(
         (
             (
@@ -313,17 +313,10 @@ def test_same_address_store_load_difference_is_explicitly_route_specific() -> No
         object_locations={"x": (0x1000, 4)},
     )
 
-    comparison = compare_fixed_execution(
-        static_result,
-        dynamic_result,
-        expected=DifferentialClassification.INTENDED_ROUTE_DIFFERENCE,
-        expected_reason=(
-            "static and dynamic facades intentionally model same-address "
-            "Store-to-Load forwarding at different abstraction levels"
-        ),
-    )
+    comparison = compare_fixed_execution(static_result, dynamic_result)
 
     assert comparison.status is DifferentialStatus.MISMATCH
+    assert comparison.classification is DifferentialClassification.UNRESOLVED_MODEL_DRIFT
     assert (comparison.source_static, comparison.source_dynamic) == (
         "allowed",
         "forbidden",

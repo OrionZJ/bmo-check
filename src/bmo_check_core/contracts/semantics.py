@@ -26,6 +26,17 @@ class RangeRelation(StrEnum):
     PARTIAL_OVERLAP = "partial_overlap"
 
 
+class MemoryAccessKind(StrEnum):
+    """RU1.3 characterization 支持的普通内存操作类别。"""
+
+    # Load 从范围读取值。
+    LOAD = "load"
+    # Store 向范围写入值。
+    STORE = "store"
+    # RMW 同时读写范围，后续 atomic boundary 单独建模。
+    RMW = "rmw"
+
+
 @dataclass(frozen=True, slots=True)
 class AccessRange:
     """带对象身份的精确字节区间。
@@ -55,6 +66,45 @@ class AccessRange:
         """返回不包含在区间内的结束偏移。"""
 
         return self.offset + self.size
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryOperation:
+    """固定执行 characterization 使用的普通访存事实。"""
+
+    # event_id 绑定同一固定执行中的操作，而不是一次遍历的数组下标。
+    event_id: str
+    # thread_id 区分程序顺序和跨线程关系。
+    thread_id: str
+    # sequence 是该线程内的程序顺序位置。
+    sequence: int
+    # access 是带 object identity 的精确字节范围。
+    access: AccessRange
+    # kind 区分 Load、Store 和尚未展开的 RMW。
+    kind: MemoryAccessKind
+
+    def __post_init__(self) -> None:
+        for field in ("event_id", "thread_id"):
+            value = getattr(self, field)
+            if not isinstance(value, str) or not value or "\x00" in value:
+                raise ValueError(f"{field} must be a non-empty string")
+        if isinstance(self.sequence, bool) or not isinstance(self.sequence, int):
+            raise ValueError("sequence must be an integer")
+
+
+def source_ppo_preserved(before: MemoryOperation, after: MemoryOperation) -> bool:
+    """判断普通操作是否属于 x86-TSO 的保留程序顺序。
+
+    Store→Load 只有在访问范围不重叠时允许通过 store buffer 越过；同址
+    forwarding 仍保留顺序。Fence、LOCK/XCHG 和同步事件不在这个窄接口内，
+    不能借它们的缺省值生成 ordering。
+    """
+
+    if before.thread_id != after.thread_id or before.sequence >= after.sequence:
+        return False
+    if before.kind is MemoryAccessKind.STORE and after.kind is MemoryAccessKind.LOAD:
+        return ranges_overlap(before.access, after.access)
+    return True
 
 
 def relate_ranges(left: AccessRange, right: AccessRange) -> RangeRelation:
@@ -122,9 +172,12 @@ class SemanticPrimitiveRef:
 
 __all__ = [
     "AccessRange",
+    "MemoryAccessKind",
+    "MemoryOperation",
     "RangeRelation",
     "SemanticPrimitive",
     "SemanticPrimitiveRef",
     "ranges_overlap",
     "relate_ranges",
+    "source_ppo_preserved",
 ]

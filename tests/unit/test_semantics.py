@@ -4,11 +4,62 @@ import pytest
 
 from bmo_check_core import (
     AccessRange,
+    MemoryAccessKind,
+    MemoryOperation,
     RangeRelation,
     SemanticPrimitive,
     SemanticPrimitiveRef,
     relate_ranges,
+    source_ppo_preserved,
 )
+
+
+def _operation(
+    event_id: str,
+    kind: MemoryAccessKind,
+    *,
+    offset: int,
+    size: int = 4,
+    thread_id: str = "t0",
+    sequence: int,
+) -> MemoryOperation:
+    return MemoryOperation(
+        event_id=event_id,
+        thread_id=thread_id,
+        sequence=sequence,
+        access=AccessRange(object_id="alloc-1", offset=offset, size=size),
+        kind=kind,
+    )
+
+
+def test_source_ppo_preserves_same_address_store_to_load() -> None:
+    store = _operation("s", MemoryAccessKind.STORE, offset=0, sequence=1)
+    load = _operation("l", MemoryAccessKind.LOAD, offset=0, sequence=2)
+
+    assert source_ppo_preserved(store, load)
+
+
+def test_source_ppo_allows_different_address_store_to_load() -> None:
+    store = _operation("s", MemoryAccessKind.STORE, offset=0, sequence=1)
+    load = _operation("l", MemoryAccessKind.LOAD, offset=8, sequence=2)
+
+    assert not source_ppo_preserved(store, load)
+
+
+def test_source_ppo_preserves_partial_overlap_store_to_load() -> None:
+    store = _operation("s", MemoryAccessKind.STORE, offset=0, size=8, sequence=1)
+    load = _operation("l", MemoryAccessKind.LOAD, offset=4, size=8, sequence=2)
+
+    assert source_ppo_preserved(store, load)
+
+
+def test_source_ppo_never_creates_cross_thread_program_order() -> None:
+    store = _operation("s", MemoryAccessKind.STORE, offset=0, sequence=1)
+    load = _operation(
+        "l", MemoryAccessKind.LOAD, offset=0, thread_id="t1", sequence=1
+    )
+
+    assert not source_ppo_preserved(store, load)
 
 
 def test_same_object_non_overlapping_ranges_are_disjoint() -> None:

@@ -10,11 +10,14 @@ from .model import (
 )
 from .semantics import (
     AccessRange,
+    MemoryAccessKind,
+    MemoryOperation,
     RangeRelation,
     SemanticPrimitive,
     SemanticPrimitiveRef,
     ranges_overlap,
     relate_ranges,
+    source_ppo_preserved,
 )
 
 __all__ = [
@@ -25,9 +28,12 @@ __all__ = [
     "TargetOrdering",
     "TranslationContract",
     "AccessRange",
+    "MemoryAccessKind",
+    "MemoryOperation",
     "RangeRelation",
     "SemanticPrimitive",
     "SemanticPrimitiveRef",
     "ranges_overlap",
     "relate_ranges",
+    "source_ppo_preserved",
 ]
