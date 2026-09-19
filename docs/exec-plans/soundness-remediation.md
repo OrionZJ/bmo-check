@@ -503,6 +503,8 @@ syscall ordering 继续是 `UNKNOWN`，调用方不能用字符串或 API 名称
 内容边界，但尚未把 digest 接入 certificate binding。RU1.4 focused contract、
 characterization、repository-boundary 和 verdict tests 为 `26 passed`；未修改
 static/dynamic checker consumer、最终 verdict 或 ProofFact。
+RU1.4 focused tests 为 `26 passed`，随后完整默认 suite 为 `491 passed, 10 skipped`；
+跳过项仅依赖未配置的 DynamoRIO/native capture 或显式 opt-in 的真实 litmus ELF。
 
 下一提交只推进 RU1.5：为 RF/CO/FR 建立 core-owned proposition identity 和
 共同 exact-width characterization；byte-partial overlap 若没有明确 capability
