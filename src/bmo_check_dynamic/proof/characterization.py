@@ -11,11 +11,16 @@ from typing import Mapping
 
 from bmo_check_core import (
     AccessRange,
+    CompletenessState,
+    CompletenessStatus,
     ExecutionRelations,
+    MemoryEventId,
     MemoryAccessKind,
     MemoryOperation,
     MemoryRelation,
     RelationKind,
+    ObligationInventory,
+    build_execution_obligation_inventory as build_core_execution_obligation_inventory,
 )
 from bmo_check_dynamic.analysis import AnalysisWindow
 from bmo_check_dynamic.model import EventKind, TraceEvent
@@ -209,6 +214,41 @@ def _legacy_relations(
     return read_from, coherence, from_read, derived_locations
 
 
+def build_execution_obligation_inventory(
+    window: AnalysisWindow,
+    relations: ExecutionRelations,
+    *,
+    event_ids: Mapping[str, MemoryEventId],
+    object_locations: Mapping[str, tuple[int, int]] | None = None,
+    scope: str = "dynamic.fixed-execution",
+) -> ObligationInventory:
+    """把 dynamic window 归一化后交给 core 的唯一 obligation 规则。
+
+    事件身份必须由 trace-bound caller 显式提供；window 的 event number 或
+    ``covered_events`` 不能在这里临时充当静态 subject。无法归一化 FUTEX、
+    模糊 object label 或缺少稳定 identity 时，inventory 保持 INCOMPLETE。
+    """
+
+    try:
+        operations = _canonical_operations(window, object_locations)
+    except ValueError as error:
+        return ObligationInventory(
+            scope=scope,
+            obligations=(),
+            completeness=CompletenessState(
+                CompletenessStatus.INCOMPLETE,
+                scope,
+                reason=f"dynamic operation normalization is incomplete: {error}",
+            ),
+        )
+    return build_core_execution_obligation_inventory(
+        operations,
+        relations,
+        event_ids=event_ids,
+        scope=scope,
+    )
+
+
 def _unknown(model: str, reason: str) -> FixedModelResult:
     return FixedModelResult(model=model, status="unknown", reason=reason)
 
@@ -236,6 +276,7 @@ def check_fixed_execution(
     from_read: tuple[tuple[str, str, str], ...] = (),
     object_locations: Mapping[str, tuple[int, int]] | None = None,
     relations: ExecutionRelations | None = None,
+    obligation_inventory: ObligationInventory | None = None,
 ) -> FixedExecutionResult:
     """在既定 trace window 上检查固定 ``rf/co``，不枚举其它关系。"""
 
@@ -245,6 +286,12 @@ def check_fixed_execution(
             return FixedExecutionResult(_unknown("x86-tso", reason), _unknown("rvwmo", reason))
         if not isinstance(relations, ExecutionRelations):
             reason = "typed relations must be an ExecutionRelations value"
+            return FixedExecutionResult(_unknown("x86-tso", reason), _unknown("rvwmo", reason))
+        if not isinstance(obligation_inventory, ObligationInventory):
+            reason = "typed relations require an explicit obligation inventory"
+            return FixedExecutionResult(_unknown("x86-tso", reason), _unknown("rvwmo", reason))
+        if not obligation_inventory.is_enumerated:
+            reason = "execution obligation inventory is incomplete"
             return FixedExecutionResult(_unknown("x86-tso", reason), _unknown("rvwmo", reason))
         try:
             read_from, coherence, from_read, derived_locations = _legacy_relations(
@@ -393,6 +440,7 @@ def check_fixed_execution(
 __all__ = [
     "FixedExecutionResult",
     "FixedModelResult",
+    "build_execution_obligation_inventory",
     "canonicalize_fixed_relations",
     "check_fixed_execution",
 ]

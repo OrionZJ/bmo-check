@@ -16,6 +16,7 @@ from bmo_check_core import (
 from bmo_check_dynamic.analysis import AnalysisWindow
 from bmo_check_dynamic.model import EventKind as DynamicEventKind, TraceEvent
 from bmo_check_dynamic.proof.characterization import (
+    build_execution_obligation_inventory as build_dynamic_obligation_inventory,
     canonicalize_fixed_relations as canonicalize_dynamic_relations,
     check_fixed_execution as check_dynamic,
 )
@@ -64,6 +65,29 @@ def _static_event_ids(static: SharedMemorySlice) -> dict[str, MemoryEventId]:
             role,
             event.kind.value,
             event.id,
+        )
+    return result
+
+
+def _dynamic_event_ids(window: AnalysisWindow) -> dict[str, MemoryEventId]:
+    module = ModuleId.from_parts(HASH, "trace-executable")
+    result: dict[str, MemoryEventId] = {}
+    for event in window.events:
+        if not event.kind.is_memory:
+            continue
+        instruction = InstructionId.from_parts(module, event.pc)
+        operand_index = event.operand_index if event.operand_index is not None else 0
+        operand = MemoryOperandId.from_parts(
+            instruction,
+            operand_index,
+            f"{event.kind.name}:{event.event_id}",
+        )
+        role = ThreadRoleId.from_legacy(f"trace-thread-{event.thread_id}")
+        result[event.event_id] = MemoryEventId.from_parts(
+            operand,
+            role,
+            event.kind.name,
+            event.event_id,
         )
     return result
 
@@ -310,9 +334,50 @@ def test_dynamic_typed_relations_match_legacy_fixed_execution() -> None:
         from_read=(("x", dynamic_ids[3], dynamic_ids[2]),),
         object_locations=locations,
     )
-    typed = check_dynamic(dynamic, relations=relations, object_locations=locations)
+    obligations = build_dynamic_obligation_inventory(
+        dynamic,
+        relations,
+        event_ids=_dynamic_event_ids(dynamic),
+        object_locations=locations,
+    )
+    typed = check_dynamic(
+        dynamic,
+        relations=relations,
+        object_locations=locations,
+        obligation_inventory=obligations,
+    )
 
     assert typed == legacy
+
+
+def test_dynamic_typed_adapter_rejects_incomplete_execution_inventory() -> None:
+    dynamic = _dynamic_window(
+        (
+            ((DynamicEventKind.STORE, 0x1000),),
+            ((DynamicEventKind.LOAD, 0x1000),),
+        )
+    )
+    relations = canonicalize_dynamic_relations(
+        dynamic,
+        read_from={},
+        object_locations={"x": (0x1000, 4)},
+    )
+    inventory = build_dynamic_obligation_inventory(
+        dynamic,
+        relations,
+        event_ids=_dynamic_event_ids(dynamic),
+        object_locations={"x": (0x1000, 4)},
+    )
+
+    result = check_dynamic(
+        dynamic,
+        relations=relations,
+        object_locations={"x": (0x1000, 4)},
+        obligation_inventory=inventory,
+    )
+
+    assert not inventory.is_enumerated
+    assert result.source.status == result.target.status == "unknown"
 
 
 def test_static_typed_partial_relation_is_unknown_not_a_new_execution() -> None:
