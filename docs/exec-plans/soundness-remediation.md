@@ -602,7 +602,21 @@ FR；它不会把 FR 观察伪装成 producer 提交的 relation 或 ProofFact�
 projection obligations、typed Unknown proposition、registered proof rule 和
 最终 SAFE certificate replay 尚未迁移；旧 legacy route 仍只受既有检查约束。
 
-下一提交继续 RU2.3 的更窄边界：为 conflict/projection obligation 建立
-characterization 和删除/投影对账接口，先证明 event-universe ledger 与
-obligation inventory 能逐项绑定，再评审 typed Unknown proposition；不把
-dynamic observation 或 coverage 字段当作 static proof discharge。
+RU2.3 的 conflict/projection inventory 已在 `d92aa36` 完成：core 新增
+`build_conflict_obligation_inventory()` 与
+`build_projection_obligation_inventory()`。通信候选按 stable event pair
+生成对称 conflict proposition；候选扫描、event universe 任一不完整时，已
+观察到的 obligation 会保留，但 inventory 只能是 `INCOMPLETE`。projection
+obligation 从 `REMOVED_WITH_PROOF` ledger entry 逐项绑定 event 与 EvidenceId；
+它不把 removal entry 当成 ProofFact closure，也不改变现有 scope/checker 路径。
+
+本提交 focused obligation/universe tests 为 `25 passed`；随后完整默认 suite
+为 `522 passed, 10 skipped`；`git diff --check` 通过。剩余风险：这些 inventory
+目前还没有接入 static SAFE certificate 的 replay verifier；typed Unknown
+proposition、registered proof rule 和 conflict/projection 的 route consumer
+仍未迁移。
+
+下一提交继续 RU2.4 的 characterization：定义 typed Unknown proposition 与
+event/object/thread scope 的稳定绑定，先让缺少唯一 proposition identity 的
+Unknown 无法被 discharge，再评审旧 UnknownFact adapter；不把任何 dynamic
+observation 或 benchmark 结果提升为 ProofFact。
