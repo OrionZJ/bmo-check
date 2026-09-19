@@ -805,3 +805,25 @@ join/handle/futex），为 W3/W4/W14 建立 typed ledger 缺口，而不修改 p
   parent ThreadInstanceId 或 import-level lifecycle completeness；下一步应
   先写 schema characterization/strict rejection，再讨论 producer 扩展，不
   允许从现有 aux/address 推断生命周期关系。
+
+### RU4.3 lifecycle sidecar schema characterization 已完成
+
+- 提交：`d05ec2a`（`Add strict lifecycle sidecar schema`）。
+- finding：F05、F06、F18；witness：W3、W4、W14。
+- 新增 versioned `TraceLifecycleMetadata`、`TraceLifecycleRecord`、
+  `TraceLifecycleJoin` 和 `TraceSynchronizationRecord` wire model。sidecar
+  明确列出 thread universe、operation identity、parent/child、handle token
+  与 generation、callback context/targets、join candidates 和 contract
+  digest/rule；未知字段由 strict model 拒绝。
+- complete sidecar 必须覆盖非空 thread universe，所有 record/join/sync 都
+  complete；缺 generation 的 handle、非唯一 join、缺 contract binding 的
+  FUTEX 或缺 record 的 universe 都不能标为 complete。旧 TraceEvent/manifest
+  不会通过补空字段进入此 schema。
+- wire model 只定义身份和完整性，不实现 ordering，也没有接入 native writer、
+  TraceStore 或 dynamic verdict；后续 producer 若不能填写字段必须返回 typed
+  `UNKNOWN`。
+- focused schema/lifecycle tests：`13 passed`；完整默认 suite：`550 passed,
+  10 skipped`；`git diff --check` 通过。
+- 剩余风险：sidecar 尚无 writer/import ledger，也没有把 wire identity 转成
+  core `LifecycleLedger`；下一原子边界应先做只读 wire→core adapter，验证缺失
+  或 schema major mismatch 保守失败，然后再评审 TraceStore 集成。
