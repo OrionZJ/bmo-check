@@ -9,6 +9,7 @@ from bmo_check_core import TraceId
 from bmo_check_dynamic.adapters import (
     DynamicTraceBindingError,
     bind_dynamic_certificate_to_trace,
+    verify_dynamic_certificate_coverage,
 )
 from bmo_check_dynamic.model import DynamicCertificate, TraceScope, TraceVerdict
 from bmo_check_dynamic.trace import trace_digest
@@ -84,6 +85,27 @@ def test_binding_maps_manifest_id_to_trace_content_identity(
     assert bound.trace_sha256 == certificate.scope.trace_sha256[0]
     assert bound.dbt_contract_sha256 == certificate.dbt_contract_sha256
     assert bound.certificate is certificate
+
+
+def test_determinate_legacy_certificate_is_explain_only(
+    trace_manifest, tmp_path: Path
+) -> None:
+    trace_dir = tmp_path / "legacy-determinate"
+    manifest = trace_manifest(trace_dir)
+    _write_trace(trace_dir, Path(manifest.executable.path))
+    contract = _contract_path()
+    certificate = _certificate(manifest, trace_dir, contract).model_copy(
+        update={
+            "verdict": TraceVerdict.TRACE_SAFE,
+            "unknown_reasons": (),
+            "communication_edges_complete": True,
+        }
+    )
+
+    with pytest.raises(DynamicTraceBindingError, match="coverage ledger"):
+        verify_dynamic_certificate_coverage(certificate)
+    with pytest.raises(DynamicTraceBindingError, match="coverage ledger"):
+        bind_dynamic_certificate_to_trace(certificate, trace_dir, contract)
 
 
 @pytest.mark.parametrize(

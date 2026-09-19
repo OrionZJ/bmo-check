@@ -8,13 +8,57 @@ from pathlib import Path
 
 from bmo_check_core import DynamicDiagnosticSnapshot, TraceId
 
-from ..model import DynamicCertificate, TraceManifest, TraceVerdict
+from ..model import CoverageState, DynamicCertificate, TraceManifest, TraceVerdict
 from ..trace import trace_digest
 from .diagnostic_snapshot import dynamic_snapshot_from_trace
 
 
 class DynamicTraceBindingError(ValueError):
     """证书、trace manifest、contract 或诊断快照不能绑定时抛出。"""
+
+
+def verify_dynamic_certificate_coverage(certificate: DynamicCertificate) -> None:
+    """拒绝没有可回放 coverage ledger 的确定性 dynamic certificate。"""
+
+    if not isinstance(certificate, DynamicCertificate):
+        raise DynamicTraceBindingError(
+            "verify_dynamic_certificate_coverage expects DynamicCertificate"
+        )
+    if certificate.verdict not in {
+        TraceVerdict.TRACE_SAFE,
+        TraceVerdict.COUNTEREXAMPLE,
+    }:
+        return
+    coverage = certificate.coverage
+    if coverage is None:
+        raise DynamicTraceBindingError(
+            "determinate dynamic certificate lacks a coverage ledger; "
+            "legacy certificate is explain-only"
+        )
+    if len(certificate.scope.trace_sha256) != 1:
+        raise DynamicTraceBindingError(
+            "determinate dynamic certificate must bind one trace digest"
+        )
+    if coverage.trace_sha256 != certificate.scope.trace_sha256[0]:
+        raise DynamicTraceBindingError(
+            "dynamic coverage trace digest differs from certificate"
+        )
+    if coverage.event_count != certificate.event_count:
+        raise DynamicTraceBindingError(
+            "dynamic coverage event count differs from certificate"
+        )
+    if coverage.communication.candidate_edge_count != certificate.communication_edge_count:
+        raise DynamicTraceBindingError(
+            "dynamic coverage edge count differs from certificate"
+        )
+    if coverage.communication.state is not CoverageState.COMPLETE:
+        raise DynamicTraceBindingError(
+            "determinate dynamic certificate has incomplete communication coverage"
+        )
+    if coverage.windows.state is not CoverageState.COMPLETE:
+        raise DynamicTraceBindingError(
+            "determinate dynamic certificate has incomplete window coverage"
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,6 +151,7 @@ def bind_dynamic_certificate_to_trace(
         raise DynamicTraceBindingError(
             "bind_dynamic_certificate_to_trace expects DynamicCertificate"
         )
+    verify_dynamic_certificate_coverage(certificate)
     if not isinstance(trace_dir, Path) or not isinstance(dbt_contract, Path):
         raise DynamicTraceBindingError("trace_dir and dbt_contract must be Paths")
     if len(certificate.scope.trace_ids) != 1 or len(certificate.scope.trace_sha256) != 1:
@@ -174,4 +219,5 @@ __all__ = [
     "BoundDynamicEvidence",
     "DynamicTraceBindingError",
     "bind_dynamic_certificate_to_trace",
+    "verify_dynamic_certificate_coverage",
 ]
