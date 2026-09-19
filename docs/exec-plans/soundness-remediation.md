@@ -933,3 +933,26 @@ join/handle/futex），为 W3/W4/W14 建立 typed ledger 缺口，而不修改 p
   object 后调用这个 verifier，并在失败时输出 typed `UNKNOWN`。
 - focused storage/import tests：`7 passed`；完整默认 suite：`565 passed,
   10 skipped`；`git diff --check` 通过。
+
+### RU5.3 dynamic pipeline 绑定并闭合 TraceStore import 已完成
+
+- 提交：`b43ff9`（`Gate dynamic analysis on trace import`）。
+- finding：F13、F16；witness：旧 single-thread shortcut、临时 DuckDB 与固定
+  `database_path` 场景。
+- `analyze_trace()` 现在在所有动态路径（包括 single-thread shortcut）先建立
+  CREATING subject binding，导入事件并物化 object 后调用
+  `TraceStore.complete_import()`。import completeness 失败时直接返回
+  `UNKNOWN`，不再让空窗口、单线程 shortcut 或局部 event 计数产生
+  `TRACE_SAFE`。
+- binding 的 subject 由 manifest/module fingerprints、trace digest、trace
+  marker 和分析配置摘要组成；database path 不进入语义 digest。已有不同
+  subject/schema/config 的 store 被拒绝，旧 unbound store 不会被静默复用。
+- 没有改变 memory-model checker、SAFE/TRACE_SAFE 定义或 application-only
+  规则；新增 pipeline 测试只检查已绑定 store 最终存在 COMPLETE ledger。
+- focused pipeline/storage tests：`24 passed`；完整默认 suite：`566 passed,
+  10 skipped`；`git diff --check` 通过。
+- 剩余风险：`database_path` 的同 trace read-only reuse 尚未实现，当前重复启动
+  会保守拒绝；TraceStore import ledger 尚未进入 dynamic certificate/schema，
+  也尚未重放 communication/window 输入 universe。下一步应先把 reuse/mixed/
+  failed-state 行为定为 typed `UNKNOWN` 或显式 legacy reader，再进入 RU5 的
+  communication/window import coverage。
