@@ -1016,3 +1016,19 @@ join/handle/futex），为 W3/W4/W14 建立 typed ledger 缺口，而不修改 p
   独立重算，当前仍依赖 pipeline 写入的 coverage state；下一原子边界应增加
   小型 trace 的 reference edge/window replay，并覆盖 dropped/filtered/
   resource-limit mutation，不能把 event replay 当作完整 TRACE_SAFE replay。
+
+### RU5.7 coverage 重建逻辑集中化已完成
+
+- 提交：`86d1207`（`Centralize dynamic coverage reconstruction`）。
+- finding：F03、F13、F16；witness：coverage 构造逻辑原先只在 pipeline 内部，
+  后续独立 replay 若复制这段逻辑会再次形成 route-specific completeness 判断。
+- 新增 `bmo_check_dynamic.analysis.coverage` 作为唯一 coverage 构造入口，集中
+  `TraceImportLedger` 到 `TraceCoverage` 的绑定、edge/window 摘要和状态判定；
+  pipeline 只提供实际扫描结果，不再保留第二份私有实现。该模块没有放宽
+  `COMPLETE` 条件，也没有改变 verifier 或 verdict。
+- focused coverage/pipeline/binding tests：`27 passed`；完整默认 suite：
+  `570 passed, 10 skipped`；`git diff --check` 通过。
+- 剩余风险：这一步只消除了 coverage 重建的重复实现，还没有独立重放通信
+  edge 和 window partition。下一原子边界必须从原始 trace/store 重建两者，
+  对 dropped/filtered/resource-limit 变体保守拒绝；不能把集中化本身当作
+  TRACE_SAFE completeness proof。
