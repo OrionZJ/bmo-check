@@ -7,6 +7,14 @@ from itertools import chain, islice
 from pathlib import Path
 from typing import Any
 
+from bmo_check_core import (
+    TraceImportLedger,
+    TraceImportState,
+    TraceId,
+    TraceChunkRecord,
+    TraceImportLayer,
+    TraceLayerRecord,
+)
 from bmo_check_dynamic.model import EventFlags, EventKind, TraceEvent
 
 _EVENT_ID_QUERY_BATCH_SIZE = 10_000
@@ -69,8 +77,162 @@ class TraceStore:
                 start_ticket UBIGINT,
                 end_ticket UBIGINT
             );
+            CREATE TABLE IF NOT EXISTS trace_import_binding(
+                subject VARCHAR PRIMARY KEY,
+                trace_digest VARCHAR NOT NULL,
+                schema_version VARCHAR NOT NULL,
+                config_digest VARCHAR NOT NULL,
+                state VARCHAR NOT NULL,
+                reason VARCHAR
+            );
+            CREATE TABLE IF NOT EXISTS trace_import_chunks(
+                subject VARCHAR NOT NULL,
+                name VARCHAR NOT NULL,
+                sha256 VARCHAR NOT NULL,
+                byte_count UBIGINT NOT NULL,
+                event_count UBIGINT NOT NULL,
+                PRIMARY KEY(subject, name)
+            );
+            CREATE TABLE IF NOT EXISTS trace_import_layers(
+                subject VARCHAR NOT NULL,
+                layer VARCHAR NOT NULL,
+                count UBIGINT NOT NULL,
+                sha256 VARCHAR NOT NULL,
+                PRIMARY KEY(subject, layer)
+            );
             """
         )
+
+    def begin_import(self, ledger: TraceImportLedger) -> None:
+        """为一次导入占用 subject；不接受 producer 伪造 COMPLETE。"""
+
+        if not isinstance(ledger, TraceImportLedger):
+            raise TraceStoreError("begin_import requires a TraceImportLedger")
+        if ledger.state is not TraceImportState.CREATING:
+            raise TraceStoreError("new imports must start in CREATING state")
+        existing = self.import_ledger()
+        if existing is not None:
+            if (
+                existing.subject != ledger.subject
+                or existing.schema_version != ledger.schema_version
+                or existing.config_digest != ledger.config_digest
+            ):
+                raise TraceStoreError(
+                    "TraceStore subject/schema/config differs from existing import"
+                )
+            raise TraceStoreError("TraceStore already has an import binding")
+        self.connection.execute(
+            "INSERT INTO trace_import_binding VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                ledger.subject.value,
+                ledger.trace_digest,
+                ledger.schema_version,
+                ledger.config_digest,
+                ledger.state.value,
+                ledger.reason,
+            ),
+        )
+
+    def import_ledger(self) -> TraceImportLedger | None:
+        """读取已持久化的导入账本；无绑定的旧 store 明确返回 None。"""
+
+        row = self.connection.execute(
+            "SELECT subject, trace_digest, schema_version, config_digest, state, reason "
+            "FROM trace_import_binding"
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            subject = TraceId.from_value(str(row[0]))
+            state = TraceImportState(str(row[4]))
+            chunks = tuple(
+                TraceChunkRecord(
+                    name=str(item[0]),
+                    sha256=str(item[1]),
+                    byte_count=int(item[2]),
+                    event_count=int(item[3]),
+                )
+                for item in self.connection.execute(
+                    "SELECT name, sha256, byte_count, event_count "
+                    "FROM trace_import_chunks WHERE subject = ? ORDER BY name",
+                    (subject.value,),
+                ).fetchall()
+            )
+            layers = tuple(
+                TraceLayerRecord(
+                    layer=TraceImportLayer(str(item[0])),
+                    count=int(item[1]),
+                    sha256=str(item[2]),
+                )
+                for item in self.connection.execute(
+                    "SELECT layer, count, sha256 "
+                    "FROM trace_import_layers WHERE subject = ? ORDER BY layer",
+                    (subject.value,),
+                ).fetchall()
+            )
+            return TraceImportLedger(
+                subject=subject,
+                trace_digest=str(row[1]),
+                schema_version=str(row[2]),
+                config_digest=str(row[3]),
+                state=state,
+                chunks=chunks,
+                layers=layers,
+                reason=None if row[5] is None else str(row[5]),
+            )
+        except (TypeError, ValueError) as error:
+            raise TraceStoreError("persisted trace import ledger is invalid") from error
+
+    def record_import_layers(self, ledger: TraceImportLedger) -> None:
+        """写入当前 subject 的 chunk/layer 账本，但不改变事务状态。"""
+
+        existing = self.import_ledger()
+        if existing is None:
+            raise TraceStoreError("TraceStore import has not been started")
+        if (
+            existing.subject != ledger.subject
+            or existing.schema_version != ledger.schema_version
+            or existing.config_digest != ledger.config_digest
+        ):
+            raise TraceStoreError("TraceStore import subject does not match")
+        if existing.state is not TraceImportState.CREATING:
+            raise TraceStoreError("cannot mutate a non-creating import")
+        self.connection.execute("BEGIN TRANSACTION")
+        try:
+            self.connection.execute(
+                "DELETE FROM trace_import_chunks WHERE subject = ?",
+                (ledger.subject.value,),
+            )
+            self.connection.execute(
+                "DELETE FROM trace_import_layers WHERE subject = ?",
+                (ledger.subject.value,),
+            )
+            if ledger.chunks:
+                self.connection.executemany(
+                    "INSERT INTO trace_import_chunks VALUES (?, ?, ?, ?, ?)",
+                    [
+                        (
+                            ledger.subject.value,
+                            item.name,
+                            item.sha256,
+                            item.byte_count,
+                            item.event_count,
+                        )
+                        for item in ledger.chunks
+                    ],
+                )
+            if ledger.layers:
+                self.connection.executemany(
+                    "INSERT INTO trace_import_layers VALUES (?, ?, ?, ?)",
+                    [
+                        (ledger.subject.value, item.layer.value, item.count, item.sha256)
+                        for item in ledger.layers
+                    ],
+                )
+            self.connection.execute("COMMIT")
+        except Exception:
+            self.connection.execute("ROLLBACK")
+            raise
 
     def add_events(
         self,
