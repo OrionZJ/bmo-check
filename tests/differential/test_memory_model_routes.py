@@ -347,6 +347,50 @@ def test_dynamic_facade_accepts_explicit_from_read_for_the_same_execution() -> N
     assert invalid.source.status == invalid.target.status == "unknown"
 
 
+def test_exact_width_rf_co_fr_fixture_is_consistent_across_routes() -> None:
+    """RF/CO/FR 的共同子集必须先有独立 characterization。"""
+
+    static = _static_slice(
+        (
+            (_static_event("w0", "t0", 0x10, StaticEventKind.STORE, "x"),),
+            (_static_event("w1", "t1", 0x20, StaticEventKind.STORE, "x"),),
+            (_static_event("r0", "t2", 0x30, StaticEventKind.LOAD, "x"),),
+        )
+    )
+    static_object = _object_id(static.events[0])
+    static_result = check_static(
+        static,
+        read_from={"r0": "w0"},
+        coherence=((static_object, "w0", "w1"),),
+        from_read=((static_object, "r0", "w1"),),
+    )
+
+    dynamic = _dynamic_window(
+        (
+            ((DynamicEventKind.STORE, 0x1000),),
+            ((DynamicEventKind.STORE, 0x1000),),
+            ((DynamicEventKind.LOAD, 0x1000),),
+        )
+    )
+    dynamic_ids = {event.thread_id: event.event_id for event in dynamic.events}
+    dynamic_result = check_dynamic(
+        dynamic,
+        read_from={dynamic_ids[3]: dynamic_ids[1]},
+        coherence=(("x", dynamic_ids[1], dynamic_ids[2]),),
+        from_read=(("x", dynamic_ids[3], dynamic_ids[2]),),
+        object_locations={"x": (0x1000, 4)},
+    )
+
+    assert (static_result.source.status, static_result.target.status) == (
+        "allowed",
+        "allowed",
+    )
+    assert (dynamic_result.source.status, dynamic_result.target.status) == (
+        "allowed",
+        "allowed",
+    )
+
+
 def test_unknown_route_is_incomplete_and_not_equivalent() -> None:
     static = _static_slice(((_static_event("load", "t0", 0x10, StaticEventKind.LOAD, "x"),),))
     dynamic = _dynamic_window((((DynamicEventKind.LOAD, 0x1000),),))
