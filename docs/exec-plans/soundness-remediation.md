@@ -585,11 +585,24 @@ certificate，也没有改变 legacy tuple/dict route。
 本提交 focused characterization/portability/obligation tests 为 `27 passed`；
 随后完整默认 suite 为 `517 passed, 10 skipped`，跳过项仍仅依赖未配置的
 DynamoRIO/native capture 或显式 opt-in 的真实 litmus ELF；`git diff --check`
-通过。剩余风险：conflict/projection obligations、typed Unknown proposition
-与 registered proof rule 尚未接入；dynamic fixed-execution route 也尚未拥有
-同等 obligation inventory。
+通过。`f0b333f` 的剩余风险：conflict/projection obligations、typed Unknown
+proposition 与 registered proof rule 尚未接入；dynamic fixed-execution route
+尚未拥有同等 obligation inventory。
 
-下一提交继续 RU2.3 的窄边界：为 dynamic fixed-execution characterization
-建立同一 canonical execution obligation inventory，并保持 static/dynamic
-adapter 对不完整 universe 的保守 `UNKNOWN`；不把 observation 或 coverage
-字段当作 obligation discharge，也不把 inventory 直接接入最终 SAFE certificate。
+RU2.3 的 static/dynamic shared inventory 已在 `7c55207` 完成：execution
+obligation 枚举迁移到 core 的单一实现，两个 route 只负责将自身事件归一化为
+`MemoryOperation`。两边都要求 caller 提供 trace/binary-bound 的
+`MemoryEventId`；缺少 identity、relation endpoint 或 exact-width universe
+时保持 `INCOMPLETE`，typed adapter 保守返回 `UNKNOWN`。RF/CO 已给定时，
+core 会把由它们唯一导出的 FR 命题列为 obligation，即使 legacy 输入省略
+FR；它不会把 FR 观察伪装成 producer 提交的 relation 或 ProofFact。
+
+本提交 focused tests 为 `28 passed`，随后完整默认 suite 为
+`518 passed, 10 skipped`；`git diff --check` 通过。剩余风险仍是 conflict/
+projection obligations、typed Unknown proposition、registered proof rule 和
+最终 SAFE certificate replay 尚未迁移；旧 legacy route 仍只受既有检查约束。
+
+下一提交继续 RU2.3 的更窄边界：为 conflict/projection obligation 建立
+characterization 和删除/投影对账接口，先证明 event-universe ledger 与
+obligation inventory 能逐项绑定，再评审 typed Unknown proposition；不把
+dynamic observation 或 coverage 字段当作 static proof discharge。
