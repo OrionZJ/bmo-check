@@ -40,6 +40,19 @@ def _unknown_is_removed(unknown: object, removed: set[str]) -> bool:
     )
 
 
+def _relation_event_ids(shared_slice: SharedMemorySlice) -> set[str]:
+    """找出仍参与关系的事件，防止投影只删掉关系的一端。"""
+
+    related: set[str] = set()
+    for edge in shared_slice.program_order:
+        related.update((edge.source_event, edge.target_event))
+    for conflict in shared_slice.conflicts:
+        related.update((conflict.first_event, conflict.second_event))
+    for edge in shared_slice.synchronization:
+        related.update((edge.source_event, edge.target_event))
+    return related
+
+
 def restrict_to_application_scope(
     shared_slice: SharedMemorySlice,
     *,
@@ -48,14 +61,17 @@ def restrict_to_application_scope(
     """构造显式 application scope 的共享切片。
 
     这不是把未知事实改成 SAFE。只有 effect contract 已将调用绑定到运行库
-    私有对象时才移除它；普通应用事件、未摘要调用和 syscall 仍按原规则阻塞
-    证明。被移除的每个事件都留下 proof object，证书可以复核这个边界。
+    私有对象、且该事件没有参与现有关系时才移除它；关系端点不完整时保留
+    整个事件，避免先删 event 再把 PO、conflict 或同步边当成不存在。被移除
+    的孤立事件会留下 proof object，证书可以复核这个边界。
     """
 
+    related_events = _relation_event_ids(shared_slice)
     removed_events = tuple(
         event
         for event in shared_slice.events
         if _is_runtime_boundary(event, executable_sha256)
+        and event.id not in related_events
     )
     if not removed_events:
         return shared_slice

@@ -106,7 +106,25 @@ def _source_and_projected() -> tuple[SharedMemorySlice, SharedMemorySlice, dict[
 
 
 def test_projection_adapter_exposes_unproved_removed_relations() -> None:
-    source, projected, identities = _source_and_projected()
+    source, _, identities = _source_and_projected()
+    # 这里故意构造一个漏掉关系端点的旧式投影，验证 adapter 不会把
+    # 缺少 relation 当成已证明删除。真实 application scope 现在会保留
+    # 关系端点；该测试仍需要独立覆盖不完整输入的拒绝路径。
+    projected = source.model_copy(
+        update={
+            "events": tuple(event for event in source.events if event.id != "runtime"),
+            "program_order": tuple(
+                edge
+                for edge in source.program_order
+                if edge.source_event != "runtime" and edge.target_event != "runtime"
+            ),
+            "conflicts": (),
+            "synchronization": (),
+            "coverage": source.coverage.model_copy(
+                update={"remaining_shared_events": 2}
+            ),
+        }
+    )
 
     ledger = build_projection_ledger(
         source,

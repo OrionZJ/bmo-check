@@ -278,7 +278,7 @@ def test_unknown_memory_effect_remains_in_slice_and_conflicts() -> None:
     assert shared_slice.unknowns == (fact,)
 
 
-def test_application_scope_removes_runtime_sync_edges_with_their_call() -> None:
+def test_application_scope_keeps_relation_connected_runtime_effect() -> None:
     runtime = MemoryEvent(
         id="worker:malloc",
         module="app",
@@ -317,8 +317,36 @@ def test_application_scope_removes_runtime_sync_edges_with_their_call() -> None:
         executable_sha256="a" * 64,
     )
 
-    assert tuple(event.id for event in scoped.events) == (join.id,)
-    assert scoped.synchronization == ()
+    assert tuple(event.id for event in scoped.events) == (runtime.id, join.id)
+    assert scoped.synchronization
+    assert scoped.proof_objects == ()
+
+
+def test_application_scope_removes_isolated_runtime_effect_with_proof() -> None:
+    runtime = MemoryEvent(
+        id="worker:isolated-runtime",
+        module="app",
+        module_sha256="a" * 64,
+        pc=0x1100,
+        kind=EventKind.OPAQUE_CALL,
+        address=AbstractAddress(
+            kind=AddressKind.GLOBAL,
+            base="runtime:allocator",
+            provenance={"runtime_internal": True},
+        ),
+        thread_role="worker",
+        provenance={"runtime_internal": True},
+    )
+
+    scoped = restrict_to_application_scope(
+        SharedMemorySlice(
+            events=(runtime,),
+            coverage=PruningCoverage(total_events=1, remaining_shared_events=1),
+        ),
+        executable_sha256="a" * 64,
+    )
+
+    assert scoped.events == ()
     assert scoped.proof_objects[-1].reason == ProofReason.APPLICATION_RUNTIME_BOUNDARY
 
 
