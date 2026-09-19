@@ -4,9 +4,12 @@ import pytest
 
 from bmo_check_core import (
     AccessRange,
+    ExecutionRelations,
     MemoryAccessKind,
     MemoryOperation,
+    MemoryRelation,
     RangeRelation,
+    RelationKind,
     SemanticPrimitive,
     SemanticPrimitiveRef,
     relate_ranges,
@@ -22,12 +25,13 @@ def _operation(
     size: int = 4,
     thread_id: str = "t0",
     sequence: int,
+    object_id: str = "alloc-1",
 ) -> MemoryOperation:
     return MemoryOperation(
         event_id=event_id,
         thread_id=thread_id,
         sequence=sequence,
-        access=AccessRange(object_id="alloc-1", offset=offset, size=size),
+        access=AccessRange(object_id=object_id, offset=offset, size=size),
         kind=kind,
     )
 
@@ -125,3 +129,57 @@ def test_primitive_reference_rejects_missing_identity(field: str) -> None:
 
     with pytest.raises(ValueError, match=field):
         SemanticPrimitiveRef(**values)
+
+
+def test_execution_relations_accept_exact_width_rf_co_fr() -> None:
+    write0 = _operation("w0", MemoryAccessKind.STORE, offset=0, sequence=1)
+    write1 = _operation("w1", MemoryAccessKind.STORE, offset=0, sequence=2)
+    read = _operation("r0", MemoryAccessKind.LOAD, offset=0, sequence=3)
+
+    relations = ExecutionRelations(
+        read_from=(MemoryRelation(RelationKind.READ_FROM, write0, read),),
+        coherence=(MemoryRelation(RelationKind.COHERENCE, write0, write1),),
+        from_read=(MemoryRelation(RelationKind.FROM_READ, read, write1),),
+    )
+
+    assert relations.all_exact_width
+    assert relations.exact_width_issues() == ()
+    assert relations.read_from[0].proposition_key[0] == "read_from"
+
+
+def test_initial_read_from_has_an_explicit_exact_width_proposition() -> None:
+    read = _operation("r0", MemoryAccessKind.LOAD, offset=0, sequence=1)
+
+    relation = MemoryRelation(RelationKind.READ_FROM, None, read)
+
+    assert relation.range_relation is RangeRelation.EXACT
+    assert relation.exact_width_supported
+    assert relation.proposition_key[1] is None
+
+
+def test_partial_width_relation_stays_visible_but_is_not_exact_width_supported() -> None:
+    write = _operation("w", MemoryAccessKind.STORE, offset=0, size=8, sequence=1)
+    read = _operation("r", MemoryAccessKind.LOAD, offset=4, size=8, sequence=2)
+
+    relation = MemoryRelation(RelationKind.READ_FROM, write, read)
+    relations = ExecutionRelations(read_from=(relation,))
+
+    assert relation.range_relation is RangeRelation.PARTIAL_OVERLAP
+    assert not relation.exact_width_supported
+    assert relations.exact_width_issues() == ("read_from:w->r:partial_overlap",)
+    assert not relations.all_exact_width
+
+
+def test_relation_direction_and_duplicate_rf_targets_are_checked() -> None:
+    write = _operation("w", MemoryAccessKind.STORE, offset=0, sequence=1)
+    read = _operation("r", MemoryAccessKind.LOAD, offset=0, sequence=2)
+
+    with pytest.raises(ValueError, match="coherence target"):
+        MemoryRelation(RelationKind.COHERENCE, write, read)
+    with pytest.raises(ValueError, match="one source per target"):
+        ExecutionRelations(
+            read_from=(
+                MemoryRelation(RelationKind.READ_FROM, write, read),
+                MemoryRelation(RelationKind.READ_FROM, None, read),
+            )
+        )
