@@ -827,3 +827,19 @@ join/handle/futex），为 W3/W4/W14 建立 typed ledger 缺口，而不修改 p
 - 剩余风险：sidecar 尚无 writer/import ledger，也没有把 wire identity 转成
   core `LifecycleLedger`；下一原子边界应先做只读 wire→core adapter，验证缺失
   或 schema major mismatch 保守失败，然后再评审 TraceStore 集成。
+
+### RU4.3a 修正 sidecar 生命周期基数已完成
+
+- 提交：`bfa3364`（`Require explicit lifecycle origin`）。
+- finding：F05、F06；witness：W3、W14。
+- `TraceLifecycleMetadata` 现在按 `operation_id` 去重，而不是按
+  `thread_instance_id` 去重；同一线程的 CREATE/START/END 可以同时存在，
+  但同一 operation 不能重复。
+- 每条 lifecycle record 必须显式携带 `ThreadOrigin`。适配器不再从
+  `parent_thread_instance_id == None` 猜测 root/created；origin 缺失只能在旧
+  schema/输入错误路径保留 UNKNOWN。
+- focused schema tests：`6 passed`；完整默认 suite：`551 passed, 10 skipped`；
+  `git diff --check` 通过。
+- 剩余风险不变：sidecar 尚无 wire→core adapter 和 import ledger；下一提交
+  只实现严格的只读转换，schema major mismatch 或 identity 不可解析时拒绝，
+  不修改 TraceStore/verdict。
