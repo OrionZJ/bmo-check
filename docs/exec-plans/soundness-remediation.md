@@ -544,6 +544,17 @@ RU2.1 第一窄步已在 `5642332` 完成：identity 层新增稳定
 ledger 和 proof discharge 仍未迁移。focused identity/semantics/boundary tests
 为 `39 passed`，完整默认 suite 为 `502 passed, 10 skipped`。
 
-下一提交只推进 RU2.2：为 static fixed-execution adapter 增加显式 event-universe
-ledger，区分 retained、removed-with-proof 和 unresolved；旧 `covered_events`
-不得承担 universe completeness 或 Unknown discharge 语义。
+RU2.2 第一窄步已在 `4a5b694` 完成：新增 core-owned
+`EventUniverseLedger`、`EventUniverseEntry`、`EventDisposition` 和显式
+`CompletenessState`。每个已识别输入 event 只能是 retained、removed-with-proof
+或 unresolved；COMPLETE ledger 缺项会拒绝，INCOMPLETE/UNSUPPORTED 必须带
+scope/reason 并暴露 `missing_event_ids`。这是独立对账值对象，尚未把旧
+`covered_events`、静态 slice 字符串 event id 或任何 verdict 路径强行映射进来；
+旧字段不能承担 universe completeness 或 Unknown discharge 语义。focused
+universe/identity/certificate tests 为 `35 passed`，完整默认 suite 为
+`509 passed, 10 skipped`。
+
+下一提交继续 RU2.2：在 static slice evidence adapter 建立 canonical
+`MemoryEventId` 到 `EventUniverseLedger` 的显式映射；无法唯一映射的 legacy
+event、removed proof 或 unresolved Unknown 必须停在 `INCOMPLETE/UNKNOWN`，不填充
+空字段。
