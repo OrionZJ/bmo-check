@@ -145,6 +145,7 @@ from .obligations import (
     build_conflict_obligation_inventory,
     build_execution_obligation_inventory,
     build_projection_obligation_inventory,
+    build_projection_relation_obligation_inventory,
     match_proof_to_obligation,
     match_unknown_to_obligation,
 )
@@ -271,6 +272,7 @@ __all__ = [
     "build_conflict_obligation_inventory",
     "build_execution_obligation_inventory",
     "build_projection_obligation_inventory",
+    "build_projection_relation_obligation_inventory",
     "match_proof_to_obligation",
     "match_unknown_to_obligation",
 ]

@@ -18,6 +18,11 @@ from .contracts.semantics import (
     RelationKind,
 )
 from .identity import EvidenceId, MemoryEventId, ObligationId, PropositionId, StableId
+from .projection import (
+    ProjectionLedger,
+    ProjectionRelationDisposition,
+    projection_proposition_id,
+)
 from .universe import (
     CompletenessState,
     CompletenessStatus,
@@ -575,6 +580,77 @@ def build_projection_obligation_inventory(
     )
 
 
+def build_projection_relation_obligation_inventory(
+    projection_ledger: ProjectionLedger,
+    *,
+    scope: str,
+) -> ObligationInventory:
+    """为被移除的 relation 建立 source/target preservation obligations。
+
+    event-level removal proof 不能替代 relation-level 命题。这里复用 ledger
+    的同一 ``RelationId`` 和 preservation rule 生成 proposition；账本缺失、
+    scope 不同或 relation 仍 unresolved 时，已观察到的 obligations 可以保留，
+    但 inventory 必须标记为 INCOMPLETE，不能把缺失关系当成没有义务。
+    """
+
+    issues: set[str] = set()
+    if not isinstance(projection_ledger, ProjectionLedger):
+        issues.add("projection relation ledger is not typed")
+        entries = ()
+    else:
+        entries = projection_ledger.entries
+        if projection_ledger.stage != scope:
+            issues.add("projection relation ledger scope does not match inventory")
+        if projection_ledger.completeness.status is not CompletenessStatus.COMPLETE:
+            issues.add(
+                "projection relation ledger is "
+                f"{projection_ledger.completeness.status.value.lower()}"
+            )
+        if projection_ledger.missing_relation_ids:
+            issues.add("projection relation ledger has missing input relations")
+
+    obligations: list[ProofObligation] = []
+    for entry in entries:
+        if entry.disposition is ProjectionRelationDisposition.RETAINED:
+            continue
+        if entry.disposition is ProjectionRelationDisposition.UNRESOLVED:
+            issues.add(
+                f"relation {entry.relation_id.value!r} remains unresolved"
+            )
+            continue
+        if projection_ledger.preservation_rule is None:
+            issues.add(
+                f"relation {entry.relation_id.value!r} has no preservation rule"
+            )
+            continue
+        obligations.append(
+            ProofObligation.create(
+                proposition_id=projection_proposition_id(
+                    entry.relation_id,
+                    projection_ledger.preservation_rule,
+                ),
+                kind=ObligationKind.PROJECTION,
+                scope=scope,
+                subjects=(entry.relation_id,),
+            )
+        )
+
+    completeness = (
+        CompletenessState(CompletenessStatus.COMPLETE, scope)
+        if not issues
+        else CompletenessState(
+            CompletenessStatus.INCOMPLETE,
+            scope,
+            reason="; ".join(sorted(issues)),
+        )
+    )
+    return ObligationInventory(
+        scope=scope,
+        obligations=tuple(obligations),
+        completeness=completeness,
+    )
+
+
 __all__ = [
     "ObligationInventory",
     "ObligationKind",
@@ -587,4 +663,5 @@ __all__ = [
     "build_execution_obligation_inventory",
     "build_conflict_obligation_inventory",
     "build_projection_obligation_inventory",
+    "build_projection_relation_obligation_inventory",
 ]

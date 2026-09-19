@@ -17,20 +17,26 @@ from bmo_check_core import (
     ObligationInventory,
     ObligationKind,
     ObligationMatchStatus,
+    ProjectionLedger,
+    ProjectionRelationDisposition,
+    ProjectionRelationEntry,
     PropositionId,
     ProofConclusion,
     ProducerId,
     ProofObligation,
     ProofFact,
     RegisteredProofRule,
+    RelationId,
     ThreadRoleId,
     UnknownFact,
     UnknownKind,
     UnknownProposition,
     build_conflict_obligation_inventory,
     build_projection_obligation_inventory,
+    build_projection_relation_obligation_inventory,
     match_unknown_to_obligation,
     match_proof_to_obligation,
+    projection_proposition_id,
 )
 
 
@@ -236,6 +242,64 @@ def test_incomplete_projection_universe_stays_incomplete() -> None:
 
     assert not inventory.is_enumerated
     assert len(inventory.obligations) == 1
+
+
+def test_projection_relation_inventory_uses_relation_identity() -> None:
+    first, second = _event("first"), _event("second")
+    relation = RelationId.from_parts("program_order", (first, second))
+    rule = RegisteredProofRule("application-projection", "1")
+    projection = ProjectionLedger(
+        stage="tests.obligations.relation",
+        input_relation_ids=(relation,),
+        entries=(
+            ProjectionRelationEntry(
+                relation,
+                ProjectionRelationDisposition.REMOVED_WITH_PROOF,
+                proof_ids=(_proof(first),),
+            ),
+        ),
+        preservation_rule=rule,
+        completeness=CompletenessState(
+            CompletenessStatus.COMPLETE,
+            "tests.obligations.relation",
+        ),
+    )
+
+    inventory = build_projection_relation_obligation_inventory(
+        projection,
+        scope="tests.obligations.relation",
+    )
+
+    assert inventory.is_enumerated
+    assert len(inventory.obligations) == 1
+    obligation = inventory.obligations[0]
+    assert obligation.kind is ObligationKind.PROJECTION
+    assert obligation.subjects == (relation,)
+    assert obligation.proposition_id == projection_proposition_id(relation, rule)
+
+
+def test_incomplete_projection_relation_inventory_cannot_be_empty_proof() -> None:
+    first, second = _event("first"), _event("second")
+    relation = RelationId.from_parts("program_order", (first, second))
+    projection = ProjectionLedger(
+        stage="tests.obligations.relation",
+        input_relation_ids=(relation,),
+        entries=(),
+        preservation_rule=None,
+        completeness=CompletenessState(
+            CompletenessStatus.INCOMPLETE,
+            "tests.obligations.relation",
+            reason="relation endpoint was filtered",
+        ),
+    )
+
+    inventory = build_projection_relation_obligation_inventory(
+        projection,
+        scope="tests.obligations.relation",
+    )
+
+    assert not inventory.is_enumerated
+    assert inventory.obligations == ()
 
 
 def test_unknown_obligation_match_refuses_legacy_unknown() -> None:
