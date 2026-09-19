@@ -14,8 +14,10 @@ from bmo_check_core import (
     EvidenceId,
     EvidenceLedger,
     ProducerId,
+    StableId,
     UnknownFact as CanonicalUnknownFact,
     UnknownKind as CanonicalUnknownKind,
+    UnknownProposition,
 )
 from bmo_check_static.model import (
     ProgramManifest,
@@ -56,6 +58,8 @@ def emit_static_unknown(
     details: dict[str, object] | None = None,
     canonical_ledger: EvidenceLedger | None = None,
     canonical_scope: str = "static.recovery",
+    canonical_subject: StableId | None = None,
+    canonical_proposition: UnknownProposition | None = None,
 ) -> LegacyUnknownFact:
     """同时生成旧 Unknown 和可选的 canonical Unknown。
 
@@ -78,6 +82,14 @@ def emit_static_unknown(
         canonical_kind = CanonicalUnknownKind(kind.value)
     except ValueError:
         canonical_kind = CanonicalUnknownKind.UNKNOWN_ROOT_CAUSE
+    if canonical_proposition is None and canonical_subject is not None:
+        # 只有 caller 已经提供稳定 subject 时才构造 proposition；模块路径和
+        # 裸 PC 不能在这里猜成 instruction identity。
+        canonical_proposition = UnknownProposition.create(
+            kind=canonical_kind.value,
+            scope=canonical_scope,
+            subjects=(canonical_subject,),
+        )
     context = [
         f"legacy.impact={impact}",
         f"legacy.kind={kind.value}",
@@ -110,8 +122,9 @@ def emit_static_unknown(
             producer=ProducerId("bmo_check_static.recovery", "c6"),
             kind=canonical_kind,
             reason=reason,
-            subject=None,
+            subject=canonical_subject,
             scope=canonical_scope,
+            proposition=canonical_proposition,
             supporting_context=tuple(sorted(context)),
         )
     )
