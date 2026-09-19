@@ -37,6 +37,17 @@ class ObligationKind(StrEnum):
     PROJECTION = "projection"
 
 
+class ObligationMatchStatus(StrEnum):
+    """Unknown 与 obligation 的 identity 绑定结果。"""
+
+    # proposition 和 scope 都相同，可以进入后续显式 discharge 检查。
+    MATCH = "match"
+    # 旧 Unknown 缺少 proposition，只能保留为 incomplete。
+    INCOMPLETE = "incomplete"
+    # 两个 typed identity 明确指向不同命题，不能互相关闭。
+    MISMATCH = "mismatch"
+
+
 def _subjects(values: tuple[StableId, ...]) -> tuple[StableId, ...]:
     if any(not isinstance(value, StableId) for value in values):
         raise ValueError("obligation subjects must be StableId values")
@@ -108,6 +119,51 @@ class ProofObligation:
             self.scope,
             (self.proposition_id.value, *(subject.value for subject in self.subjects)),
         )
+
+
+@dataclass(frozen=True, slots=True)
+class UnknownObligationMatch:
+    """记录 Unknown 和 obligation 是否绑定到同一稳定命题。"""
+
+    # status 是 identity 检查结果，不是 SAFE/UNKNOWN verdict。
+    status: ObligationMatchStatus
+    # reason 说明 legacy 缺失还是 typed identity 冲突。
+    reason: str
+
+
+def match_unknown_to_obligation(
+    unknown: object,
+    obligation: ProofObligation,
+) -> UnknownObligationMatch:
+    """只按 proposition_id 和 scope 匹配 Unknown，不从旧字段猜命题。
+
+    这是 evidence/obligation 的桥接检查，不执行 proof discharge，也不接受
+    ObservedFact 或 DiagnosticHint 作为替代命题。
+    """
+
+    from .evidence import UnknownFact
+
+    if not isinstance(unknown, UnknownFact):
+        return UnknownObligationMatch(
+            ObligationMatchStatus.MISMATCH,
+            "binding subject is not an UnknownFact",
+        )
+    if unknown.proposition is None:
+        return UnknownObligationMatch(
+            ObligationMatchStatus.INCOMPLETE,
+            "legacy UnknownFact has no typed proposition",
+        )
+    if unknown.scope != obligation.scope or unknown.proposition.scope != obligation.scope:
+        return UnknownObligationMatch(
+            ObligationMatchStatus.MISMATCH,
+            "Unknown and obligation scopes differ",
+        )
+    if unknown.proposition.id != obligation.proposition_id:
+        return UnknownObligationMatch(
+            ObligationMatchStatus.MISMATCH,
+            "Unknown proposition does not match obligation proposition",
+        )
+    return UnknownObligationMatch(ObligationMatchStatus.MATCH, "stable proposition matches")
 
 
 @dataclass(frozen=True, slots=True)
@@ -481,7 +537,10 @@ def build_projection_obligation_inventory(
 __all__ = [
     "ObligationInventory",
     "ObligationKind",
+    "ObligationMatchStatus",
     "ProofObligation",
+    "UnknownObligationMatch",
+    "match_unknown_to_obligation",
     "build_execution_obligation_inventory",
     "build_conflict_obligation_inventory",
     "build_projection_obligation_inventory",

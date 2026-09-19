@@ -94,10 +94,13 @@ from .universe import (
 from .obligations import (
     ObligationInventory,
     ObligationKind,
+    ObligationMatchStatus,
     ProofObligation,
+    UnknownObligationMatch,
     build_conflict_obligation_inventory,
     build_execution_obligation_inventory,
     build_projection_obligation_inventory,
+    match_unknown_to_obligation,
 )
 
 __all__ = [
@@ -178,8 +181,11 @@ __all__ = [
     "EventUniverseLedger",
     "ObligationInventory",
     "ObligationKind",
+    "ObligationMatchStatus",
     "ProofObligation",
+    "UnknownObligationMatch",
     "build_conflict_obligation_inventory",
     "build_execution_obligation_inventory",
     "build_projection_obligation_inventory",
+    "match_unknown_to_obligation",
 ]

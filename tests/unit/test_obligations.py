@@ -16,11 +16,17 @@ from bmo_check_core import (
     ObligationId,
     ObligationInventory,
     ObligationKind,
+    ObligationMatchStatus,
     PropositionId,
+    ProducerId,
     ProofObligation,
     ThreadRoleId,
+    UnknownFact,
+    UnknownKind,
+    UnknownProposition,
     build_conflict_obligation_inventory,
     build_projection_obligation_inventory,
+    match_unknown_to_obligation,
 )
 
 
@@ -226,3 +232,70 @@ def test_incomplete_projection_universe_stays_incomplete() -> None:
 
     assert not inventory.is_enumerated
     assert len(inventory.obligations) == 1
+
+
+def test_unknown_obligation_match_refuses_legacy_unknown() -> None:
+    subject = _event("unknown")
+    proposition = UnknownProposition.create(
+        kind=UnknownKind.UNKNOWN_ESCAPE.value,
+        scope="slice-1",
+        subjects=(subject,),
+    )
+    obligation = ProofObligation.create(
+        proposition_id=proposition.id,
+        kind=ObligationKind.PROJECTION,
+        scope="slice-1",
+        subjects=(subject,),
+    )
+    unknown = UnknownFact.create(
+        schema_version="2",
+        producer=ProducerId("static", "typed-test"),
+        kind=UnknownKind.UNKNOWN_ESCAPE,
+        reason="escape is open",
+        subject=subject,
+        scope="slice-1",
+    )
+
+    result = match_unknown_to_obligation(unknown, obligation)
+
+    assert result.status is ObligationMatchStatus.INCOMPLETE
+    assert "no typed proposition" in result.reason
+
+
+def test_unknown_obligation_match_requires_same_typed_proposition_and_scope() -> None:
+    subject = _event("unknown")
+    proposition = UnknownProposition.create(
+        kind=UnknownKind.UNKNOWN_ESCAPE.value,
+        scope="slice-1",
+        subjects=(subject,),
+    )
+    unknown = UnknownFact.create(
+        schema_version="2",
+        producer=ProducerId("static", "typed-test"),
+        kind=UnknownKind.UNKNOWN_ESCAPE,
+        reason="escape is open",
+        subject=subject,
+        scope="slice-1",
+        proposition=proposition,
+    )
+    wrong_proposition = ProofObligation.create(
+        proposition_id=PropositionId.from_parts("unknown:other", ("slice-1",)),
+        kind=ObligationKind.PROJECTION,
+        scope="slice-1",
+        subjects=(subject,),
+    )
+    wrong_scope = ProofObligation.create(
+        proposition_id=proposition.id,
+        kind=ObligationKind.PROJECTION,
+        scope="slice-2",
+        subjects=(subject,),
+    )
+
+    assert (
+        match_unknown_to_obligation(unknown, wrong_proposition).status
+        is ObligationMatchStatus.MISMATCH
+    )
+    assert (
+        match_unknown_to_obligation(unknown, wrong_scope).status
+        is ObligationMatchStatus.MISMATCH
+    )
