@@ -868,3 +868,26 @@ join/handle/futex），为 W3/W4/W14 建立 typed ledger 缺口，而不修改 p
   TraceStore/import 流程并建立其 subject/completeness characterization；
   在 import ledger 完成前，不能把 sidecar 的 COMPLETE 直接当作
   `TRACE_SAFE` 的完整 trace 证明。
+
+### RU5.0 TraceStore 导入账本契约已建立
+
+- 提交：`2ac397e`（`Add typed trace import ledger`）。
+- finding：F13、F16；witness：W10 以及 stale/partial/mixed store 场景。
+- core 新增 `TraceImportLedger`、`TraceImportState`、`TraceChunkRecord` 和
+  `TraceLayerRecord`。账本同时绑定 `TraceId`、原始 trace digest、schema
+  version、config digest、raw chunk 列表，以及 manifest/raw chunk/decoded
+  event/object/thread 五个必需层的 count/digest；chunk 和 layer identity
+  重复时直接拒绝。
+- `COMPLETE` 必须有非空 raw chunk 且逐层覆盖全部必需层；`CREATING`、
+  `FAILED`、`INCOMPLETE` 的状态语义不同，失败/不完整必须携带原因。
+  `matches()` 只有在 subject、schema、config 完全相同时才允许 store 复用；
+  缺层不会被空列表解释成“没有事件”。
+- 这次没有修改 `TraceStore`、pipeline、communication scan 或任何 verdict
+  入口；新类型是后续 storage integration 的 canonical input contract，尚
+  不能单独使旧 trace 具备 `TRACE_SAFE` 资格。
+- focused import/lifecycle tests：`9 passed`；完整默认 suite：`558 passed,
+  10 skipped`；`git diff --check` 通过。
+- 下一原子边界：为现有 `TraceStore` 增加 subject-bound open/import state，先
+  用 stale、mixed、duplicate、truncated fixture 验证拒绝路径，再把 pipeline
+  的导入过程接到这个账本；不能先修改 verdict 或增加新的 application-only
+  shortcut。
