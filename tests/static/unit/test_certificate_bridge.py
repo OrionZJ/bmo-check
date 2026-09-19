@@ -434,6 +434,8 @@ def test_bridge_exposes_incomplete_projection_relations() -> None:
     assert result.projection_ledger is not None
     assert result.projection_ledger.completeness.status is CompletenessStatus.INCOMPLETE
     assert result.projection_ledger.missing_relation_ids
+    assert result.projection_obligations is not None
+    assert result.projection_obligations.completeness.status is CompletenessStatus.INCOMPLETE
 
 
 def test_bridge_rejects_dynamic_observation() -> None:

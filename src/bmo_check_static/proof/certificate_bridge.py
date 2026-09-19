@@ -15,13 +15,16 @@ from bmo_check_core import (
     CertificateBinding,
     CertificateError,
     CertificateVerdict,
+    CompletenessStatus,
     EvidenceLedger,
     EvidenceId,
+    EventUniverseLedger,
     MemoryEventId,
     ObservedFact,
     DiagnosticHint,
     ProjectionLedger,
     ProjectionError,
+    ObligationInventory,
     StaticCertificate,
     StaticVerification,
     UnknownFact as CanonicalUnknownFact,
@@ -29,6 +32,7 @@ from bmo_check_core import (
     RemovalDecision,
     UnknownDischarge,
     verify_projection_ledger,
+    build_projection_relation_obligation_inventory,
     verify_static_certificate,
 )
 from bmo_check_static.binary.evidence import emit_static_unknown
@@ -59,8 +63,12 @@ class StaticCertificateEvidence:
     ledger: EvidenceLedger
     # verification 保存本次构造时的 replay 结果，避免调用者跳过门禁。
     verification: StaticVerification
+    # event_universe 是静态输入事件的完整性账本；缺失时不能补成空集合。
+    event_universe: EventUniverseLedger | None = None
     # projection_ledger 供后续 preservation replay 使用；不绕过当前 schema gate。
     projection_ledger: ProjectionLedger | None = None
+    # projection_obligations 与 relation ledger 使用同一 proposition identity。
+    projection_obligations: ObligationInventory | None = None
 
 
 def binding_from_manifest(
@@ -191,10 +199,12 @@ def build_static_certificate_with_evidence(
         relevant_unknowns=unknown_ids,
         bounded=portability_evidence.certificate.checker.bounded,
     )
-    if slice_evidence.projection_ledger is not None:
+    projection_ledger = slice_evidence.projection_ledger
+    projection_obligations = slice_evidence.projection_obligations
+    if projection_ledger is not None:
         try:
             verify_projection_ledger(
-                slice_evidence.projection_ledger,
+                projection_ledger,
                 ledger,
                 expected_scope=binding.scope,
             )
@@ -205,6 +215,28 @@ def build_static_certificate_with_evidence(
                 raise CertificateBridgeError(
                     f"canonical static projection replay failed: {error}"
                 ) from error
+        expected_obligations = build_projection_relation_obligation_inventory(
+            projection_ledger,
+            scope=binding.scope,
+        )
+        if projection_obligations is None:
+            if verdict is not CertificateVerdict.UNKNOWN:
+                raise CertificateBridgeError(
+                    "projection relation obligations are missing"
+                )
+        elif projection_obligations != expected_obligations:
+            raise CertificateBridgeError(
+                "projection relation obligations do not match the relation ledger"
+            )
+        event_universe = slice_evidence.event_universe
+        if event_universe is None and verdict is not CertificateVerdict.UNKNOWN:
+            raise CertificateBridgeError("projection event universe is missing")
+        if (
+            event_universe is not None
+            and event_universe.completeness.status is not CompletenessStatus.COMPLETE
+            and verdict is not CertificateVerdict.UNKNOWN
+        ):
+            raise CertificateBridgeError("projection event universe is incomplete")
     try:
         verification = verify_static_certificate(
             certificate,
@@ -219,7 +251,9 @@ def build_static_certificate_with_evidence(
         certificate=certificate,
         ledger=ledger,
         verification=verification,
-        projection_ledger=slice_evidence.projection_ledger,
+        event_universe=slice_evidence.event_universe,
+        projection_ledger=projection_ledger,
+        projection_obligations=projection_obligations,
     )
 
 
@@ -320,6 +354,7 @@ def build_static_certificate_from_report(
     }
 
     projection_ledger: ProjectionLedger | None = None
+    projection_obligations: ObligationInventory | None = None
     if (
         report.memory_events is not None
         and report.shared_state is not None
@@ -347,6 +382,10 @@ def build_static_certificate_from_report(
             raise CertificateBridgeError(
                 f"static projection relation replay failed: {error}"
             ) from error
+        projection_obligations = build_projection_relation_obligation_inventory(
+            projection_ledger,
+            scope=binding.scope,
+        )
 
     # 报告里的 Unknown 不能因为旧 verifier 的过滤就凭空消失。只有它明确
     # 指向一个已被 ProofFact 覆盖的事件时，才追加可回放的 discharge；其余
@@ -424,6 +463,7 @@ def build_static_certificate_from_report(
         ),
         removal_decisions=tuple(decisions),
         projection_ledger=projection_ledger,
+        projection_obligations=projection_obligations,
     )
     portability_evidence = StaticPortabilityEvidence(
         certificate=portability_certificate,

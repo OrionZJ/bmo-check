@@ -13,6 +13,7 @@ from bmo_check_core import (
     EvidenceId,
     EvidenceLedger,
     MemoryEventId,
+    ObligationInventory,
     ProducerId,
     ProjectionLedger,
     ProofFact,
@@ -58,6 +59,8 @@ class StaticSliceEvidence:
     event_universe: EventUniverseLedger | None = None
     # projection_ledger 对账 PO/conflict/synchronization 的投影边界；不直接产生 verdict。
     projection_ledger: ProjectionLedger | None = None
+    # projection_obligations 把 relation preservation 命题绑定到同一 scope。
+    projection_obligations: ObligationInventory | None = None
 
     @property
     def proof_ids(self) -> tuple[EvidenceId, ...]:
