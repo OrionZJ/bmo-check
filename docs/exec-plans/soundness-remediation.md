@@ -781,3 +781,27 @@ join/handle/futex），为 W3/W4/W14 建立 typed ledger 缺口，而不修改 p
 - 剩余风险：静态 producer 仍未输出带 context/handle generation 的新字段；
   下一窄步是 dynamic legacy trace adapter characterization，之后才评审
   producer schema 扩展。任何只按静态 role/slot 的 join 仍只能是 UNKNOWN。
+
+### RU4.2 dynamic legacy adapter characterization 已完成
+
+- 提交：`d541efa`（`Characterize dynamic lifecycle adapter boundary`）。
+- finding：F05、F06、F18；witness：W3、W4、W14。
+- 新增 `characterize_trace_lifecycle()`，为每个出现在 TraceEvent 中的裸
+  `thread_id` 建立 trace-bound `ThreadInstanceId`，并保留可见 START/END 的
+  定位操作。缺少 CREATE→START callback、parent、pthread_t generation 或
+  完整 thread universe 时，所有 record 和 ledger 仍为 `INCOMPLETE`。
+- `THREAD_JOIN` 的 `address/aux` 不再被适配器解释为 handle；join relation
+  保留为无 handle 的 incomplete 状态，不能按 ticket 或出现顺序建立 HB。
+- `FUTEX_WAIT` 与 native `SYNC_*` 只生成 `SynchronizationIdentity`；没有
+  contract digest/rule 时标为 `UNSUPPORTED`，没有任何默认 ordering。
+- 未修改 TraceEvent wire format、TraceStore、dynamic pipeline、通信扫描或
+  verdict；这是旧 trace 的显式 legacy reader，不能把 observed trace 提升为
+  static ProofFact。
+- focused dynamic/trace/pipeline tests：`22 passed`；完整默认 suite：
+  `545 passed, 10 skipped`；`git diff --check` 通过。
+- 收集阶段曾发现 static/dynamic 测试同名导致 pytest import mismatch，已将
+  dynamic fixture 改为唯一模块名并纳入同一提交。
+- 剩余风险：新 trace schema 尚未携带 handle generation、callback context、
+  parent ThreadInstanceId 或 import-level lifecycle completeness；下一步应
+  先写 schema characterization/strict rejection，再讨论 producer 扩展，不
+  允许从现有 aux/address 推断生命周期关系。
