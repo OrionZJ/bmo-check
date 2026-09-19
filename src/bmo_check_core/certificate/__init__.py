@@ -12,8 +12,10 @@ from .model import (
 from .verification import (
     StaticVerification,
     TraceVerification,
+    TypedDischargeVerification,
     UnknownPropositionAudit,
     audit_unknown_propositions,
+    verify_typed_discharge,
     verify_static_certificate,
     verify_trace_certificate,
 )
@@ -27,8 +29,10 @@ __all__ = [
     "StaticVerification",
     "TraceCertificate",
     "TraceVerification",
+    "TypedDischargeVerification",
     "UnknownPropositionAudit",
     "audit_unknown_propositions",
+    "verify_typed_discharge",
     "TraceVerdict",
     "verify_static_certificate",
     "verify_trace_certificate",

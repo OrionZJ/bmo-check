@@ -3,7 +3,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ..evidence import EvidenceLedger, LedgerError, ObservedFact, ProofFact, UnknownFact
+from ..evidence import ProofRuleRegistry, ProofRuleReplayStatus, replay_proof_rule
 from ..identity import EvidenceId, MemoryEventId
+from ..obligations import (
+    ObligationMatchStatus,
+    ProofObligation,
+    match_proof_to_obligation,
+    match_unknown_to_obligation,
+)
 from .model import (
     CertificateBinding,
     CertificateError,
@@ -39,6 +46,17 @@ class UnknownPropositionAudit:
 
 
 @dataclass(frozen=True, slots=True)
+class TypedDischargeVerification:
+    """一个已写入 ledger 的 typed discharge 的只读 replay 结果。"""
+
+    # unknown_id 和 proof_id 让 certificate report 可以回到原始 ledger 节点。
+    unknown_id: EvidenceId
+    proof_id: EvidenceId
+    # obligation_id 绑定本次检查使用的 canonical obligation。
+    obligation_id: "ObligationId"
+
+
+@dataclass(frozen=True, slots=True)
 class TraceVerification:
     # certificate 是已通过 trace/category/binding 检查的输入。
     certificate: TraceCertificate
@@ -67,6 +85,44 @@ def audit_unknown_propositions(
         typed_ids=tuple(sorted(set(typed), key=lambda item: item.value)),
         legacy_ids=tuple(sorted(set(legacy), key=lambda item: item.value)),
         missing_ids=tuple(sorted(set(missing), key=lambda item: item.value)),
+    )
+
+
+def verify_typed_discharge(
+    ledger: EvidenceLedger,
+    discharge: "UnknownDischarge",
+    obligation: ProofObligation,
+    registry: ProofRuleRegistry,
+) -> TypedDischargeVerification:
+    """只读复核 typed discharge，供新 certificate replay gate 调用。"""
+
+    from ..evidence import UnknownDischarge
+
+    if not isinstance(discharge, UnknownDischarge):
+        raise CertificateError("typed discharge verification expects UnknownDischarge")
+    if not isinstance(obligation, ProofObligation):
+        raise CertificateError("typed discharge verification expects ProofObligation")
+    if not isinstance(registry, ProofRuleRegistry):
+        raise CertificateError("typed discharge verification expects ProofRuleRegistry")
+    if discharge not in ledger.discharges():
+        raise CertificateError("typed discharge is not present in the evidence ledger")
+    unknown = ledger.get(discharge.unknown_id)
+    proof = ledger.get(discharge.proof_id)
+    unknown_match = match_unknown_to_obligation(unknown, obligation)
+    if unknown_match.status is not ObligationMatchStatus.MATCH:
+        raise CertificateError(f"typed Unknown binding is not closed: {unknown_match.reason}")
+    proof_match = match_proof_to_obligation(proof, obligation)
+    if proof_match.status is not ObligationMatchStatus.MATCH:
+        raise CertificateError(f"typed proof binding is not closed: {proof_match.reason}")
+    if not isinstance(proof, ProofFact):
+        raise CertificateError("typed discharge proof is not a ProofFact")
+    replay = replay_proof_rule(proof, ledger, registry)
+    if replay.status is not ProofRuleReplayStatus.VALID:
+        raise CertificateError(f"typed proof rule is not replayable: {replay.reason}")
+    return TypedDischargeVerification(
+        unknown_id=discharge.unknown_id,
+        proof_id=discharge.proof_id,
+        obligation_id=obligation.id,
     )
 
 
@@ -235,6 +291,8 @@ __all__ = [
     "TraceVerification",
     "UnknownPropositionAudit",
     "audit_unknown_propositions",
+    "TypedDischargeVerification",
+    "verify_typed_discharge",
     "verify_static_certificate",
     "verify_trace_certificate",
 ]

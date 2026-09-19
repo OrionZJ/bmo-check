@@ -14,8 +14,14 @@ from bmo_check_core import (
     MemoryEventId,
     MemoryOperandId,
     ModuleId,
+    ObligationKind,
     ObservedFact,
     ProofFact,
+    ProofConclusion,
+    ProofObligation,
+    ProofRuleDefinition,
+    ProofRuleRegistry,
+    RegisteredProofRule,
     ProducerId,
     RemovalDecision,
     StaticCertificate,
@@ -24,11 +30,13 @@ from bmo_check_core import (
     TraceCertificate,
     TraceId,
     TraceVerdict,
+    UnknownDischarge,
     UnknownFact,
     UnknownKind,
     UnknownProposition,
     audit_unknown_propositions,
     verify_static_certificate,
+    verify_typed_discharge,
     verify_trace_certificate,
 )
 
@@ -230,6 +238,61 @@ def test_certificate_unknown_audit_distinguishes_typed_legacy_and_missing() -> N
     assert audit.typed_ids == (typed.id,)
     assert audit.legacy_ids == (legacy.id,)
     assert audit.missing_ids == (missing_id,)
+
+
+def test_certificate_typed_discharge_replays_without_mutating_ledger() -> None:
+    proposition = UnknownProposition.create(
+        kind=UnknownKind.UNKNOWN_ESCAPE.value,
+        scope="scope-a",
+    )
+    unknown = UnknownFact.create(
+        schema_version="2",
+        producer=ProducerId("static-test", "c6"),
+        kind=UnknownKind.UNKNOWN_ESCAPE,
+        reason="escape is open",
+        subject=None,
+        scope="scope-a",
+        proposition=proposition,
+    )
+    registered = RegisteredProofRule.create(name="EscapeClosed", version="1")
+    proof = ProofFact.create(
+        schema_version="2",
+        producer=ProducerId("static-test", "c6"),
+        subject=None,
+        rule="EscapeClosed",
+        scope="scope-a",
+        registered_rule=registered,
+        conclusion=ProofConclusion.create(
+            proposition_id=proposition.id,
+            scope="scope-a",
+        ),
+    )
+    obligation = ProofObligation.create(
+        proposition_id=proposition.id,
+        kind=ObligationKind.PROJECTION,
+        scope="scope-a",
+    )
+    discharge = UnknownDischarge(unknown.id, proof.id, "scope-a")
+    ledger = EvidenceLedger()
+    ledger.add(unknown)
+    ledger.add(proof)
+    ledger.add_typed_discharge(
+        discharge,
+        obligation,
+        ProofRuleRegistry((ProofRuleDefinition(registered, "EscapeClosed"),)),
+    )
+    before = ledger.discharges()
+
+    replay = verify_typed_discharge(
+        ledger,
+        discharge,
+        obligation,
+        ProofRuleRegistry((ProofRuleDefinition(registered, "EscapeClosed"),)),
+    )
+
+    assert replay.unknown_id == unknown.id
+    assert replay.proof_id == proof.id
+    assert ledger.discharges() == before
 
 
 def test_static_safe_rejects_bounded_result_and_binding_mismatch() -> None:
