@@ -9,6 +9,7 @@ from bmo_check_core import TraceId
 from bmo_check_dynamic.adapters import (
     DynamicTraceBindingError,
     bind_dynamic_certificate_to_trace,
+    replay_dynamic_certificate,
     replay_dynamic_coverage,
     verify_dynamic_certificate_binding,
     verify_dynamic_certificate_coverage,
@@ -154,6 +155,14 @@ def test_determinate_certificate_has_replayable_top_level_binding(
     with pytest.raises(DynamicTraceBindingError, match="manifest_sha256"):
         verify_dynamic_certificate_binding(tampered, trace_dir, contract)
 
+    replay_dynamic_certificate(certificate, trace_dir, contract)
+
+    bad_count = certificate.model_copy(
+        update={"event_count": certificate.event_count + 1}
+    )
+    with pytest.raises(DynamicTraceBindingError, match="event count"):
+        replay_dynamic_certificate(bad_count, trace_dir, contract)
+
 
 def test_legacy_determinate_schema_cannot_use_new_binding_gate(
     trace_manifest, tmp_path: Path
@@ -208,6 +217,7 @@ def test_replay_reconstructs_communication_and_window_coverage(
     certificate = analyze_trace(trace_dir, dbt_contract=contract)
     assert certificate.verdict == TraceVerdict.COUNTEREXAMPLE
     replay_dynamic_coverage(certificate, trace_dir)
+    replay_dynamic_certificate(certificate, trace_dir, contract)
 
     assert certificate.coverage is not None
     communication = certificate.coverage.communication.model_copy(

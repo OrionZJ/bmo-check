@@ -263,6 +263,17 @@ def analyze_trace(
                     contract_sha256,
                     contract.contract_version if contract else "invalid",
                     coverage,
+                    object_count=object_count,
+                    unique_pc_count=int(
+                        store.connection.execute(
+                            "SELECT count(DISTINCT pc) FROM events WHERE pc <> 0"
+                        ).fetchone()[0]
+                    ),
+                    indirect_target_count=int(
+                        store.connection.execute(
+                            "SELECT count(*) FROM events WHERE kind = 32"
+                        ).fetchone()[0]
+                    ),
                 )
             application_partition = analyze_application_partition(
                 store, trace_dir / "modules.tsv", manifest.executable.path
@@ -586,6 +597,10 @@ def _single_thread_certificate(
     contract_sha256: str,
     contract_version: str,
     coverage: TraceCoverage,
+    *,
+    object_count: int,
+    unique_pc_count: int,
+    indirect_target_count: int,
 ) -> DynamicCertificate:
     """完整单线程轨迹无需建立对象表，也不可能形成通信边。"""
 
@@ -615,11 +630,11 @@ def _single_thread_certificate(
         trace_complete=validation.structurally_complete,
         event_count=validation.event_count,
         thread_count=1,
-        object_count=0,
-        unique_pc_count=0,
+        object_count=object_count,
+        unique_pc_count=unique_pc_count,
         communication_edge_count=0,
         communication_edges_complete=True,
-        indirect_target_count=0,
+        indirect_target_count=indirect_target_count,
         application_partition=ApplicationPartitionEvidence(
             status="safe",
             main_thread=thread_id,

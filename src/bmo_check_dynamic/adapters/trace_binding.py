@@ -30,6 +30,7 @@ from ..analysis import (
 from ..analysis.communication import CommunicationLimitError
 from ..config import DynamicConfig, semantic_config_digest
 from ..model import CoverageState, DynamicCertificate, TraceManifest, TraceVerdict
+from ..proof import check_window
 from ..storage import TraceStore, TraceStoreError
 from ..trace import (
     environment_digest,
@@ -175,6 +176,8 @@ def verify_dynamic_certificate_binding(
 def replay_dynamic_event_inventory(
     certificate: DynamicCertificate,
     trace_dir: Path,
+    *,
+    config: DynamicConfig | None = None,
 ) -> None:
     """从原始 chunk 重建 decoded-event inventory，不相信证书计数。"""
 
@@ -184,8 +187,10 @@ def replay_dynamic_event_inventory(
         TraceVerdict.COUNTEREXAMPLE,
     }:
         return
+    config = config or DynamicConfig()
+    config.validate()
     try:
-        with _replayed_trace_store(certificate, trace_dir, config=DynamicConfig()) as store:
+        with _replayed_trace_store(certificate, trace_dir, config=config) as store:
             event_count, event_digest = store.event_inventory()
     except (OSError, ValueError, TraceStoreError, DynamicTraceBindingError) as error:
         raise DynamicTraceBindingError(
@@ -201,18 +206,279 @@ def replay_dynamic_event_inventory(
         )
 
 
+def _validate_candidate_witness(
+    window: object,
+    witness: object,
+) -> None:
+    """检查证书 witness 仍指向重放窗口中的真实事件和字节范围。"""
+
+    events = {event.event_id: event for event in getattr(window, "events", ())}
+    window_id = getattr(witness, "window_id", None)
+    if window_id != getattr(window, "window_id", None):
+        raise DynamicTraceBindingError("counterexample witness window differs from replay")
+    for read_from in getattr(witness, "read_from", ()):
+        read = events.get(read_from.read_event)
+        if read is None or not read.kind.is_read:
+            raise DynamicTraceBindingError("witness read-from references a non-read event")
+        if read_from.address != read.address or read_from.size != read.size:
+            raise DynamicTraceBindingError("witness read range differs from trace event")
+        if read_from.write_event is not None:
+            write = events.get(read_from.write_event)
+            if write is None or not write.kind.is_write:
+                raise DynamicTraceBindingError(
+                    "witness read-from references a missing/non-write source"
+                )
+            if not (
+                write.address <= read.address
+                and write.end_address >= read.end_address
+            ):
+                raise DynamicTraceBindingError("witness write does not cover its read")
+            if write.thread_id == read.thread_id and write.sequence >= read.sequence:
+                raise DynamicTraceBindingError("witness reads from a future same-thread write")
+    for left_id, right_id in getattr(witness, "coherence", ()):
+        left = events.get(left_id)
+        right = events.get(right_id)
+        if (
+            left is None
+            or right is None
+            or not left.kind.is_write
+            or not right.kind.is_write
+            or not left.overlaps(right)
+        ):
+            raise DynamicTraceBindingError("witness coherence references invalid writes")
+    cycle = tuple(getattr(witness, "source_cycle", ()))
+    if len(cycle) < 2 or any(event_id not in events for event_id in cycle):
+        raise DynamicTraceBindingError("witness source cycle is not replayable")
+
+
+def replay_dynamic_certificate(
+    certificate: DynamicCertificate,
+    trace_dir: Path,
+    dbt_contract: Path,
+    *,
+    config: DynamicConfig | None = None,
+) -> None:
+    """独立重放 dynamic certificate 的输入、universe、窗口和 witness。
+
+    该入口不相信 producer 的计数、window event list 或 validated 标记；它
+    从原始 chunk 重新导入、物化对象、切分窗口并再次运行窗口 checker。
+    """
+
+    if not isinstance(trace_dir, Path) or not isinstance(dbt_contract, Path):
+        raise DynamicTraceBindingError("trace_dir and dbt_contract must be Paths")
+    verify_dynamic_certificate_binding(
+        certificate,
+        trace_dir,
+        dbt_contract,
+        config=config,
+    )
+    if certificate.verdict not in {
+        TraceVerdict.TRACE_SAFE,
+        TraceVerdict.COUNTEREXAMPLE,
+    }:
+        return
+    config = config or DynamicConfig()
+    config.validate()
+    replay_dynamic_event_inventory(certificate, trace_dir, config=config)
+    replay_dynamic_coverage(certificate, trace_dir, config=config)
+    try:
+        with _replayed_trace_store(certificate, trace_dir, config=config) as store:
+            replayed, windows = _replay_communication_and_windows(
+                certificate, trace_dir, store, config
+            )
+            expected = certificate.coverage
+            assert expected is not None
+            if replayed != expected:
+                raise DynamicTraceBindingError(
+                    "replayed coverage differs from certificate"
+                )
+            if store.thread_count() != certificate.thread_count:
+                raise DynamicTraceBindingError(
+                    "replayed thread inventory differs from certificate"
+                )
+            object_count = int(
+                store.connection.execute(
+                    "SELECT count(DISTINCT object_id) FROM events "
+                    "WHERE object_id IS NOT NULL"
+                ).fetchone()[0]
+            )
+            if object_count != certificate.object_count:
+                raise DynamicTraceBindingError(
+                    "replayed object inventory differs from certificate"
+                )
+            unique_pc_count = int(
+                store.connection.execute(
+                    "SELECT count(DISTINCT pc) FROM events WHERE pc <> 0"
+                ).fetchone()[0]
+            )
+            if unique_pc_count != certificate.unique_pc_count:
+                raise DynamicTraceBindingError(
+                    "replayed PC inventory differs from certificate"
+                )
+            indirect_count = int(
+                store.connection.execute(
+                    "SELECT count(*) FROM events WHERE kind = 32"
+                ).fetchone()[0]
+            )
+            if indirect_count != certificate.indirect_target_count:
+                raise DynamicTraceBindingError(
+                    "replayed indirect-target inventory differs from certificate"
+                )
+            expected_windows = {window.window_id: window for window in certificate.windows}
+            if len(expected_windows) != len(certificate.windows) or len(windows) != len(expected_windows):
+                raise DynamicTraceBindingError(
+                    "replayed window inventory differs from certificate"
+                )
+            for replayed_window in windows:
+                expected_window = expected_windows.get(replayed_window.window_id)
+                if expected_window is None:
+                    raise DynamicTraceBindingError(
+                        "replayed window identity differs from certificate"
+                    )
+                replayed_ids = tuple(event.event_id for event in replayed_window.events)
+                if replayed_ids != expected_window.event_ids:
+                    raise DynamicTraceBindingError(
+                        "replayed window event universe differs from certificate"
+                    )
+                result = check_window(
+                    replayed_window,
+                    max_executions=config.max_executions,
+                    control_flow_closed=TraceManifest.load(
+                        trace_dir / "manifest.json"
+                    ).control_flow_closed,
+                    timeout_ms=config.solver_timeout_ms,
+                    max_symbolic_terms=config.max_symbolic_terms,
+                )
+                if result.status != expected_window.status:
+                    raise DynamicTraceBindingError(
+                        "replayed window verdict differs from certificate"
+                    )
+                if expected_window.witness is not None:
+                    _validate_candidate_witness(
+                        replayed_window,
+                        expected_window.witness,
+                    )
+                    if not result.witness or not result.witness.validated:
+                        raise DynamicTraceBindingError(
+                            "counterexample witness is not reproduced by replay"
+                        )
+    except (OSError, ValueError, TraceStoreError, DynamicTraceBindingError) as error:
+        if isinstance(error, DynamicTraceBindingError):
+            raise
+        raise DynamicTraceBindingError(
+            f"cannot replay dynamic certificate: {error}"
+        ) from error
+
+
+def _replay_communication_and_windows(
+    certificate: DynamicCertificate,
+    trace_dir: Path,
+    store: TraceStore,
+    config: DynamicConfig,
+) -> tuple[TraceCoverage, tuple[object, ...]]:
+    """从同一临时 store 重建通信 coverage 和窗口对象。"""
+
+    required_pc_range: tuple[int, int] | None = None
+    edge_pc_range: tuple[int, int] | None = None
+    if certificate.scope.analysis_scope == "application":
+        recorded_partition = certificate.application_partition
+        if recorded_partition is None:
+            raise DynamicTraceBindingError(
+                "application coverage lacks a partition boundary"
+            )
+        manifest = TraceManifest.load(trace_dir / "manifest.json")
+        partition = analyze_application_partition(
+            store,
+            trace_dir / "modules.tsv",
+            manifest.executable.path,
+        )
+        if (
+            partition.module_start != recorded_partition.module_start
+            or partition.module_end != recorded_partition.module_end
+        ):
+            raise DynamicTraceBindingError(
+                "application coverage module range differs from trace modules"
+            )
+        if partition.module_start >= partition.module_end:
+            raise DynamicTraceBindingError(
+                "application coverage has no valid main-module range"
+            )
+        edge_pc_range = (partition.module_start, partition.module_end)
+        application_memory = int(
+            store.connection.execute(
+                """
+                SELECT count(*) FROM events
+                WHERE kind IN (1, 2, 3) AND pc >= ? AND pc < ?
+                """,
+                edge_pc_range,
+            ).fetchone()[0]
+        )
+        if application_memory:
+            required_pc_range = edge_pc_range
+    scan_stats = CommunicationScanStats()
+    edge_sink = CompactCommunicationEdges()
+    if store.thread_count() < 2:
+        edge_sample = edge_sink
+        scan_stats.complete = True
+    else:
+        max_page_events = max_communication_page_events(
+            store,
+            required_pc_range=required_pc_range,
+        )
+        if max_page_events > config.max_communication_active_events:
+            raise DynamicTraceBindingError(
+                "communication replay exceeds the active-event budget"
+            )
+        try:
+            yielded = tuple(
+                find_communication_edges(
+                    store,
+                    limit=config.max_communication_edges + 1,
+                    max_active_events=config.max_communication_active_events,
+                    required_pc_range=required_pc_range,
+                    edge_pc_range=edge_pc_range,
+                    stats=scan_stats,
+                    edge_sink=edge_sink,
+                )
+            )
+        except CommunicationLimitError as error:
+            raise DynamicTraceBindingError(
+                f"communication replay is incomplete: {error}"
+            ) from error
+        edge_sample = yielded if yielded else edge_sink
+
+    edge_count = (
+        edge_sample.edge_count
+        if isinstance(edge_sample, CompactCommunicationEdges)
+        else len(edge_sample)
+    )
+    if edge_count > config.max_communication_edges:
+        replay_windows: tuple[object, ...] = ()
+        window_unknowns: tuple[str, ...] = ()
+    else:
+        replay_windows, window_unknowns = build_windows(
+            store,
+            edge_sample,
+            max_events=config.max_window_events,
+        )
+    replayed = build_trace_coverage(
+        store,
+        import_ledger=store.import_ledger(),
+        communication_edges=edge_sample,
+        scan_stats=scan_stats,
+        windows=replay_windows,
+        window_unknowns=window_unknowns,
+    )
+    return replayed, replay_windows
+
+
 def replay_dynamic_coverage(
     certificate: DynamicCertificate,
     trace_dir: Path,
     *,
     config: DynamicConfig | None = None,
 ) -> None:
-    """从原始 trace 独立重建通信边和窗口 coverage。
-
-    证书中的 coverage 只提供待核对的期望值；扫描范围、对象 generation、
-    边上限和窗口分区都从 trace 与模块表重新得到。任何输入层、通信层或窗口
-    层无法闭合时，绑定失败而不是把 producer 的 COMPLETE 当作事实。
-    """
+    """从原始 trace 独立重建通信边和窗口 coverage。"""
 
     verify_dynamic_certificate_coverage(certificate)
     if certificate.verdict not in {
@@ -235,97 +501,8 @@ def replay_dynamic_coverage(
                 raise DynamicTraceBindingError(
                     "replayed event digest differs from dynamic coverage"
                 )
-
-            required_pc_range: tuple[int, int] | None = None
-            edge_pc_range: tuple[int, int] | None = None
-            if certificate.scope.analysis_scope == "application":
-                recorded_partition = certificate.application_partition
-                if recorded_partition is None:
-                    raise DynamicTraceBindingError(
-                        "application coverage lacks a partition boundary"
-                    )
-                manifest = TraceManifest.load(trace_dir / "manifest.json")
-                partition = analyze_application_partition(
-                    store,
-                    trace_dir / "modules.tsv",
-                    manifest.executable.path,
-                )
-                if (
-                    partition.module_start != recorded_partition.module_start
-                    or partition.module_end != recorded_partition.module_end
-                ):
-                    raise DynamicTraceBindingError(
-                        "application coverage module range differs from trace modules"
-                    )
-                if partition.module_start >= partition.module_end:
-                    raise DynamicTraceBindingError(
-                        "application coverage has no valid main-module range"
-                    )
-                edge_pc_range = (partition.module_start, partition.module_end)
-                application_memory = int(
-                    store.connection.execute(
-                        """
-                        SELECT count(*) FROM events
-                        WHERE kind IN (1, 2, 3) AND pc >= ? AND pc < ?
-                        """,
-                        edge_pc_range,
-                    ).fetchone()[0]
-                )
-                if application_memory:
-                    required_pc_range = edge_pc_range
-            scan_stats = CommunicationScanStats()
-            edge_sink = CompactCommunicationEdges()
-            if store.thread_count() < 2:
-                edge_sample = edge_sink
-                scan_stats.complete = True
-            else:
-                max_page_events = max_communication_page_events(
-                    store,
-                    required_pc_range=required_pc_range,
-                )
-                if max_page_events > config.max_communication_active_events:
-                    raise DynamicTraceBindingError(
-                        "communication replay exceeds the active-event budget"
-                    )
-                try:
-                    yielded = tuple(
-                        find_communication_edges(
-                            store,
-                            limit=config.max_communication_edges + 1,
-                            max_active_events=config.max_communication_active_events,
-                            required_pc_range=required_pc_range,
-                            edge_pc_range=edge_pc_range,
-                            stats=scan_stats,
-                            edge_sink=edge_sink,
-                        )
-                    )
-                except CommunicationLimitError as error:
-                    raise DynamicTraceBindingError(
-                        f"communication replay is incomplete: {error}"
-                    ) from error
-                edge_sample = yielded if yielded else edge_sink
-
-            edge_count = (
-                edge_sample.edge_count
-                if isinstance(edge_sample, CompactCommunicationEdges)
-                else len(edge_sample)
-            )
-            if edge_count > config.max_communication_edges:
-                replay_windows: tuple[object, ...] = ()
-                window_unknowns: tuple[str, ...] = ()
-            else:
-                replay_windows, window_unknowns = build_windows(
-                    store,
-                    edge_sample,
-                    max_events=config.max_window_events,
-                )
-            replayed = build_trace_coverage(
-                store,
-                import_ledger=store.import_ledger(),
-                communication_edges=edge_sample,
-                scan_stats=scan_stats,
-                windows=replay_windows,
-                window_unknowns=window_unknowns,
+            replayed, _windows = _replay_communication_and_windows(
+                certificate, trace_dir, store, config
             )
             if replayed.communication != expected.communication:
                 raise DynamicTraceBindingError(

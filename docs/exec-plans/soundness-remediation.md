@@ -1330,3 +1330,22 @@ join/handle/futex），为 W3/W4/W14 建立 typed ledger 缺口，而不修改 p
   重放 thread/object universe、window result 和 COUNTEREXAMPLE witness，并把
   这些结果纳入同一 certificate verifier。下一原子提交不得以 binding 摘要
   代替内容重放。
+
+### RU6.4 dynamic certificate content replay 已完成
+
+- finding：F06/F13/F14/F16；witness：即使 event/communication coverage 已经
+  可以独立重算，producer 仍可提交伪造的 thread/object/PC 计数、window event
+  列表或 `validated=True` witness。
+- 新增 `replay_dynamic_certificate()`：重新导入原始 chunks，核对 event、thread、
+  object、PC 和 indirect-target universe，重建 communication/window partition，
+  再次运行同一窗口 checker。窗口身份和 event universe 不匹配、计数改变或
+  checker 状态改变都会拒绝证书。
+- COUNTEREXAMPLE 额外核对 read-from/coherence/source-cycle witness 是否引用
+  重放窗口中的真实事件、覆盖真实字节范围，并由重放 checker 再次产生 validated
+  witness；不能只相信证书的布尔标记。
+- 修正单线程证书此前把 object/PC/indirect inventory 写成零的问题，使它也能
+  通过同一套 universe replay；没有改变单线程无通信边的语义。
+- focused dynamic replay tests：`13 passed`；`git diff --check` 通过。
+- 剩余风险：动态证书的 independent replay 入口已经具备，但 CLI `explain` 和
+  campaign 汇总尚未默认调用它；D3 仍需把每个 campaign 成员的 replay 状态、
+  资源指标和存储去重纳入可审计汇总。旧 dynamic schema 继续只能 explain-only。

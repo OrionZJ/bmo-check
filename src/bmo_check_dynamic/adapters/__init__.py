@@ -10,6 +10,7 @@ from .trace_binding import (
     bind_dynamic_certificate_to_trace,
     replay_dynamic_coverage,
     replay_dynamic_event_inventory,
+    replay_dynamic_certificate,
     verify_dynamic_certificate_binding,
     verify_dynamic_certificate_coverage,
 )
@@ -22,6 +23,7 @@ __all__ = [
     "bind_dynamic_certificate_to_trace",
     "replay_dynamic_coverage",
     "replay_dynamic_event_inventory",
+    "replay_dynamic_certificate",
     "verify_dynamic_certificate_binding",
     "verify_dynamic_certificate_coverage",
 ]
