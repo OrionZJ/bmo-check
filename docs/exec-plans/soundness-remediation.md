@@ -1055,3 +1055,23 @@ join/handle/futex），为 W3/W4/W14 建立 typed ledger 缺口，而不修改 p
   digest 作为显式 mandatory field 并纳入独立 replay。下一步可进入 RU5.9，
   覆盖同 trace 的复用、mixed/failed import 状态和多次重放一致性；在此之前
   不恢复任何 application-only fast path。
+
+### RU5.9 dynamic replay config digest 与重复性边界已完成
+
+- 提交：`4bf7295`（`Bind dynamic replay to config digest`）。
+- finding：F15、F16；witness：仅由 `TraceId` 无法区分相同 trace bytes 在不同
+  analyzer budget/config 下生成的 coverage，旧 coverage 可能被误用于 determinate
+  binding。
+- `TraceCoverage` 新增可选的 `config_sha256`。当前 pipeline 从完整
+  `TraceImportLedger` 写入真实 digest；determinate certificate 缺失该字段时
+  立即按 legacy explain-only 拒绝。replay 从传入 `DynamicConfig` 重算 digest
+  并核对，不能用默认配置替代原分析配置。
+- 同一 certificate 使用同一配置可以重复 replay；配置不匹配、coverage 字段
+  缺失或 import 状态不完整都只能失败/UNKNOWN。没有改变 memory-model
+  semantics、solver 或任何 SAFE/TRACE_SAFE 判定规则。
+- focused coverage/replay tests：`30 passed`；完整默认 suite：`573 passed,
+  10 skipped`；`git diff --check` 通过。
+- RU5 当前剩余事项：TraceStore 自身的 stale/mixed/duplicate/truncated
+  fixtures 已覆盖，但 certificate schema 仍把 config digest 放在 coverage
+  中而不是顶层 immutable binding；RU6 需要把 executable/library/argv/
+  contract/config/spec digest 统一提升为强制、可独立重放的 certificate 输入。
