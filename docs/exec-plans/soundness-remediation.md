@@ -562,6 +562,17 @@ canonical subject 时不猜测 UnknownFact，而是省略 entry、暴露 `missin
 `None`，因此没有借空字段升级旧报告。focused slice/bridge/universe tests 为
 `24 passed`，完整默认 suite 为 `511 passed, 10 skipped`。
 
-下一提交进入 RU2.3：为 static portability checker 建立显式 execution/projection
-obligation inventory；旧 `covered_events` 只保留回查用途，不能再单独 discharge
-Unknown 或证明 event universe 完整。
+RU2.3 的目标仍是为 static portability checker 建立显式
+execution/projection obligation inventory；旧 `covered_events` 只保留回查用途，
+不能单独 discharge Unknown 或证明 event universe 完整。
+
+RU2.3 core foundation 已在 `48e2b72` 完成：新增 `ObligationKind`、
+`ProofObligation` 和 `ObligationInventory`。每个 obligation 绑定稳定
+`ObligationId`、`PropositionId`、kind、scope 和 subject 集合；inventory 的
+`is_enumerated` 只反映枚举 completeness，不是 ProofFact closure。focused
+obligation/universe/closure tests 为 `32 passed`，完整默认 suite 为
+`516 passed, 10 skipped`。
+
+下一提交继续 RU2.3：在 static fixed-execution characterization 旁路生成
+execution obligations，并让 typed adapter 在 obligation universe 未闭合时
+保守返回 `UNKNOWN`；不把 obligation inventory 直接接入最终 SAFE certificate。
