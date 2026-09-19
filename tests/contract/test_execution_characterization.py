@@ -11,6 +11,7 @@ from bmo_check_core import (
 from bmo_check_dynamic.analysis import AnalysisWindow
 from bmo_check_dynamic.model import EventKind as DynamicEventKind, TraceEvent
 from bmo_check_dynamic.proof.characterization import (
+    canonicalize_fixed_relations as canonicalize_dynamic_relations,
     check_fixed_execution as check_dynamic,
 )
 from bmo_check_evaluation.litmus import (
@@ -218,6 +219,35 @@ def test_static_typed_relations_match_legacy_fixed_execution() -> None:
         read_from={"r-flag": "w-flag", "r-data": None},
     )
     typed = check_static(static, relations=relations)
+
+    assert typed == legacy
+
+
+def test_dynamic_typed_relations_match_legacy_fixed_execution() -> None:
+    dynamic = _dynamic_window(
+        (
+            ((DynamicEventKind.STORE, 0x1000),),
+            ((DynamicEventKind.STORE, 0x1000),),
+            ((DynamicEventKind.LOAD, 0x1000),),
+        )
+    )
+    dynamic_ids = {event.thread_id: event.event_id for event in dynamic.events}
+    locations = {"x": (0x1000, 4)}
+    legacy = check_dynamic(
+        dynamic,
+        read_from={dynamic_ids[3]: dynamic_ids[1]},
+        coherence=(("x", dynamic_ids[1], dynamic_ids[2]),),
+        from_read=(("x", dynamic_ids[3], dynamic_ids[2]),),
+        object_locations=locations,
+    )
+    relations = canonicalize_dynamic_relations(
+        dynamic,
+        read_from={dynamic_ids[3]: dynamic_ids[1]},
+        coherence=(("x", dynamic_ids[1], dynamic_ids[2]),),
+        from_read=(("x", dynamic_ids[3], dynamic_ids[2]),),
+        object_locations=locations,
+    )
+    typed = check_dynamic(dynamic, relations=relations, object_locations=locations)
 
     assert typed == legacy
 
