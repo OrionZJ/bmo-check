@@ -29,6 +29,9 @@ def test_no_cross_thread_communication_is_trace_safe(
     certificate = analyze_trace(trace_dir, dbt_contract=contract)
     assert certificate.verdict == TraceVerdict.TRACE_SAFE
     assert certificate.communication_edge_count == 0
+    assert certificate.coverage is not None
+    assert certificate.coverage.communication.state.value == "COMPLETE"
+    assert certificate.coverage.windows.state.value == "COMPLETE"
 
 
 def test_pipeline_persists_complete_trace_import_ledger(

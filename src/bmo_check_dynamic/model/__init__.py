@@ -16,6 +16,12 @@ from .lifecycle import (
     TraceSynchronizationRecord,
 )
 from .site import InstructionSiteEvidence
+from .coverage import (
+    CommunicationCoverage,
+    CoverageState,
+    TraceCoverage,
+    WindowCoverage,
+)
 
 __all__ = [
     "BinaryFingerprint",
@@ -35,4 +41,8 @@ __all__ = [
     "TraceScope",
     "TraceVerdict",
     "WindowResult",
+    "CommunicationCoverage",
+    "CoverageState",
+    "TraceCoverage",
+    "WindowCoverage",
 ]

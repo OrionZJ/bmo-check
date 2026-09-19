@@ -6,6 +6,7 @@ from bmo_check_core import UnknownKind
 from pydantic import Field, model_validator
 
 from .manifest import BinaryFingerprint, StrictModel
+from .coverage import TraceCoverage
 
 
 class TraceVerdict(str, Enum):
@@ -106,6 +107,8 @@ class DynamicCertificate(StrictModel):
     unknown_kinds: tuple[UnknownKind, ...] = ()
     unknown_reasons: tuple[str, ...] = ()
     assumptions: tuple[str, ...] = ()
+    # RU5 coverage ledger；旧手工 certificate 缺少它时仍只能作为 legacy reader。
+    coverage: TraceCoverage | None = None
 
     @model_validator(mode="after")
     def keep_verdict_strict(self) -> "DynamicCertificate":
