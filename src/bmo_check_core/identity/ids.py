@@ -348,6 +348,102 @@ class ThreadInstanceId(StableId):
 
 
 @dataclass(frozen=True, slots=True)
+class ThreadHandleId(StableId):
+    """把 pthread_t/句柄值绑定到一个 subject 和明确的生命周期代数。"""
+
+    prefix: ClassVar[str] = "thread-handle"
+
+    @classmethod
+    def from_parts(
+        cls,
+        subject: StableId,
+        token: str,
+        generation: int,
+    ) -> "ThreadHandleId":
+        # 句柄数值会被复用；没有 subject 和 generation，两个生命周期会被误连。
+        if not isinstance(subject, StableId):
+            raise IdentityMaterialError("thread handle subject must be a StableId")
+        material = {
+            "generation": _offset("thread handle generation", generation),
+            "subject": subject.value,
+            "token": _text("thread handle token", token),
+        }
+        return cls(_digest(cls.prefix, material))
+
+
+@dataclass(frozen=True, slots=True)
+class LifecycleContextId(StableId):
+    """标识一个 caller/call-site/callback 组合，避免合并不同上下文。"""
+
+    prefix: ClassVar[str] = "lifecycle-context"
+
+    @classmethod
+    def from_parts(
+        cls,
+        caller: FunctionId,
+        call_site: InstructionId,
+        target_functions: Iterable[FunctionId] = (),
+    ) -> "LifecycleContextId":
+        if not isinstance(caller, FunctionId):
+            raise IdentityMaterialError("lifecycle caller must be a FunctionId")
+        if not isinstance(call_site, InstructionId):
+            raise IdentityMaterialError("lifecycle call site must be an InstructionId")
+        targets: list[str] = []
+        for target in target_functions:
+            if not isinstance(target, FunctionId):
+                raise IdentityMaterialError(
+                    "lifecycle target must be a FunctionId"
+                )
+            targets.append(target.value)
+        return cls(
+            _digest(
+                cls.prefix,
+                {
+                    "call_site": call_site.value,
+                    "caller": caller.value,
+                    "target_functions": tuple(sorted(targets)),
+                },
+            )
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class LifecycleOperationId(StableId):
+    """标识一次有明确位置和上下文的生命周期/同步操作。"""
+
+    prefix: ClassVar[str] = "lifecycle-operation"
+
+    @classmethod
+    def from_parts(
+        cls,
+        subject: StableId,
+        operation_kind: str,
+        site: StableId,
+        context: LifecycleContextId | None,
+        occurrence: str,
+    ) -> "LifecycleOperationId":
+        # occurrence 必须由 producer 提供稳定身份；不能用调度 ticket 或遍历序号猜测。
+        if not isinstance(subject, StableId):
+            raise IdentityMaterialError("lifecycle subject must be a StableId")
+        if not isinstance(site, StableId):
+            raise IdentityMaterialError("lifecycle site must be a StableId")
+        if context is not None and not isinstance(context, LifecycleContextId):
+            raise IdentityMaterialError("lifecycle context must be typed")
+        return cls(
+            _digest(
+                cls.prefix,
+                {
+                    "context": context.value if context else None,
+                    "kind": _text("lifecycle operation kind", operation_kind),
+                    "occurrence": _text("lifecycle operation occurrence", occurrence),
+                    "site": site.value,
+                    "subject": subject.value,
+                },
+            )
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class PropositionId(StableId):
     prefix: ClassVar[str] = "proposition"
 
@@ -429,6 +525,8 @@ __all__ = [
     "FunctionId",
     "IdentityMaterialError",
     "InstructionId",
+    "LifecycleContextId",
+    "LifecycleOperationId",
     "MemoryEventId",
     "MemoryOperandId",
     "ModuleId",
@@ -436,6 +534,7 @@ __all__ = [
     "ObligationId",
     "PropositionId",
     "StableId",
+    "ThreadHandleId",
     "ThreadInstanceId",
     "ThreadRoleId",
     "TraceId",
