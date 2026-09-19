@@ -642,7 +642,20 @@ recovery producer 大多仍未把 event/object/thread identity 传入 adapter，
 其 Unknown 仍只能作为 legacy/incomplete view；typed proposition 还不能参与
 SAFE discharge。
 
-下一提交继续 RU2.4：增加一个只读的 typed/legacy Unknown bridge，能够在
-proposition 缺失时显式返回 `INCOMPLETE` 而不是合成 proposition；同时把
-`UnknownFact` 与 `ProofObligation` 的匹配接口限定为同一 scope、稳定
-proposition identity，继续不改变最终 SAFE/UNKNOWN 判定。
+RU2.4 的 typed/legacy bridge 已在 `479b753` 完成：core 新增
+`match_unknown_to_obligation()` 及 `ObligationMatchStatus`。legacy
+`UnknownFact` 没有 proposition 时只返回 `INCOMPLETE`；typed Unknown 必须同时
+匹配 obligation 的稳定 `PropositionId` 和 scope，命题不一致或 scope 不一致
+返回 `MISMATCH`。该接口只报告 identity binding，不执行 discharge，也没有
+修改 SAFE/UNKNOWN/COUNTEREXAMPLE 规则。
+
+本提交 focused obligation/evidence/closure tests 为 `29 passed`；随后完整默认
+suite 为 `526 passed, 10 skipped`；`git diff --check` 通过。剩余风险：正式
+certificate verifier 仍未要求所有 relevant Unknown 都具备 typed proposition，
+已有 legacy producer 仍会通过旧 adapter 进入报告；RU2.4 还需要在 verifier
+边界增加显式 legacy 降级检查。
+
+下一提交继续 RU2.4 的 verifier characterization：增加一个不改变 verdict 的
+certificate-side 检查，区分 typed Unknown、legacy Unknown 和 missing
+proposition；缺少新字段时只能生成 legacy/incomplete view，不能被
+`match_unknown_to_obligation()` 或 SAFE proof closure 当作已闭合命题。
