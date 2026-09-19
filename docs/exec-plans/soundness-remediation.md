@@ -1075,3 +1075,26 @@ join/handle/futex），为 W3/W4/W14 建立 typed ledger 缺口，而不修改 p
   fixtures 已覆盖，但 certificate schema 仍把 config digest 放在 coverage
   中而不是顶层 immutable binding；RU6 需要把 executable/library/argv/
   contract/config/spec digest 统一提升为强制、可独立重放的 certificate 输入。
+
+### RU3.1 应用作用域删除进入 canonical ledger 已完成
+
+- 提交：`5e403dc`（`Record application projection removals`）。
+- finding：F02；witness：应用作用域在最终 `SharedMemorySlice` 中删除了
+  runtime-internal event，但 `shared_state.removed_event_ids` 没有记录这次后续
+  projection，导致旧 bridge 生成的 `StaticCertificate` 缺少对应
+  `RemovalDecision`。
+- `build_static_certificate_from_report()` 现在同时读取 shared-state 的显式删除
+  和 final-slice `ProofObject.event_ids`，去重后逐项解析为 canonical
+  `MemoryEventId`，并要求每项都被同 scope 的 `ProofFact` 覆盖。删除事件不会
+  因 module hash 自动消失；仍只有 runtime-internal provenance 产生这类
+  application projection proof。
+- 新增 characterization 覆盖：应用作用域删除 runtime event 时，UNKNOWN
+  certificate 也必须携带一条 `RemovalDecision`。测试使用 UNKNOWN 路径是为了
+  尊重 C0.4：旧 static-certificate schema 仍不能把该结果验证成 SAFE。
+- focused static tests：`23 passed`；完整默认 suite：`574 passed, 10 skipped`；
+  `git diff --check` 通过。
+- 剩余风险：这一步只修复 removal ledger 的桥接缺口，尚未证明 projection
+  保留了所有 source/target obligation，也没有让 static SAFE 重新可 replay。
+  RU3.2 必须增加 retained/removed event 与 relation 的完整 universe，以及
+  legality-preserving preservation check；证明不了的 projection 仍返回
+  `UNKNOWN`，不能由这条 `RemovalDecision` 单独推出 SAFE。
