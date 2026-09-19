@@ -23,6 +23,7 @@ from .coverage import (
     TraceCoverage,
     WindowCoverage,
 )
+from .campaign import CampaignMember, CampaignSummary
 
 __all__ = [
     "BinaryFingerprint",
@@ -47,4 +48,6 @@ __all__ = [
     "CoverageState",
     "TraceCoverage",
     "WindowCoverage",
+    "CampaignMember",
+    "CampaignSummary",
 ]

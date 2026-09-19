@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
+import time
 import sys
-import uuid
 from pathlib import Path
 
 import yaml
@@ -16,9 +17,19 @@ from bmo_check_dynamic.application import (
     capture as capture_request,
 )
 from bmo_check_dynamic.capture import CaptureError
+from bmo_check_dynamic.adapters import (
+    DynamicTraceBindingError,
+    replay_dynamic_certificate,
+)
 from bmo_check_dynamic.analysis import locate_instruction_site
 from bmo_check_dynamic.config import DynamicConfig
-from bmo_check_dynamic.model import DynamicCertificate, TraceVerdict
+from bmo_check_dynamic.model import (
+    CampaignMember,
+    CampaignSummary,
+    DynamicCertificate,
+    TraceVerdict,
+)
+from bmo_check_dynamic.storage import TraceStoreError
 from bmo_check_dynamic.report import explain_certificate
 
 
@@ -135,84 +146,275 @@ def _run(args: argparse.Namespace) -> int:
 
 def _campaign(args: argparse.Namespace) -> int:
     document = yaml.safe_load(args.manifest.read_text(encoding="utf-8")) or {}
-    runs = document.get("runs")
-    if not isinstance(runs, list) or not runs:
-        raise ValueError("campaign manifest requires a non-empty runs list")
+    runs = _validate_campaign_document(document)
     args.output.mkdir(parents=True, exist_ok=True)
-    certificates: list[DynamicCertificate] = []
+    if (args.output / "campaign.json").exists():
+        raise ValueError("campaign output already contains campaign.json")
+
+    members: list[CampaignMember] = []
+    first_by_key: dict[str, str] = {}
+    unique_bytes = 0
+    total_events = 0
+    total_pcs = 0
+    total_bytes = 0
+    resource_limited_count = 0
     for item in runs:
+        name = item["name"]
+        repeat = item["repeat"]
+        for iteration in range(repeat):
+            trace_dir = args.output / f"{name}-{iteration:03d}"
+            if trace_dir.exists():
+                raise ValueError(f"campaign trace directory already exists: {trace_dir}")
+            capture_started = time.perf_counter()
+            manifest = None
+            certificate: DynamicCertificate | None = None
+            error: str | None = None
+            try:
+                manifest = capture_request(
+                    CaptureRequest(
+                        command=tuple(str(value) for value in item["command"]),
+                        output_dir=trace_dir,
+                        dynamorio_home=args.dynamorio_home,
+                        client_path=args.client,
+                        environment=tuple(
+                            sorted(
+                                (str(k), str(v))
+                                for k, v in item.get("environment", {}).items()
+                            )
+                        ),
+                        working_directory=(
+                            Path(item["working_directory"])
+                            if item.get("working_directory")
+                            else None
+                        ),
+                        max_thread_events=args.max_thread_events,
+                    )
+                )
+            except (CaptureError, OSError, ValueError) as caught:
+                error = f"capture failed: {caught}"
+            capture_seconds = time.perf_counter() - capture_started
+            analysis_started = time.perf_counter()
+            if error is None:
+                try:
+                    certificate = analyze_request(
+                        AnalyzeRequest(
+                            trace_dir=trace_dir,
+                            dbt_contract=args.dbt_contract,
+                            config=_analysis_config(args),
+                        )
+                    )
+                except (OSError, ValueError, TraceStoreError) as caught:
+                    error = f"analysis failed: {caught}"
+            analysis_seconds = time.perf_counter() - analysis_started
+            replay_seconds = 0.0
+            if certificate is not None and certificate.verdict in {
+                TraceVerdict.TRACE_SAFE,
+                TraceVerdict.COUNTEREXAMPLE,
+            }:
+                replay_started = time.perf_counter()
+                try:
+                    replay_dynamic_certificate(
+                        certificate,
+                        trace_dir,
+                        args.dbt_contract,
+                        config=_analysis_config(args),
+                    )
+                except (DynamicTraceBindingError, OSError, ValueError) as caught:
+                    error = f"certificate replay failed: {caught}"
+                    certificate = certificate.model_copy(
+                        update={
+                            "verdict": TraceVerdict.UNKNOWN,
+                            "unknown_reasons": tuple(
+                                dict.fromkeys(
+                                    (*certificate.unknown_reasons, str(caught))
+                                )
+                            ),
+                        }
+                    )
+                replay_seconds = time.perf_counter() - replay_started
+
+            certificate_path: Path | None = None
+            if certificate is not None:
+                certificate_path = trace_dir / "certificate.json"
+                certificate_path.write_text(
+                    certificate.model_dump_json(indent=2), encoding="utf-8"
+                )
+            trace_bytes = _directory_bytes(trace_dir)
+            verdict = certificate.verdict if certificate is not None else TraceVerdict.UNKNOWN
+            trace_id = (
+                certificate.scope.trace_ids[0]
+                if certificate is not None and certificate.scope.trace_ids
+                else None
+            )
+            trace_sha256 = (
+                certificate.scope.trace_sha256[0]
+                if certificate is not None and certificate.scope.trace_sha256
+                else None
+            )
+            dedup_key = _certificate_dedup_key(certificate)
+            duplicate_of = first_by_key.get(dedup_key) if dedup_key else None
+            if dedup_key and duplicate_of is None:
+                first_by_key[dedup_key] = f"{name}-{iteration:03d}"
+                unique_bytes += trace_bytes
+            elif dedup_key is None:
+                # 没有稳定 digest 的失败成员不能和其他成员合并，仍计入
+                # 唯一存储，避免资源报告把失败输入的占用记成零。
+                unique_bytes += trace_bytes
+            resource_limited = _certificate_resource_limited(certificate)
+            if resource_limited:
+                resource_limited_count += 1
+            event_count = certificate.event_count if certificate is not None else 0
+            unique_pc_count = certificate.unique_pc_count if certificate is not None else 0
+            total_events += event_count
+            total_pcs += unique_pc_count
+            total_bytes += trace_bytes
+            members.append(
+                CampaignMember(
+                    name=name,
+                    iteration=iteration,
+                    trace_directory=str(trace_dir.relative_to(args.output)),
+                    certificate_path=(
+                        str(certificate_path.relative_to(args.output))
+                        if certificate_path is not None
+                        else None
+                    ),
+                    verdict=verdict,
+                    trace_id=trace_id,
+                    trace_sha256=trace_sha256,
+                    event_count=event_count,
+                    unique_pc_count=unique_pc_count,
+                    trace_bytes=trace_bytes,
+                    capture_seconds=capture_seconds,
+                    analysis_seconds=analysis_seconds,
+                    replay_seconds=replay_seconds,
+                    max_rss_kb=_max_rss_kb(),
+                    resource_limited=resource_limited,
+                    dedup_key=dedup_key,
+                    duplicate_of=duplicate_of,
+                    error=error,
+                )
+            )
+
+    if not members:
+        raise ValueError("campaign produced no trace members")
+    verdict = _campaign_verdict(member.verdict for member in members)
+    summary = CampaignSummary(
+        verdict=verdict,
+        trace_count=len(members),
+        member_count=len(members),
+        verdict_counts={
+            candidate.value: sum(item.verdict == candidate for item in members)
+            for candidate in TraceVerdict
+        },
+        unique_trace_count=len(first_by_key) + sum(
+            item.dedup_key is None for item in members
+        ),
+        duplicate_trace_count=sum(item.duplicate_of is not None for item in members),
+        total_events=total_events,
+        total_unique_pcs_per_trace=total_pcs,
+        total_trace_bytes=total_bytes,
+        unique_trace_bytes=unique_bytes,
+        resource_limited_count=resource_limited_count,
+        certificates=tuple(members),
+    )
+    (args.output / "campaign.json").write_text(
+        summary.model_dump_json(indent=2), encoding="utf-8"
+    )
+    print(f"Campaign verdict: {verdict.value} ({len(members)} traces)")
+    return EXIT_CODES[verdict]
+
+
+def _validate_campaign_document(document: object) -> list[dict[str, object]]:
+    if not isinstance(document, dict):
+        raise ValueError("campaign manifest must be a mapping")
+    raw_runs = document.get("runs")
+    if not isinstance(raw_runs, list) or not raw_runs:
+        raise ValueError("campaign manifest requires a non-empty runs list")
+    runs: list[dict[str, object]] = []
+    names: set[str] = set()
+    for item in raw_runs:
         if not isinstance(item, dict) or not isinstance(item.get("command"), list):
             raise ValueError("each campaign run requires command: [..]")
+        command = item["command"]
+        if not command or any(not isinstance(value, str) or not value for value in command):
+            raise ValueError("campaign command must contain non-empty strings")
+        name = str(item.get("name", "run"))
+        if not name or name in {".", ".."} or Path(name).name != name:
+            raise ValueError("campaign run name must be a unique directory name")
+        if name in names:
+            raise ValueError(f"duplicate campaign run name: {name}")
+        names.add(name)
         try:
             repeat = int(item.get("repeat", 1))
         except (TypeError, ValueError) as error:
             raise ValueError("campaign repeat must be a positive integer") from error
         if repeat < 1:
             raise ValueError("campaign repeat must be a positive integer")
-        for iteration in range(repeat):
-            name = str(item.get("name", "run"))
-            trace_dir = args.output / f"{name}-{iteration:03d}-{uuid.uuid4().hex[:8]}"
-            capture_request(
-                CaptureRequest(
-                    command=tuple(str(value) for value in item["command"]),
-                    output_dir=trace_dir,
-                    dynamorio_home=args.dynamorio_home,
-                    client_path=args.client,
-                    environment=tuple(
-                        sorted(
-                            (str(k), str(v))
-                            for k, v in item.get("environment", {}).items()
-                        )
-                    ),
-                    working_directory=(
-                        Path(item["working_directory"])
-                        if item.get("working_directory")
-                        else None
-                    ),
-                    max_thread_events=args.max_thread_events,
-                )
-            )
-            certificate = analyze_request(
-                AnalyzeRequest(
-                    trace_dir=trace_dir,
-                    dbt_contract=args.dbt_contract,
-                    config=_analysis_config(args),
-                )
-            )
-            certificate_path = trace_dir / "certificate.json"
-            certificate_path.write_text(
-                certificate.model_dump_json(indent=2), encoding="utf-8"
-            )
-            certificates.append(certificate)
-    if not certificates:
-        # 不能让空 runs 或 repeat=0 经过 all/any 聚合后伪造成 TRACE_SAFE。
-        raise ValueError("campaign produced no trace certificates")
-    if any(item.verdict == TraceVerdict.COUNTEREXAMPLE for item in certificates):
-        verdict = TraceVerdict.COUNTEREXAMPLE
-    elif any(item.verdict == TraceVerdict.UNKNOWN for item in certificates):
-        verdict = TraceVerdict.UNKNOWN
-    else:
-        verdict = TraceVerdict.TRACE_SAFE
-    summary = {
-        "schema_version": "1.0",
-        "verdict": verdict.value,
-        "trace_count": len(certificates),
-        "verdict_counts": {
-            candidate.value: sum(item.verdict == candidate for item in certificates)
-            for candidate in TraceVerdict
-        },
-        "total_events": sum(item.event_count for item in certificates),
-        "total_unique_pcs_per_trace": sum(
-            item.unique_pc_count for item in certificates
-        ),
-        "certificates": [item.model_dump(mode="json") for item in certificates],
-        "limitation": "campaign verdict covers only the listed trace certificates",
-    }
-    (args.output / "campaign.json").write_text(
-        json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8"
+        environment = item.get("environment", {})
+        if not isinstance(environment, dict):
+            raise ValueError("campaign environment must be a mapping")
+        runs.append({**item, "name": name, "repeat": repeat})
+    return runs
+
+
+def _campaign_verdict(verdicts: object) -> TraceVerdict:
+    values = tuple(verdicts)
+    if not values:
+        raise ValueError("campaign cannot aggregate an empty member set")
+    if TraceVerdict.COUNTEREXAMPLE in values:
+        return TraceVerdict.COUNTEREXAMPLE
+    if TraceVerdict.UNKNOWN in values:
+        return TraceVerdict.UNKNOWN
+    return TraceVerdict.TRACE_SAFE
+
+
+def _certificate_dedup_key(certificate: DynamicCertificate | None) -> str | None:
+    if certificate is None or not certificate.scope.trace_sha256:
+        return None
+    config_sha = certificate.binding.config_sha256 if certificate.binding else (
+        certificate.coverage.config_sha256 if certificate.coverage else None
     )
-    print(f"Campaign verdict: {verdict.value} ({len(certificates)} traces)")
-    return EXIT_CODES[verdict]
+    material = {
+        "trace_sha256": certificate.scope.trace_sha256[0],
+        "contract_sha256": certificate.dbt_contract_sha256,
+        "config_sha256": config_sha,
+        "schema_version": certificate.schema_version,
+    }
+    return hashlib.sha256(
+        json.dumps(material, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def _certificate_resource_limited(certificate: DynamicCertificate | None) -> bool:
+    if certificate is None:
+        return True
+    return any(
+        marker in reason.lower()
+        for reason in certificate.unknown_reasons
+        for marker in ("limit", "budget", "resource", "memory")
+    )
+
+
+def _directory_bytes(path: Path) -> int:
+    if not path.is_dir():
+        return 0
+    return sum(
+        item.stat().st_size
+        for item in path.rglob("*")
+        if item.is_file()
+    )
+
+
+def _max_rss_kb() -> int | None:
+    try:
+        import resource
+
+        value = int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+        # Linux reports KiB; macOS reports bytes. This process is Linux in the
+        # supported deployment, but normalizing keeps the field interpretable.
+        return value if value < 10_000_000 else value // 1024
+    except (ImportError, AttributeError, OSError):
+        return None
 
 
 def _explain(args: argparse.Namespace) -> int:
@@ -227,6 +429,20 @@ def _locate(args: argparse.Namespace) -> int:
     evidence = locate_instruction_site(args.trace, args.module, args.offset)
     print(evidence.model_dump_json(indent=2))
     return 0
+
+
+def _verify(args: argparse.Namespace) -> int:
+    certificate = DynamicCertificate.model_validate_json(
+        args.certificate.read_text(encoding="utf-8")
+    )
+    replay_dynamic_certificate(
+        certificate,
+        args.trace,
+        args.dbt_contract,
+        config=_analysis_config(args),
+    )
+    print(f"Certificate replay verified: {certificate.verdict.value}")
+    return EXIT_CODES[certificate.verdict]
 
 
 def _diagnose(args: argparse.Namespace) -> int:
@@ -323,6 +539,14 @@ def build_parser() -> argparse.ArgumentParser:
     explain = subparsers.add_parser("explain", help="explain a certificate")
     explain.add_argument("certificate", type=Path)
     explain.set_defaults(handler=_explain)
+
+    verify = subparsers.add_parser(
+        "verify", help="independently replay a determinate dynamic certificate"
+    )
+    verify.add_argument("certificate", type=Path)
+    verify.add_argument("--trace", type=Path, required=True)
+    _add_analysis_options(verify)
+    verify.set_defaults(handler=_verify)
 
     locate = subparsers.add_parser(
         "locate", help="locate one module-relative instruction in a trace"

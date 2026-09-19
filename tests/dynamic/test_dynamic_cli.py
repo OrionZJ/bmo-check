@@ -4,8 +4,20 @@ import json
 import shutil
 from pathlib import Path
 
+import pytest
+
+import bmo_check_dynamic.cli as dynamic_cli
 from bmo_check_dynamic.cli import main
-from bmo_check_dynamic.model import EventKind, TraceEvent
+from bmo_check_dynamic.capture import CaptureError
+from bmo_check_dynamic.model import (
+    BinaryFingerprint,
+    DynamicCertificate,
+    EventKind,
+    TraceEvent,
+    TraceManifest,
+    TraceScope,
+    TraceVerdict,
+)
 from bmo_check_dynamic.trace import TraceWriter
 
 
@@ -85,3 +97,128 @@ def test_campaign_rejects_zero_run_manifest(tmp_path: Path) -> None:
     result = main(["campaign", str(manifest), "--output", str(tmp_path / "out")])
 
     assert result == 3
+
+
+def _unknown_campaign_certificate() -> DynamicCertificate:
+    executable = BinaryFingerprint(path="/tmp/program", sha256="a" * 64)
+    return DynamicCertificate(
+        verdict=TraceVerdict.UNKNOWN,
+        scope=TraceScope(
+            trace_ids=("campaign-trace",),
+            trace_sha256=("b" * 64,),
+            executable=executable,
+            commands=(("/tmp/program",),),
+            working_directories=("/tmp",),
+        ),
+        dbt_contract_sha256="c" * 64,
+        analyzer_version="test",
+        trace_complete=False,
+        event_count=4,
+        thread_count=1,
+        object_count=0,
+        unique_pc_count=2,
+        communication_edge_count=0,
+        indirect_target_count=0,
+        unknown_reasons=("resource limit",),
+    )
+
+
+def test_campaign_keeps_unknown_members_and_deduplicates_metadata(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    manifest = tmp_path / "campaign.yaml"
+    manifest.write_text(
+        "runs:\n  - name: sample\n    command: [/bin/true]\n    repeat: 2\n",
+        encoding="utf-8",
+    )
+
+    def fake_capture(request):
+        request.output_dir.mkdir(parents=True)
+        return None
+
+    monkeypatch.setattr(dynamic_cli, "capture_request", fake_capture)
+    monkeypatch.setattr(
+        dynamic_cli,
+        "analyze_request",
+        lambda request: _unknown_campaign_certificate(),
+    )
+
+    output = tmp_path / "out"
+    result = main(["campaign", str(manifest), "--output", str(output)])
+
+    assert result == 2
+    payload = json.loads((output / "campaign.json").read_text(encoding="utf-8"))
+    assert payload["schema_version"] == "campaign-v2"
+    assert payload["verdict"] == "UNKNOWN"
+    assert payload["member_count"] == 2
+    assert payload["unique_trace_count"] == 1
+    assert payload["duplicate_trace_count"] == 1
+    assert payload["verdict_counts"]["UNKNOWN"] == 2
+    assert all(item["certificate_path"] for item in payload["certificates"])
+
+
+def test_campaign_records_capture_failure_as_unknown(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    manifest = tmp_path / "campaign.yaml"
+    manifest.write_text(
+        "runs:\n  - name: failed\n    command: [/bin/true]\n",
+        encoding="utf-8",
+    )
+
+    def fake_capture(request):
+        raise CaptureError("client unavailable")
+
+    monkeypatch.setattr(dynamic_cli, "capture_request", fake_capture)
+    output = tmp_path / "out"
+
+    assert main(["campaign", str(manifest), "--output", str(output)]) == 2
+    payload = json.loads((output / "campaign.json").read_text(encoding="utf-8"))
+    assert payload["verdict"] == "UNKNOWN"
+    assert payload["unique_trace_count"] == 1
+    assert payload["certificates"][0]["error"] == "capture failed: client unavailable"
+
+
+def test_campaign_rejects_duplicate_run_names(tmp_path: Path) -> None:
+    manifest = tmp_path / "campaign.yaml"
+    manifest.write_text(
+        "runs:\n  - name: same\n    command: [/bin/true]\n  - name: same\n    command: [/bin/true]\n",
+        encoding="utf-8",
+    )
+
+    assert main(["campaign", str(manifest), "--output", str(tmp_path / "out")]) == 3
+
+
+def test_verify_replays_certificate(trace_manifest, tmp_path: Path) -> None:
+    trace_dir = tmp_path / "trace"
+    manifest = trace_manifest(trace_dir)
+    with TraceWriter(trace_dir / "events-1.bin") as writer:
+        writer.write(TraceEvent(1, 1, 0, 0x10, EventKind.LOAD, 0x1000, 4))
+    contract = tmp_path / "contract.yaml"
+    shutil.copyfile(
+        Path(__file__).resolve().parents[2]
+        / "specs"
+        / "dynamic"
+        / "dbt6-mo-off.yaml",
+        contract,
+    )
+    certificate = dynamic_cli.analyze_request(
+        dynamic_cli.AnalyzeRequest(
+            trace_dir=trace_dir,
+            dbt_contract=contract,
+            config=dynamic_cli.DynamicConfig(),
+        )
+    )
+    certificate_path = tmp_path / "certificate.json"
+    certificate_path.write_text(certificate.model_dump_json(), encoding="utf-8")
+
+    assert main(
+        [
+            "verify",
+            str(certificate_path),
+            "--trace",
+            str(trace_dir),
+            "--dbt-contract",
+            str(contract),
+        ]
+    ) == 0

@@ -479,6 +479,7 @@ def analyze_trace(
                         "closed ordinary application writes; runtime edges were not enumerated"
                     )
             return DynamicCertificate(
+                schema_version="dynamic-certificate-v2",
                 verdict=verdict,
                 scope=TraceScope(
                     trace_ids=(manifest.trace_id,),
@@ -615,6 +616,7 @@ def _single_thread_certificate(
             "application scope has no external communication edge because the trace is single-threaded"
         )
     return DynamicCertificate(
+        schema_version="dynamic-certificate-v2",
         verdict=TraceVerdict.TRACE_SAFE,
         scope=TraceScope(
             trace_ids=(manifest.trace_id,),

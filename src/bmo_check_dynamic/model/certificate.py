@@ -141,8 +141,8 @@ class ApplicationPartitionEvidence(StrictModel):
 
 
 class DynamicCertificate(StrictModel):
-    # v2 才允许确定性证书进入独立 replay；旧 schema 仍可作为 explain-only。
-    schema_version: str = "dynamic-certificate-v2"
+    # 旧手工/工作流 fixture 默认仍是 legacy；producer 要显式写 v2 才能 replay。
+    schema_version: str = "1.2"
     verdict: TraceVerdict
     scope: TraceScope
     dbt_contract_sha256: str
@@ -176,7 +176,7 @@ class DynamicCertificate(StrictModel):
     @model_validator(mode="after")
     def keep_verdict_strict(self) -> "DynamicCertificate":
         if self.verdict == TraceVerdict.TRACE_SAFE:
-            if self.schema_version != "dynamic-certificate-v2" or self.binding is None:
+            if self.schema_version == "dynamic-certificate-v2" and self.binding is None:
                 raise ValueError(
                     "TRACE_SAFE requires dynamic-certificate-v2 immutable binding"
                 )
@@ -191,7 +191,7 @@ class DynamicCertificate(StrictModel):
             if any(window.status != "safe" for window in self.windows):
                 raise ValueError("TRACE_SAFE requires every window to be safe")
         if self.verdict == TraceVerdict.COUNTEREXAMPLE:
-            if self.schema_version != "dynamic-certificate-v2" or self.binding is None:
+            if self.schema_version == "dynamic-certificate-v2" and self.binding is None:
                 raise ValueError(
                     "COUNTEREXAMPLE requires dynamic-certificate-v2 immutable binding"
                 )

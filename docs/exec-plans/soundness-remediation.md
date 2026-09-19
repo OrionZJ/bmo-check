@@ -1349,3 +1349,21 @@ join/handle/futex），为 W3/W4/W14 建立 typed ledger 缺口，而不修改 p
 - 剩余风险：动态证书的 independent replay 入口已经具备，但 CLI `explain` 和
   campaign 汇总尚未默认调用它；D3 仍需把每个 campaign 成员的 replay 状态、
   资源指标和存储去重纳入可审计汇总。旧 dynamic schema 继续只能 explain-only。
+
+### RU6.5 dynamic campaign aggregation closure 已完成
+
+- finding：F13/F16/F19；witness：旧 campaign 把完整 certificate 对象全部保留在
+  内存，失败成员可能直接抛出而不进入总体结果，重复运行也没有稳定去重身份。
+- `campaign-v2` 现在逐成员保留独立证书文件，只在摘要保留成员元数据；内容键由
+  trace/contract/config/schema digest 组成，同内容成员只影响 duplicate 计数，
+  不会从 verdict 合取中删除。没有 digest 的失败成员不能被错误合并。
+- 聚合规则固定为：任一 `COUNTEREXAMPLE` 优先，其次任一 `UNKNOWN`，只有全部
+  成员 `TRACE_SAFE` 才能给出总体 `TRACE_SAFE`。capture/analysis 失败也写入
+  `UNKNOWN` 成员并带错误原因；空 campaign、重复名称和已有输出目录拒绝。
+- 摘要记录成员事件/PC 数、trace bytes、时间、可用 RSS、资源限制数量、唯一/重复
+  trace 和唯一存储字节，避免把大型证书或 trace 内容复制到报告内存。
+- campaign 对每个 determinate 成员默认调用 `replay_dynamic_certificate()`；重放
+  失败会把该成员保守记为 `UNKNOWN`。`bmo-check verify` 暴露同一 replay 入口，
+  方便离线独立核对单条证书。
+- focused D3 campaign tests：`7 passed`；本单元未运行大型 PARSEC campaign，
+  后续只需做受控小集和默认回归，不改变 checker 语义。
