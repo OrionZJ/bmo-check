@@ -690,6 +690,20 @@ legacy、未注册和 typed 字段冲突分别保留为 `INCOMPLETE` 或 `MISMAT
 registry 目前只验证身份和 premise 类别，没有声明每条 rule 的具体证明语义；
 现有 SAFE certificate 仍未绑定 rule registry digest，RU6 replay 仍待完成。
 
-下一提交继续 RU2.5 的 characterization：为 proof rule conclusion 与
-`ProofObligation` 建立只读匹配检查，缺 conclusion、未注册 rule 或 proposition
-不一致时不能 discharge Unknown；不把 registry 检查结果直接升级为 SAFE。
+RU2.5 的 conclusion/obligation identity 检查已在 `9fdb53a` 完成：新增
+`match_proof_to_obligation()` 和 `ProofObligationMatch`。只有带
+`RegisteredProofRule`、带 typed `ProofConclusion`，并且 conclusion proposition
+与 obligation 的 `PropositionId`、scope 同时相等时才返回 `MATCH`；legacy
+proof 或任一字段缺失返回 `INCOMPLETE`，不一致返回 `MISMATCH`。该检查仍是
+只读 contract，不执行 proof 定理，也不会单独升级 SAFE。
+
+本提交 focused obligation/evidence/rule tests 为 `25 passed`；随后完整默认
+suite 为 `532 passed, 10 skipped`；`git diff --check` 通过。剩余风险：
+`match_proof_to_obligation()` 尚未被 `EvidenceLedger.add_discharge()` 或
+certificate verifier 调用，registered rule registry 也未绑定到 certificate
+digest；这些属于 RU2.6/RU6 的迁移边界。
+
+下一提交继续 RU2.6 的窄 characterization：定义 typed Unknown discharge
+只能引用同 proposition 的 ProofConclusion，并拒绝 ObservedFact、DiagnosticHint
+和 legacy proof；先扩展 EvidenceLedger 的显式检查接口，不改变旧 certificate
+schema 的 explain-only 行为。
