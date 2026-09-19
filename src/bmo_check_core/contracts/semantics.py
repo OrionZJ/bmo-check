@@ -11,6 +11,74 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 
+class RangeRelation(StrEnum):
+    """两个带对象身份的字节范围之间的唯一关系。"""
+
+    # 两个范围没有共享字节，或属于不同 allocation/object。
+    DISJOINT = "disjoint"
+    # 两个范围覆盖同一对象上的完全相同字节。
+    EXACT = "exact"
+    # 左范围覆盖右范围，但两者不是完全相同的范围。
+    LEFT_CONTAINS_RIGHT = "left_contains_right"
+    # 右范围覆盖左范围，但两者不是完全相同的范围。
+    RIGHT_CONTAINS_LEFT = "right_contains_left"
+    # 两个范围只部分相交，不能按任一完整对象处理。
+    PARTIAL_OVERLAP = "partial_overlap"
+
+
+@dataclass(frozen=True, slots=True)
+class AccessRange:
+    """带对象身份的精确字节区间。
+
+    ``object_id`` 与 ``offset`` 必须同时参与比较。只比较数值地址会把
+    地址复用或不同 allocation 错误合并；只比较 object_id 又会把字段
+    之间的 partial overlap 错误扩大成整个对象冲突。
+    """
+
+    # object_id 标识 allocation/lifetime，而不是一次遍历中的临时行号。
+    object_id: str
+    # offset 是对象内的起始字节位置。
+    offset: int
+    # size 是本次访问覆盖的字节数，必须为正。
+    size: int
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.object_id, str) or not self.object_id or "\x00" in self.object_id:
+            raise ValueError("object_id must be a non-empty string")
+        if isinstance(self.offset, bool) or not isinstance(self.offset, int) or self.offset < 0:
+            raise ValueError("offset must be a non-negative integer")
+        if isinstance(self.size, bool) or not isinstance(self.size, int) or self.size <= 0:
+            raise ValueError("size must be a positive integer")
+
+    @property
+    def end(self) -> int:
+        """返回不包含在区间内的结束偏移。"""
+
+        return self.offset + self.size
+
+
+def relate_ranges(left: AccessRange, right: AccessRange) -> RangeRelation:
+    """按对象身份和精确字节边界分类两个访问范围。"""
+
+    if left.object_id != right.object_id:
+        return RangeRelation.DISJOINT
+    if left.end <= right.offset or right.end <= left.offset:
+        return RangeRelation.DISJOINT
+    if left.offset == right.offset and left.end == right.end:
+        return RangeRelation.EXACT
+    if left.offset <= right.offset and left.end >= right.end:
+        return RangeRelation.LEFT_CONTAINS_RIGHT
+    if right.offset <= left.offset and right.end >= left.end:
+        return RangeRelation.RIGHT_CONTAINS_LEFT
+    return RangeRelation.PARTIAL_OVERLAP
+
+
+def ranges_overlap(left: AccessRange, right: AccessRange) -> bool:
+    """只把同一对象上共享至少一个字节的范围视为相交。"""
+
+    return relate_ranges(left, right) is not RangeRelation.DISJOINT
+
+
 class SemanticPrimitive(StrEnum):
     """RU1 需要独立比较的最小关系单元。"""
 
@@ -52,4 +120,11 @@ class SemanticPrimitiveRef:
                 raise ValueError(f"{field} must be a non-empty string")
 
 
-__all__ = ["SemanticPrimitive", "SemanticPrimitiveRef"]
+__all__ = [
+    "AccessRange",
+    "RangeRelation",
+    "SemanticPrimitive",
+    "SemanticPrimitiveRef",
+    "ranges_overlap",
+    "relate_ranges",
+]

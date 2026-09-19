@@ -8,7 +8,14 @@ from .model import (
     TargetOrdering,
     TranslationContract,
 )
-from .semantics import SemanticPrimitive, SemanticPrimitiveRef
+from .semantics import (
+    AccessRange,
+    RangeRelation,
+    SemanticPrimitive,
+    SemanticPrimitiveRef,
+    ranges_overlap,
+    relate_ranges,
+)
 
 __all__ = [
     "ContractError",
@@ -17,6 +24,10 @@ __all__ = [
     "TargetFence",
     "TargetOrdering",
     "TranslationContract",
+    "AccessRange",
+    "RangeRelation",
     "SemanticPrimitive",
     "SemanticPrimitiveRef",
+    "ranges_overlap",
+    "relate_ranges",
 ]
