@@ -52,5 +52,17 @@
   可在不运行 workload 的情况下独立重放单条动态证书。
 - duplicate run name、已有输出目录、空/非法命令和零次 repeat 在输入层拒绝；
   capture/analysis 失败写成 `UNKNOWN` 成员而不是让整个 campaign 静默缺行。
-- 仍需完成默认回归和受控 PARSEC/open_posix 小集复核，才能把本 milestone 标为
-  完整验收；本阶段不改变 memory-model checker 或 `TRACE_SAFE` 语义。
+- 默认回归已完成：`604 passed, 10 skipped, 0 failed`；动态子集为
+  `188 passed, 9 skipped`。跳过项仅需要本机 DynamoRIO/native-capture 环境或
+  opt-in real-ELF profile。
+- D3 的代码与证书完整性收尾已完成：campaign 成员独立落盘、失败成员显式
+  `UNKNOWN`、稳定去重只用于资源统计、聚合前独立 replay，且提供离线
+  `bmo-check verify`。这些规则不改变 memory-model checker 或 `TRACE_SAFE` 语义。
+- 因资源和实验产物边界，本提交没有重新运行大型 PARSEC/open_posix campaign；
+  该评测仍是可控的后续 workload validation，不阻塞 D3 的代码级验收。
+
+## 退出状态
+
+**代码级完成（2026-09-19）。** D3 的可审计 campaign/replay 路径和默认回归
+已经闭合；大型 workload 的运行数据不纳入仓库提交，也不能把多次运行升级为
+全程序安全结论。

@@ -1367,3 +1367,22 @@ join/handle/futex），为 W3/W4/W14 建立 typed ledger 缺口，而不修改 p
   方便离线独立核对单条证书。
 - focused D3 campaign tests：`7 passed`；本单元未运行大型 PARSEC campaign，
   后续只需做受控小集和默认回归，不改变 checker 语义。
+
+### RU6.6 dynamic remediation closure 已完成
+
+- 提交：`73c3009`（`Close dynamic campaign verification`）。
+- 这一步完成 RU6 动态侧的最后一段闭环：campaign 对每个确定性成员调用
+  `replay_dynamic_certificate()`，失败成员保留为 `UNKNOWN`；`verify` CLI 暴露
+  同一独立重放入口；每个成员的证书、trace 规模、资源限制和稳定去重键都写入
+  可审计摘要。没有把去重、空窗口、应用分区或 producer 的 `complete=True`
+  当作证明。
+- 2026-09-19 默认完整回归：`604 passed, 10 skipped, 0 failed`；动态子集为
+  `188 passed, 9 skipped`；动态 binding/replay focused tests `13 passed`，
+  campaign/verify focused tests `7 passed`。跳过项只需要本地 native-capture
+  环境或 opt-in real-ELF profile。
+- D3 大型 PARSEC/open_posix 评测没有在本次代码收尾中重新运行，实验数据仍留在
+  本地输出目录，不进入 Git。该限制不影响动态证书的独立 replay 和 fail-closed
+  聚合；大型 workload 结果仍必须按资源预算单独复核。
+- 动态侧剩余边界：旧 dynamic schema 仍只能 explain-only；`TRACE_SAFE` 仍只
+  描述绑定的 trace event skeleton。静态 RU6.2、静态 SAFE replay 和静态 precision
+  work 不在本次闭环内，继续保留为后续路线。

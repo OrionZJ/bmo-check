@@ -19,9 +19,15 @@
 5. **E1 affine observation 已存在。** `ObservedAffinePattern` 复用 snapshots 和 correlation，记录有界地址/stride 观察，不形成 affine proof。
 6. **soundness 边界已经由类型和 verifier 支撑。** 动态事实不能进入 static snapshot 或 static proof closure；diagnostic hint 不能 discharge Unknown；trace 不完整仍不能得到 `TRACE_SAFE`。
 
-这些能力说明项目已有可复用的部件，但不等于端到端 workflow 已经接通。
+这些能力构成了 H0 的可复用部件；H4–H7 已在其上接通端到端 workflow，
+下面仍保留初始缺口作为迁移审计记录，而不是当前未完成项清单。
 
-## 2. 缺哪些连接环节
+## 2. H0 初始审计缺口与 H4–H7 收尾结果
+
+下面 2.1–2.7 保留 H0 审计时发现的连接缺口，便于追溯为什么要拆出
+H4–H7；这些缺口已由本计划表中的 H4、H5、H6、H7 逐项收窄。当前动态
+证书还要经过 RU6 的 binding/content replay，旧 schema 仍只能 explain-only，
+所以“连接已接通”不等于扩大 `TRACE_SAFE` 的适用范围。
 
 ### 2.1 用户输入尚未贯穿两条路线
 
@@ -53,7 +59,11 @@ D5 分类器根据 `UnknownKind`、reason/context 和 correlation status 选择 
 
 `UnknownFact.provenance` 保存了静态 evidence ID，但当前没有把每条 provenance 关系标成明确的 `derived-from`、`supports` 等 edge kind；分类器也没有遍历它来划分 root/downstream。因此仅凭当前 ID 链不能自动宣称因果。workflow 应先复用已有来源；只有共同出现、没有明确因果 edge 的事实必须标作 `co-occurring` / `possible upstream` / `causal relation unresolved`，不能按数量或名称猜根因。若要建立严格 root-cause graph，先单独定义 edge 语义及正反例。
 
-## 3. 哪些是正式 service，哪些仍是脚本/手工串联
+## 3. 正式 service 与历史手工串联边界
+
+H0 记录的“手工串联”状态保留在下表中作迁移依据；H6 已增加
+`bmo-check hybrid` 作为正式编排入口，D3 campaign/verify 则属于动态证书
+独立重放和多次运行汇总，不会绕过下列 route service。
 
 | 部件 | 当前性质 | 目前的边界 |
 |---|---|---|

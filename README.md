@@ -63,6 +63,8 @@ bmo-check diagnose static-snapshot.json --trace trace/run-1 \
   --output diagnostic-report.json
 bmo-check diagnose static-snapshot.json --trace trace/run-1 \
   --output diagnostic-report.json --affine-output affine-report.json
+bmo-check verify trace/run-1/certificate.json \
+  --trace trace/run-1 --dbt-contract specs/dynamic/dbt6-mo-off.yaml
 ```
 
 大型程序可在 capture/run/campaign 中使用 `--max-thread-events N`
@@ -143,6 +145,11 @@ dynamic:
 static 和 dynamic verdict 只看各自的证书，workflow 不定义 combined verdict。
 
 多轮实验使用 `bmo-check campaign manifest.yaml --output results`。总体 `TRACE_SAFE` 只表示清单中的每条轨迹都为 `TRACE_SAFE`。
+campaign 会为每个成员独立保存证书，并在聚合前独立重放确定性证书；失败、
+资源超限、重放不一致或 `UNKNOWN` 成员不会因内容去重而消失。只有所有成员都
+为 `TRACE_SAFE` 才会得到总体 `TRACE_SAFE`。`verify` 只验证单条动态证书的
+绑定输入、事件/对象 universe、通信窗口和反例 witness，不把旧 schema 升级为
+确定性结论。
 
 旧静态分析入口保持为：
 
