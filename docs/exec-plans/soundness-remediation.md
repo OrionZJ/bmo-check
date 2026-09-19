@@ -1156,3 +1156,22 @@ join/handle/futex），为 W3/W4/W14 建立 typed ledger 缺口，而不修改 p
   因而这一步没有重新开放 SAFE。下一原子边界必须把 relation-level
   preservation proposition 与 ProofFact/premise 绑定，并在 verifier 中拒绝
   incomplete projection；不能用 bridge 携带账本替代 legality-preserving proof。
+
+### RU3.5 relation preservation proof contract 已完成
+
+- 提交：`ad404d5`（`Verify projection preservation proofs`）。
+- finding：F01/F02；witness：把 event-level proof、未注册 scope 或 unresolved
+  relation 当成 projection legality proof。
+- core 新增 `projection_proposition_id()`、`ProjectionVerification` 和
+  `verify_projection_ledger()`。删除关系的 proof 必须以同一个 `RelationId`
+  为 subject，绑定 ledger 的 scope、同一 `RegisteredProofRule` 和稳定的
+  `projection-preserved` proposition；verifier 同时要求 relation universe
+  COMPLETE、ProofFact closure 完整，并拒绝 unresolved relation。事件 proof
+  不能替代 relation proof，ObservedFact/DiagnosticHint 没有进入入口。
+- focused projection/evidence/closure tests：`42 passed`；完整默认 suite：
+  `587 passed, 10 skipped`；`git diff --check` 通过。
+- 剩余风险：当前 application adapter 还没有生成上述 relation-level
+  preservation ProofFact，因此真实 projection 仍是 `INCOMPLETE`，不会被误判
+  为 SAFE。下一原子边界应把 preservation rule 的实际 producer 接到
+  application boundary，并用 source/target obligation closure 验证它；rule
+  未注册或 premise 不足时继续 `UNKNOWN`。
