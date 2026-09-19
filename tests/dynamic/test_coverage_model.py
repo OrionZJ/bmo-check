@@ -12,6 +12,7 @@ from bmo_check_dynamic.model import (
 
 
 HASH = "a" * 64
+CONFIG = "e" * 64
 
 
 def _coverage() -> TraceCoverage:
@@ -37,6 +38,7 @@ def _coverage() -> TraceCoverage:
     return TraceCoverage(
         trace_subject=trace.value,
         trace_sha256="d" * 64,
+        config_sha256=CONFIG,
         event_count=4,
         event_sha256=HASH,
         communication=communication,
@@ -71,4 +73,3 @@ def test_missing_or_mismatched_coverage_cannot_be_complete() -> None:
             scoped_edge_sha256=HASH,
             state=CoverageState.INCOMPLETE,
         )
-

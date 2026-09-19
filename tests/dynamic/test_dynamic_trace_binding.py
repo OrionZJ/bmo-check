@@ -13,6 +13,7 @@ from bmo_check_dynamic.adapters import (
     verify_dynamic_certificate_coverage,
 )
 from bmo_check_dynamic.model import DynamicCertificate, TraceScope, TraceVerdict
+from bmo_check_dynamic.config import DynamicConfig
 from bmo_check_dynamic.pipeline import analyze_trace
 from bmo_check_dynamic.trace import trace_digest
 from bmo_check_dynamic.model import BinaryFingerprint
@@ -130,6 +131,22 @@ def test_binding_replays_decoded_event_inventory(
         bind_dynamic_certificate_to_trace(tampered, trace_dir, contract)
 
 
+def test_determinate_coverage_without_config_digest_is_legacy(
+    trace_manifest, tmp_path: Path
+) -> None:
+    trace_dir = tmp_path / "legacy-config"
+    trace_manifest(trace_dir)
+    _write_trace(trace_dir, Path((tmp_path / "program").resolve()))
+    contract = _contract_path()
+    certificate = analyze_trace(trace_dir, dbt_contract=contract)
+    assert certificate.coverage is not None
+    legacy_coverage = certificate.coverage.model_copy(update={"config_sha256": None})
+    legacy = certificate.model_copy(update={"coverage": legacy_coverage})
+
+    with pytest.raises(DynamicTraceBindingError, match="config digest"):
+        verify_dynamic_certificate_coverage(legacy)
+
+
 def test_replay_reconstructs_communication_and_window_coverage(
     trace_manifest, tmp_path: Path
 ) -> None:
@@ -176,6 +193,22 @@ def test_replay_reconstructs_communication_and_window_coverage(
     )
     with pytest.raises(DynamicTraceBindingError, match="subject"):
         replay_dynamic_coverage(subject_tampered, trace_dir)
+
+
+def test_replay_is_repeatable_and_requires_the_analysis_config(
+    trace_manifest, tmp_path: Path
+) -> None:
+    trace_dir = tmp_path / "replay-config"
+    trace_manifest(trace_dir)
+    _write_trace(trace_dir, Path((tmp_path / "program").resolve()))
+    contract = _contract_path()
+    config = DynamicConfig(max_window_events=31)
+    certificate = analyze_trace(trace_dir, dbt_contract=contract, config=config)
+
+    replay_dynamic_coverage(certificate, trace_dir, config=config)
+    replay_dynamic_coverage(certificate, trace_dir, config=config)
+    with pytest.raises(DynamicTraceBindingError, match="config digest"):
+        replay_dynamic_coverage(certificate, trace_dir)
 
 
 @pytest.mark.parametrize(

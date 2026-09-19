@@ -67,6 +67,10 @@ def verify_dynamic_certificate_coverage(certificate: DynamicCertificate) -> None
         raise DynamicTraceBindingError(
             "dynamic coverage trace digest differs from certificate"
         )
+    if coverage.config_sha256 is None:
+        raise DynamicTraceBindingError(
+            "determinate dynamic certificate lacks an analyzer config digest"
+        )
     if coverage.event_count != certificate.event_count:
         raise DynamicTraceBindingError(
             "dynamic coverage event count differs from certificate"
@@ -303,6 +307,10 @@ def _replayed_trace_store(
         if subject.value != coverage.trace_subject:
             raise DynamicTraceBindingError(
                 "trace coverage subject differs from independently derived import subject"
+            )
+        if coverage.config_sha256 != config_digest:
+            raise DynamicTraceBindingError(
+                "trace coverage config digest differs from replay configuration"
             )
         binding = TraceImportLedger(
             subject=subject,

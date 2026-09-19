@@ -102,6 +102,8 @@ class TraceCoverage(StrictModel):
 
     trace_subject: str
     trace_sha256: str
+    # 旧 coverage 没有这个字段；缺失时只能作为 legacy evidence 读取。
+    config_sha256: str | None = None
     event_count: int
     event_sha256: str
     communication: CommunicationCoverage
@@ -114,6 +116,8 @@ class TraceCoverage(StrictModel):
         except (TypeError, ValueError) as error:
             raise ValueError("trace_subject must be a TraceId") from error
         _digest("trace digest", self.trace_sha256)
+        if self.config_sha256 is not None:
+            _digest("config digest", self.config_sha256)
         _digest("event digest", self.event_sha256)
         if self.event_count < 0:
             raise ValueError("event_count cannot be negative")

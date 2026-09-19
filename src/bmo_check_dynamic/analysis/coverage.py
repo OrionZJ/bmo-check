@@ -54,6 +54,7 @@ def build_trace_coverage(
     return TraceCoverage(
         trace_subject=import_ledger.subject.value,
         trace_sha256=import_ledger.trace_digest,
+        config_sha256=import_ledger.config_digest,
         event_count=event_layer.count,
         event_sha256=event_layer.sha256,
         communication=CommunicationCoverage(
