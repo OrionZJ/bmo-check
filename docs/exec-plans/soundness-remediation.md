@@ -998,3 +998,21 @@ join/handle/futex），为 W3/W4/W14 建立 typed ledger 缺口，而不修改 p
   CLI `explain` 或独立 certificate replay 命令；旧动态 schema 仍可被普通
   Pydantic reader 载入，但不得通过此 determinate binding gate。下一窄步是
   为 coverage ledger 增加从 trace/store 的独立 replay，并覆盖 mutation cases。
+
+### RU5.6 decoded-event inventory 独立 replay 已完成
+
+- 提交：`ba8451a`（`Replay dynamic event inventory`）。
+- finding：F13、F16；witness：coverage event digest/count mutation。
+- `TraceStore.event_inventory()` 暴露 canonical decoded-event count/digest；
+  dynamic binding 使用临时 store 从原始 `events-*.bin` 重新导入后核对
+  `TraceCoverage.event_count/event_sha256`，不信任证书提交的字段。重放失败、
+  count 不同或 digest 不同都会阻止 determinate evidence binding。
+- replay 不调用 memory-model solver，也不生成 ProofFact；它只验证 trace
+  event universe，ObservedFact 仍绑定原始 trace identity。旧 UNKNOWN certificate
+  不要求 coverage replay，保持 explain/diagnostic 路径可用。
+- focused binding/pipeline tests：`25 passed`；完整默认 suite：`570 passed,
+  10 skipped`；`git diff --check` 通过。
+- 剩余风险：communication edge 和 window partition 的输出尚未在 binding 阶段
+  独立重算，当前仍依赖 pipeline 写入的 coverage state；下一原子边界应增加
+  小型 trace 的 reference edge/window replay，并覆盖 dropped/filtered/
+  resource-limit mutation，不能把 event replay 当作完整 TRACE_SAFE replay。
