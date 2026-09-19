@@ -15,8 +15,8 @@ from bmo_check_core import (
     LifecycleKind,
     LifecycleOperationId,
     SyncOperationKind,
-    ThreadHandleId,
     ThreadInstanceId,
+    ThreadOrigin,
     TraceId,
 )
 from pydantic import model_validator
@@ -52,6 +52,8 @@ class TraceLifecycleRecord(StrictModel):
     operation_id: str
     # kind 只描述生命周期阶段，不携带内存序。
     kind: LifecycleKind
+    # origin 必须由 producer 明确提供，不能从 parent 是否为空猜 root/created。
+    origin: ThreadOrigin
     # thread_instance_id 区分同一 trace 中的线程实例。
     thread_instance_id: str
     # parent_thread_instance_id 缺失时不能把 caller 当作 parent。
@@ -70,6 +72,8 @@ class TraceLifecycleRecord(StrictModel):
     def validate_identities(self) -> "TraceLifecycleRecord":
         _stable_id("operation_id", self.operation_id, LifecycleOperationId)
         _stable_id("thread_instance_id", self.thread_instance_id, ThreadInstanceId)
+        if not isinstance(self.origin, ThreadOrigin):
+            raise ValueError("origin must be a ThreadOrigin")
         if self.parent_thread_instance_id is not None:
             _stable_id(
                 "parent_thread_instance_id",
@@ -222,9 +226,10 @@ class TraceLifecycleMetadata(StrictModel):
         universe = _unique("thread_universe", self.thread_universe)
         for thread_id in universe:
             _stable_id("thread_universe entry", thread_id, ThreadInstanceId)
+        operation_ids = tuple(record.operation_id for record in self.records)
+        if len(operation_ids) != len(set(operation_ids)):
+            raise ValueError("records contain duplicate operation identities")
         record_ids = tuple(record.thread_instance_id for record in self.records)
-        if len(record_ids) != len(set(record_ids)):
-            raise ValueError("records contain duplicate thread identities")
         if not set(record_ids).issubset(set(universe)):
             raise ValueError("record thread is outside thread_universe")
         if self.completeness is CompletenessStatus.COMPLETE:

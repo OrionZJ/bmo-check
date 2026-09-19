@@ -10,6 +10,7 @@ from bmo_check_core import (
     LifecycleOperationId,
     ModuleId,
     ThreadInstanceId,
+    ThreadOrigin,
     TraceId,
 )
 from bmo_check_dynamic.model import (
@@ -48,6 +49,7 @@ def test_incomplete_sidecar_preserves_typed_lifecycle_gap() -> None:
             TraceLifecycleRecord(
                 operation_id=operation.value,
                 kind="start",
+                origin=ThreadOrigin.CREATED,
                 thread_instance_id=worker.value,
                 completeness=CompletenessStatus.INCOMPLETE,
                 reason="CREATE and handle generation are absent",
@@ -60,6 +62,47 @@ def test_incomplete_sidecar_preserves_typed_lifecycle_gap() -> None:
     assert payload.schema_version == "2.0"
     assert payload.records[0].handle_token is None
     assert payload.completeness is CompletenessStatus.INCOMPLETE
+
+
+def test_lifecycle_universe_allows_multiple_operations_for_one_thread() -> None:
+    trace, main, worker, start_operation = _ids()
+    module = ModuleId.from_parts(HASH, "executable")
+    end_operation = LifecycleOperationId.from_parts(
+        trace,
+        "end",
+        InstructionId.from_parts(module, 0x101),
+        None,
+        "trace-event:t2:e2",
+    )
+    payload = TraceLifecycleMetadata(
+        trace_id=trace.value,
+        thread_universe=(main.value, worker.value),
+        records=(
+            TraceLifecycleRecord(
+                operation_id=start_operation.value,
+                kind="start",
+                origin=ThreadOrigin.CREATED,
+                thread_instance_id=worker.value,
+                completeness=CompletenessStatus.INCOMPLETE,
+                reason="create relation is not imported",
+            ),
+            TraceLifecycleRecord(
+                operation_id=end_operation.value,
+                kind="end",
+                origin=ThreadOrigin.CREATED,
+                thread_instance_id=worker.value,
+                completeness=CompletenessStatus.INCOMPLETE,
+                reason="end is not bound to the lifecycle record",
+            ),
+        ),
+        completeness=CompletenessStatus.INCOMPLETE,
+        reason="sidecar is a partial import",
+    )
+
+    assert tuple(record.thread_instance_id for record in payload.records) == (
+        worker.value,
+        worker.value,
+    )
 
 
 def test_old_or_partial_payload_cannot_be_treated_as_complete() -> None:
@@ -80,6 +123,7 @@ def test_handle_token_requires_explicit_generation() -> None:
         TraceLifecycleRecord(
             operation_id=operation.value,
             kind="start",
+            origin=ThreadOrigin.CREATED,
             thread_instance_id=worker.value,
             handle_token="pthread:2",
             completeness=CompletenessStatus.INCOMPLETE,
