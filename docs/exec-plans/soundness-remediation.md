@@ -956,3 +956,25 @@ join/handle/futex），为 W3/W4/W14 建立 typed ledger 缺口，而不修改 p
   也尚未重放 communication/window 输入 universe。下一步应先把 reuse/mixed/
   failed-state 行为定为 typed `UNKNOWN` 或显式 legacy reader，再进入 RU5 的
   communication/window import coverage。
+
+### RU5.4 communication/window coverage ledger 已接入 dynamic pipeline
+
+- 提交：`b24ead0`（`Record dynamic coverage ledgers`）。
+- finding：F03、F13、F16；witness：communication scan 的 candidate/scoped
+  edge 差异、窗口未归属边和 resource-limit 路径。
+- 新增 typed `TraceCoverage`、`CommunicationCoverage`、`WindowCoverage` 与
+  `CoverageState`。coverage 绑定 COMPLETE TraceStore 的 `TraceId`、trace
+  digest 和 decoded-event count/digest；通信阶段记录 event universe、候选
+  边数、scoped 边数/摘要、外部边数；窗口阶段记录输入边全集、已归属边摘要、
+  window 数和 event 数。输入/输出 digest 或 count 对不上时 model 直接拒绝。
+- dynamic pipeline 在 single-thread、普通多线程和 application scope 都生成
+  coverage。旧 `DynamicCertificate` 的 coverage 字段暂为可选，保持历史手工
+  certificate 的 legacy reader 行为；本提交没有把 coverage 缺失直接改写成
+  新 verdict，也没有改 checker 语义。
+- focused coverage/pipeline tests：`19 passed`；完整默认 suite：`568 passed,
+  10 skipped`；`git diff --check` 通过。
+- 剩余风险：coverage 目前还没有成为 `TRACE_SAFE` certificate 的强制 replay
+  条件，`CoverageState` 也尚未由独立 verifier 重算；旧手工证书仍可能只有
+  `communication_edges_complete`。下一原子边界应先给 certificate verifier
+  增加 coverage closure/legacy downgrade tests，再决定如何对旧 schema 保守
+  返回 `UNKNOWN`。
