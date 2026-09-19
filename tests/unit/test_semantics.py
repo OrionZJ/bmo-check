@@ -145,6 +145,23 @@ def test_execution_relations_accept_exact_width_rf_co_fr() -> None:
     assert relations.all_exact_width
     assert relations.exact_width_issues() == ()
     assert relations.read_from[0].proposition_key[0] == "read_from"
+    assert relations.read_from[0].proposition_id in relations.proposition_ids
+
+
+def test_relation_proposition_ids_do_not_depend_on_relation_tuple_order() -> None:
+    write0 = _operation("w0", MemoryAccessKind.STORE, offset=0, sequence=1)
+    write1 = _operation("w1", MemoryAccessKind.STORE, offset=0, sequence=2)
+    read = _operation("r0", MemoryAccessKind.LOAD, offset=0, sequence=3)
+    first = ExecutionRelations(
+        read_from=(MemoryRelation(RelationKind.READ_FROM, write0, read),),
+        coherence=(MemoryRelation(RelationKind.COHERENCE, write0, write1),),
+    )
+    second = ExecutionRelations(
+        coherence=(MemoryRelation(RelationKind.COHERENCE, write0, write1),),
+        read_from=(MemoryRelation(RelationKind.READ_FROM, write0, read),),
+    )
+
+    assert first.proposition_ids == second.proposition_ids
 
 
 def test_initial_read_from_has_an_explicit_exact_width_proposition() -> None:

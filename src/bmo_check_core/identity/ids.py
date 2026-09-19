@@ -61,6 +61,12 @@ def _sorted_strings(name: str, values: Iterable[str]) -> tuple[str, ...]:
     return tuple(sorted(normalized))
 
 
+def _ordered_strings(name: str, values: Iterable[str]) -> tuple[str, ...]:
+    """校验有方向的 identity terms，但不把 source/target 排序。"""
+
+    return tuple(_text(name, value) for value in values)
+
+
 def _sorted_module_refs(
     modules: Iterable[tuple[str, str]],
 ) -> tuple[tuple[str, str], ...]:
@@ -342,6 +348,42 @@ class ThreadInstanceId(StableId):
 
 
 @dataclass(frozen=True, slots=True)
+class PropositionId(StableId):
+    prefix: ClassVar[str] = "proposition"
+
+    @classmethod
+    def from_parts(cls, kind: str, terms: Iterable[str]) -> "PropositionId":
+        """为有方向的命题绑定 kind 和端点参数，保持 source/target 顺序。"""
+
+        material = {
+            "kind": _text("proposition kind", kind),
+            "terms": _ordered_strings("proposition term", terms),
+        }
+        return cls(_digest(cls.prefix, material))
+
+
+@dataclass(frozen=True, slots=True)
+class ObligationId(StableId):
+    prefix: ClassVar[str] = "obligation"
+
+    @classmethod
+    def from_parts(
+        cls,
+        kind: str,
+        scope: str,
+        subjects: Iterable[str],
+    ) -> "ObligationId":
+        """为 proof obligation 绑定 scope 和 subject 集合，不使用遍历编号。"""
+
+        material = {
+            "kind": _text("obligation kind", kind),
+            "scope": _text("obligation scope", scope),
+            "subjects": _sorted_strings("obligation subject", subjects),
+        }
+        return cls(_digest(cls.prefix, material))
+
+
+@dataclass(frozen=True, slots=True)
 class EvidenceId(StableId):
     prefix: ClassVar[str] = "evidence"
 
@@ -391,6 +433,8 @@ __all__ = [
     "MemoryOperandId",
     "ModuleId",
     "ObjectOrigin",
+    "ObligationId",
+    "PropositionId",
     "StableId",
     "ThreadInstanceId",
     "ThreadRoleId",

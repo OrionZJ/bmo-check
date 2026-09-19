@@ -19,6 +19,8 @@ from bmo_check_core.identity import (
     MemoryOperandId,
     ModuleId,
     ObjectOrigin,
+    ObligationId,
+    PropositionId,
     ThreadInstanceId,
     ThreadRoleId,
     TraceId,
@@ -174,3 +176,19 @@ def test_binary_closure_binds_abi_and_module_role() -> None:
     other_role = BinaryClosureId.from_parts(A, (("interpreter", B),), "x86_64")
     assert executable != other_abi
     assert executable != other_role
+
+
+def test_proposition_identity_preserves_relation_direction() -> None:
+    forward = PropositionId.from_parts("read_from", ("store", "load"))
+    reverse = PropositionId.from_parts("read_from", ("load", "store"))
+
+    assert forward != reverse
+    assert PropositionId.from_value(forward.value) == forward
+
+
+def test_obligation_identity_is_order_independent_for_subject_sets() -> None:
+    first = ObligationId.from_parts("memory-order", "slice-1", ("event-b", "event-a"))
+    second = ObligationId.from_parts("memory-order", "slice-1", ("event-a", "event-b"))
+
+    assert first == second
+    assert first != ObligationId.from_parts("memory-order", "slice-2", ("event-a", "event-b"))

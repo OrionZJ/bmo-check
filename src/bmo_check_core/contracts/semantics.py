@@ -7,8 +7,11 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from enum import StrEnum
+
+from ..identity import PropositionId
 
 
 class RangeRelation(StrEnum):
@@ -185,6 +188,29 @@ class MemoryRelation:
             operation_key(self.target),
         )
 
+    @property
+    def proposition_id(self) -> PropositionId:
+        """把 proposition key 编码成可序列化、可重算的稳定 identity。"""
+
+        def term(operation: MemoryOperation | None) -> str:
+            if operation is None:
+                return "initial"
+            return json.dumps(
+                (
+                    operation.event_id,
+                    operation.access.object_id,
+                    operation.access.offset,
+                    operation.access.size,
+                ),
+                ensure_ascii=True,
+                separators=(",", ":"),
+            )
+
+        return PropositionId.from_parts(
+            self.kind.value,
+            (term(self.source), term(self.target)),
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class ExecutionRelations:
@@ -242,6 +268,18 @@ class ExecutionRelations:
         """只判断已提交命题的宽度，不声称 RF/CO/FR 集合完整。"""
 
         return not self.exact_width_issues()
+
+    @property
+    def proposition_ids(self) -> tuple[PropositionId, ...]:
+        """返回排序后的命题身份；不表示 relation universe 已完整。"""
+
+        relations = (*self.read_from, *self.coherence, *self.from_read)
+        return tuple(
+            sorted(
+                (relation.proposition_id for relation in relations),
+                key=lambda item: item.value,
+            )
+        )
 
 
 def source_ppo_preserved(before: MemoryOperation, after: MemoryOperation) -> bool:
