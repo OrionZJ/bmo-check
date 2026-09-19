@@ -1267,3 +1267,25 @@ join/handle/futex），为 W3/W4/W14 建立 typed ledger 缺口，而不修改 p
   还没有在 certificate replay 中逐项对账。下一步进入 RU3/RU6 交界的
   characterization：定义 certificate schema vNext 需要保存的 universe/obligation
   digest 和 replay 失败条件，但不在本轮发明 relation preservation theorem。
+
+### RU6.1 certificate completeness binding characterization 已完成
+
+- 提交：`b56d1a9`（`Add certificate completeness binding`）。
+- finding：F07/F08/F09/F13/F15；witness：旧 canonical certificate 只有
+  proof roots、removal decisions 和 Unknown IDs，无法把 event universe、
+  obligation inventory、Unknown inventory 与 projection relation ledger 的
+  完整内容绑定到同一版本化输入。
+- core 新增 `CertificateCompleteness` 和稳定 digest helper，摘要材料显式包含
+  ledger scope、输入 identity、disposition、proof/Unknown identity、rule 和
+  completeness 状态；摘要只用于 replay 比较，不被当作 proof。`static-certificate-v2`
+  缺少四类 digest 时在模型层拒绝，v1 不能偷偷携带 v2 字段。
+- 新增 mutation/strict-schema characterization：改变 scope 或 completeness
+  reason 会改变 digest；v2 缺字段、v1 携带 v2 completeness、非 SHA-256 值均失败。
+  目前 v2 仍由 `_reject_legacy_determinate_schema()` 拒绝进入 verdict replay，
+  没有改变 SAFE/UNKNOWN/COUNTEREXAMPLE 语义。
+- focused certificate tests：`17 passed`；完整默认 suite：`597 passed,
+  10 skipped`；`git diff --check` 通过。
+- 剩余风险：bridge 尚未为新 v2 证书填充和独立重算这些摘要，workflow JSON 也
+  仍是旧 summary。下一原子边界应先让 static bridge 生成 immutable v2 completeness
+  sidecar，并用同一 typed ledger 重算后再考虑放行 v2 replay；任何缺失或摘要不匹配
+  必须保留 `UNKNOWN`/legacy explain-only。
