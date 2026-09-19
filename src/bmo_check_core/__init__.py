@@ -94,7 +94,9 @@ from .obligations import (
     ObligationInventory,
     ObligationKind,
     ProofObligation,
+    build_conflict_obligation_inventory,
     build_execution_obligation_inventory,
+    build_projection_obligation_inventory,
 )
 
 __all__ = [
@@ -175,5 +177,7 @@ __all__ = [
     "ObligationInventory",
     "ObligationKind",
     "ProofObligation",
+    "build_conflict_obligation_inventory",
     "build_execution_obligation_inventory",
+    "build_projection_obligation_inventory",
 ]

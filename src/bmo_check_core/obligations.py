@@ -6,7 +6,7 @@ obligation 不是 ProofFact，也不是 verdict。它只列出当前 checker 必
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -17,9 +17,13 @@ from .contracts.semantics import (
     MemoryRelation,
     RelationKind,
 )
-from .identity import ObligationId, PropositionId, StableId
-from .identity import MemoryEventId
-from .universe import CompletenessState, CompletenessStatus
+from .identity import EvidenceId, MemoryEventId, ObligationId, PropositionId, StableId
+from .universe import (
+    CompletenessState,
+    CompletenessStatus,
+    EventDisposition,
+    EventUniverseLedger,
+)
 
 
 class ObligationKind(StrEnum):
@@ -342,9 +346,143 @@ def build_execution_obligation_inventory(
     )
 
 
+def build_conflict_obligation_inventory(
+    pairs: Iterable[tuple[MemoryEventId, MemoryEventId]],
+    *,
+    event_universe: EventUniverseLedger,
+    candidate_completeness: CompletenessState,
+    scope: str,
+) -> ObligationInventory:
+    """为通信候选建立 conflict obligations，并保留候选枚举完整性。
+
+    Conflict candidate 是对称命题，端点按稳定 ID 规范化；它不能因为一侧
+    没有出现在当前列表而被解释为不存在。候选扫描或输入 event universe
+    未闭合时，已看到的 obligations 仍可保留，但 inventory 必须是 INCOMPLETE。
+    """
+
+    issues: set[str] = set()
+    if not isinstance(event_universe, EventUniverseLedger):
+        issues.add("conflict event universe is not typed")
+        universe_ids: set[MemoryEventId] = set()
+    else:
+        universe_ids = set(event_universe.input_event_ids)
+        if event_universe.completeness.status is not CompletenessStatus.COMPLETE:
+            issues.add(
+                "conflict event universe is "
+                f"{event_universe.completeness.status.value.lower()}"
+            )
+    if not isinstance(candidate_completeness, CompletenessState):
+        issues.add("conflict candidate completeness is not typed")
+    elif candidate_completeness.status is not CompletenessStatus.COMPLETE:
+        issues.add(
+            "conflict candidate enumeration is "
+            f"{candidate_completeness.status.value.lower()}"
+        )
+
+    obligations: list[ProofObligation] = []
+    seen_pairs: set[tuple[str, str]] = set()
+    for pair in pairs:
+        if (
+            not isinstance(pair, tuple)
+            or len(pair) != 2
+            or not all(isinstance(endpoint, MemoryEventId) for endpoint in pair)
+        ):
+            issues.add("conflict candidate contains an untyped endpoint")
+            continue
+        first, second = pair
+        if first not in universe_ids or second not in universe_ids:
+            issues.add("conflict candidate references an event outside its universe")
+        key = tuple(sorted((first.value, second.value)))
+        if key in seen_pairs:
+            issues.add("conflict candidate universe contains a duplicate pair")
+            continue
+        seen_pairs.add(key)
+        ordered = tuple(sorted((first, second), key=lambda item: item.value))
+        obligations.append(
+            ProofObligation.create(
+                proposition_id=PropositionId.from_parts("conflict", key),
+                kind=ObligationKind.CONFLICT,
+                scope=scope,
+                subjects=ordered if first != second else (first,),
+            )
+        )
+
+    completeness = (
+        CompletenessState(CompletenessStatus.COMPLETE, scope)
+        if not issues
+        else CompletenessState(
+            CompletenessStatus.INCOMPLETE,
+            scope,
+            reason="; ".join(sorted(issues)),
+        )
+    )
+    return ObligationInventory(
+        scope=scope,
+        obligations=tuple(obligations),
+        completeness=completeness,
+    )
+
+
+def build_projection_obligation_inventory(
+    event_universe: EventUniverseLedger,
+    *,
+    scope: str,
+) -> ObligationInventory:
+    """把 event-universe 中的 removed-with-proof 逐项变成 projection obligation。"""
+
+    issues: set[str] = set()
+    if not isinstance(event_universe, EventUniverseLedger):
+        issues.add("projection event universe is not typed")
+        entries = ()
+    else:
+        entries = event_universe.entries
+        if event_universe.completeness.status is not CompletenessStatus.COMPLETE:
+            issues.add(
+                "projection event universe is "
+                f"{event_universe.completeness.status.value.lower()}"
+            )
+
+    obligations: list[ProofObligation] = []
+    for entry in entries:
+        if entry.disposition is not EventDisposition.REMOVED_WITH_PROOF:
+            continue
+        if not entry.proof_ids:
+            issues.add(f"removed event {entry.event_id.value!r} has no proof")
+            continue
+        proof_terms = tuple(proof.value for proof in entry.proof_ids)
+        obligations.append(
+            ProofObligation.create(
+                proposition_id=PropositionId.from_parts(
+                    "projection",
+                    (entry.event_id.value, *proof_terms),
+                ),
+                kind=ObligationKind.PROJECTION,
+                scope=scope,
+                subjects=(entry.event_id, *entry.proof_ids),
+            )
+        )
+
+    completeness = (
+        CompletenessState(CompletenessStatus.COMPLETE, scope)
+        if not issues
+        else CompletenessState(
+            CompletenessStatus.INCOMPLETE,
+            scope,
+            reason="; ".join(sorted(issues)),
+        )
+    )
+    return ObligationInventory(
+        scope=scope,
+        obligations=tuple(obligations),
+        completeness=completeness,
+    )
+
+
 __all__ = [
     "ObligationInventory",
     "ObligationKind",
     "ProofObligation",
     "build_execution_obligation_inventory",
+    "build_conflict_obligation_inventory",
+    "build_projection_obligation_inventory",
 ]
