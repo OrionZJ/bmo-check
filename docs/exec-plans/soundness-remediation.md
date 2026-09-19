@@ -1032,3 +1032,26 @@ join/handle/futex），为 W3/W4/W14 建立 typed ledger 缺口，而不修改 p
   edge 和 window partition。下一原子边界必须从原始 trace/store 重建两者，
   对 dropped/filtered/resource-limit 变体保守拒绝；不能把集中化本身当作
   TRACE_SAFE completeness proof。
+
+### RU5.8 communication/window coverage 独立重放已完成
+
+- 提交：`d071449`（`Replay dynamic communication coverage`）。
+- finding：F03、F13、F16；witness：producer 可能提交完整的 event ledger，
+  但通信边或窗口分区被删改后仍保留 `COMPLETE` 状态。
+- `replay_dynamic_coverage()` 从原始 event chunk 建立临时、subject-bound
+  TraceStore，独立物化对象 generation，并从 manifest、模块闭包、trace digest
+  和传入的同一 `DynamicConfig` 重建 import subject。随后按应用范围重新扫描
+  communication edges、重新执行 window partition，并逐字段比较 event、边和
+  window coverage；任何 resource limit、模块范围不一致、subject 不一致或
+  dropped/filtered 结果不一致都会拒绝 determinate evidence。
+- hybrid workflow 把原分析使用的 `DynamicConfig` 传给 binding replay，避免
+  用默认预算伪造同一个 subject。`replay_dynamic_event_inventory()` 复用同一
+  完整导入边界；没有产生 `ProofFact`，也没有改变 verifier 或 verdict。
+- adversarial/focused tests：`14 passed`；完整默认 suite：`571 passed,
+  10 skipped`；`git diff --check` 通过。测试覆盖通信 coverage 篡改和
+  伪造 trace subject。
+- 剩余风险：certificate 仍没有独立暴露 analyzer config digest 字段，当前
+  通过 trace subject 间接绑定配置；未来 RU6 应把 immutable config/spec
+  digest 作为显式 mandatory field 并纳入独立 replay。下一步可进入 RU5.9，
+  覆盖同 trace 的复用、mixed/failed import 状态和多次重放一致性；在此之前
+  不恢复任何 application-only fast path。
