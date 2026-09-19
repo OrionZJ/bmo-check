@@ -573,6 +573,23 @@ RU2.3 core foundation 已在 `48e2b72` 完成：新增 `ObligationKind`、
 obligation/universe/closure tests 为 `32 passed`，完整默认 suite 为
 `516 passed, 10 skipped`。
 
-下一提交继续 RU2.3：在 static fixed-execution characterization 旁路生成
-execution obligations，并让 typed adapter 在 obligation universe 未闭合时
-保守返回 `UNKNOWN`；不把 obligation inventory 直接接入最终 SAFE certificate。
+RU2.3 static fixed-execution inventory 已在 `f0b333f` 完成：
+`build_execution_obligation_inventory()` 为 RF/CO/FR 生成带稳定
+`PropositionId`、`ObligationId` 和 canonical event subjects 的
+`ObligationInventory`，并独立检查 read coverage、per-object CO 全序和
+由 RF/CO 导出的 FR。exact-width 不足、端点 identity 缺失或 relation universe
+不闭合时 inventory 保持 `INCOMPLETE`；static typed adapter 没有 inventory
+或 inventory 未枚举完整时只能返回 `UNKNOWN`。这一步没有接入最终 SAFE
+certificate，也没有改变 legacy tuple/dict route。
+
+本提交 focused characterization/portability/obligation tests 为 `27 passed`；
+随后完整默认 suite 为 `517 passed, 10 skipped`，跳过项仍仅依赖未配置的
+DynamoRIO/native capture 或显式 opt-in 的真实 litmus ELF；`git diff --check`
+通过。剩余风险：conflict/projection obligations、typed Unknown proposition
+与 registered proof rule 尚未接入；dynamic fixed-execution route 也尚未拥有
+同等 obligation inventory。
+
+下一提交继续 RU2.3 的窄边界：为 dynamic fixed-execution characterization
+建立同一 canonical execution obligation inventory，并保持 static/dynamic
+adapter 对不完整 universe 的保守 `UNKNOWN`；不把 observation 或 coverage
+字段当作 obligation discharge，也不把 inventory 直接接入最终 SAFE certificate。
