@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import tempfile
 from collections.abc import Iterable, Iterator
 from itertools import chain, islice
@@ -233,6 +234,182 @@ class TraceStore:
         except Exception:
             self.connection.execute("ROLLBACK")
             raise
+
+    def complete_import(self, trace_dir: Path) -> TraceImportLedger:
+        """独立重算所有导入层后，才把当前 binding 置为 COMPLETE。"""
+
+        existing = self.import_ledger()
+        if existing is None:
+            raise TraceStoreError("TraceStore import has not been started")
+        if existing.state is not TraceImportState.CREATING:
+            raise TraceStoreError("only a creating import can be completed")
+        try:
+            actual = self._derive_import_ledger(trace_dir, existing)
+            if actual.state is not TraceImportState.COMPLETE:
+                raise TraceStoreError(actual.reason or "trace import is incomplete")
+            if existing.chunks and existing.chunks != actual.chunks:
+                raise TraceStoreError("raw chunk ledger differs from imported files")
+            if existing.layers and existing.layers != actual.layers:
+                raise TraceStoreError("import layer ledger differs from stored content")
+        except (OSError, TraceStoreError, ValueError) as error:
+            self._mark_import_incomplete(str(error))
+            if isinstance(error, TraceStoreError):
+                raise
+            raise TraceStoreError(f"cannot verify trace import: {error}") from error
+
+        self.connection.execute("BEGIN TRANSACTION")
+        try:
+            self._replace_import_rows(actual)
+            self.connection.execute(
+                "UPDATE trace_import_binding SET state = ?, reason = NULL WHERE subject = ?",
+                (TraceImportState.COMPLETE.value, actual.subject.value),
+            )
+            self.connection.execute("COMMIT")
+        except Exception:
+            self.connection.execute("ROLLBACK")
+            raise
+        completed = self.import_ledger()
+        if completed is None or completed.state is not TraceImportState.COMPLETE:
+            raise TraceStoreError("completed import disappeared after commit")
+        return completed
+
+    def _derive_import_ledger(
+        self,
+        trace_dir: Path,
+        binding: TraceImportLedger,
+    ) -> TraceImportLedger:
+        from bmo_check_dynamic.trace.format import TraceReader, event_files, trace_digest
+
+        manifest_path = trace_dir / "manifest.json"
+        if not manifest_path.is_file():
+            raise TraceStoreError("trace import is missing manifest.json")
+        actual_trace_digest = trace_digest(trace_dir)
+        if actual_trace_digest != binding.trace_digest:
+            raise TraceStoreError("trace digest differs from import subject")
+
+        chunks: list[TraceChunkRecord] = []
+        for path in event_files(trace_dir):
+            digest = _file_digest(path)
+            event_count = sum(1 for _ in TraceReader(path))
+            chunks.append(
+                TraceChunkRecord(
+                    name=path.name,
+                    sha256=digest,
+                    byte_count=path.stat().st_size,
+                    event_count=event_count,
+                )
+            )
+        if not chunks or sum(item.event_count for item in chunks) == 0:
+            return TraceImportLedger(
+                subject=binding.subject,
+                trace_digest=binding.trace_digest,
+                schema_version=binding.schema_version,
+                config_digest=binding.config_digest,
+                state=TraceImportState.INCOMPLETE,
+                chunks=tuple(chunks),
+                reason="trace import contains no decoded events",
+            )
+
+        layers = (
+            TraceLayerRecord(
+                TraceImportLayer.MANIFEST,
+                1,
+                _file_digest(manifest_path),
+            ),
+            TraceLayerRecord(
+                TraceImportLayer.RAW_CHUNK,
+                len(chunks),
+                _digest_chunks(tuple(chunks)),
+            ),
+            TraceLayerRecord(
+                TraceImportLayer.DECODED_EVENT,
+                self.event_count(),
+                self._digest_events(),
+            ),
+            TraceLayerRecord(
+                TraceImportLayer.OBJECT_INVENTORY,
+                self._count_objects(),
+                self._digest_objects(),
+            ),
+            TraceLayerRecord(
+                TraceImportLayer.THREAD_INVENTORY,
+                self.thread_count(),
+                self._digest_threads(),
+            ),
+        )
+        return TraceImportLedger(
+            subject=binding.subject,
+            trace_digest=binding.trace_digest,
+            schema_version=binding.schema_version,
+            config_digest=binding.config_digest,
+            state=TraceImportState.COMPLETE,
+            chunks=tuple(chunks),
+            layers=layers,
+        )
+
+    def _replace_import_rows(self, ledger: TraceImportLedger) -> None:
+        self.connection.execute(
+            "DELETE FROM trace_import_chunks WHERE subject = ?",
+            (ledger.subject.value,),
+        )
+        self.connection.execute(
+            "DELETE FROM trace_import_layers WHERE subject = ?",
+            (ledger.subject.value,),
+        )
+        self.connection.executemany(
+            "INSERT INTO trace_import_chunks VALUES (?, ?, ?, ?, ?)",
+            [
+                (
+                    ledger.subject.value,
+                    item.name,
+                    item.sha256,
+                    item.byte_count,
+                    item.event_count,
+                )
+                for item in ledger.chunks
+            ],
+        )
+        self.connection.executemany(
+            "INSERT INTO trace_import_layers VALUES (?, ?, ?, ?)",
+            [
+                (ledger.subject.value, item.layer.value, item.count, item.sha256)
+                for item in ledger.layers
+            ],
+        )
+
+    def _mark_import_incomplete(self, reason: str) -> None:
+        row = self.connection.execute(
+            "SELECT subject FROM trace_import_binding"
+        ).fetchone()
+        if row is None:
+            return
+        self.connection.execute(
+            "UPDATE trace_import_binding SET state = ?, reason = ?",
+            (TraceImportState.INCOMPLETE.value, reason or "trace import verification failed"),
+        )
+
+    def _count_objects(self) -> int:
+        return int(self.connection.execute("SELECT count(*) FROM objects").fetchone()[0])
+
+    def _digest_events(self) -> str:
+        rows = self.connection.execute(
+            "SELECT thread_id, sequence, ticket, pc, kind, address, size, value, flags, aux "
+            "FROM events ORDER BY thread_id, sequence"
+        ).fetchall()
+        return _digest_rows(rows)
+
+    def _digest_objects(self) -> str:
+        rows = self.connection.execute(
+            "SELECT object_id, base, size, start_ticket, end_ticket "
+            "FROM objects ORDER BY object_id, start_ticket"
+        ).fetchall()
+        return _digest_rows(rows)
+
+    def _digest_threads(self) -> str:
+        rows = self.connection.execute(
+            "SELECT DISTINCT thread_id FROM events ORDER BY thread_id"
+        ).fetchall()
+        return _digest_rows(rows)
 
     def add_events(
         self,
@@ -621,4 +798,31 @@ def _row_to_event(row: tuple[object, ...]) -> TraceEvent:
             if flags & EventFlags.OPERAND_INDEX and kind.is_memory
             else None
         ),
+    )
+
+
+def _file_digest(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        while chunk := stream.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _digest_rows(rows: Iterable[tuple[object, ...]]) -> str:
+    digest = hashlib.sha256()
+    for row in rows:
+        digest.update(
+            "\x1f".join("<null>" if value is None else str(value) for value in row).encode(
+                "utf-8"
+            )
+        )
+        digest.update(b"\n")
+    return digest.hexdigest()
+
+
+def _digest_chunks(chunks: tuple[TraceChunkRecord, ...]) -> str:
+    return _digest_rows(
+        (chunk.name, chunk.sha256, chunk.byte_count, chunk.event_count)
+        for chunk in chunks
     )
