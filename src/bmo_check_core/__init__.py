@@ -39,6 +39,8 @@ from .evidence import (
 from .contracts import (
     ContractError,
     ContractIssue,
+    FenceOperation,
+    LoweringOperation,
     MemoryOrderContract,
     TargetFence,
     TargetOrdering,
@@ -108,6 +110,8 @@ __all__ = [
     "UnknownKind",
     "ContractError",
     "ContractIssue",
+    "FenceOperation",
+    "LoweringOperation",
     "MemoryOrderContract",
     "TargetFence",
     "TargetOrdering",

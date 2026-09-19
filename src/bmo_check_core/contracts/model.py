@@ -8,6 +8,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -38,6 +40,32 @@ class TargetFence(StrEnum):
     WW = "w,w"
     RWRW = "rw,rw"
     UNKNOWN = "unknown"
+
+
+class LoweringOperation(StrEnum):
+    """contract 中可查询 target ordering 的 guest 操作。"""
+
+    # 普通 guest load 的 lowering 规则。
+    PLAIN_LOAD = "plain_load"
+    # 普通 guest store 的 lowering 规则。
+    PLAIN_STORE = "plain_store"
+    # LOCK 前缀或其它 LR/SC RMW 的既有排序边界。
+    LOCK_RMW = "lock_rmw"
+    # memory XCHG 的既有排序边界。
+    MEMORY_XCHG = "memory_xchg"
+    # syscall 只有 contract 明确声明时才提供 guest 可见排序。
+    SYSCALL = "syscall"
+
+
+class FenceOperation(StrEnum):
+    """显式 x86 fence 到 target fence 的 contract 查询键。"""
+
+    # LFENCE 的 target lowering。
+    LFENCE = "lfence"
+    # SFENCE 的 target lowering。
+    SFENCE = "sfence"
+    # MFENCE 的 target lowering。
+    MFENCE = "mfence"
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,6 +111,30 @@ class TranslationContract:
         for name in ("lfence", "sfence", "mfence"):
             if not isinstance(getattr(self, name), TargetFence):
                 raise ContractError(f"{name} must be a TargetFence")
+
+    def ordering_for(self, operation: LoweringOperation) -> TargetOrdering:
+        """从同一 contract 查询普通、原子或 syscall 的 target ordering。"""
+
+        if not isinstance(operation, LoweringOperation):
+            raise ContractError("operation must be a LoweringOperation")
+        return {
+            LoweringOperation.PLAIN_LOAD: self.plain_load,
+            LoweringOperation.PLAIN_STORE: self.plain_store,
+            LoweringOperation.LOCK_RMW: self.lock_rmw,
+            LoweringOperation.MEMORY_XCHG: self.memory_xchg,
+            LoweringOperation.SYSCALL: self.syscall,
+        }[operation]
+
+    def fence_for(self, operation: FenceOperation) -> TargetFence:
+        """从同一 contract 查询 LFENCE/SFENCE/MFENCE 的 target fence。"""
+
+        if not isinstance(operation, FenceOperation):
+            raise ContractError("operation must be a FenceOperation")
+        return {
+            FenceOperation.LFENCE: self.lfence,
+            FenceOperation.SFENCE: self.sfence,
+            FenceOperation.MFENCE: self.mfence,
+        }[operation]
 
 
 @dataclass(frozen=True, slots=True)
@@ -193,10 +245,41 @@ class MemoryOrderContract:
                 return ContractIssue(field, actual, wanted)
         return None
 
+    def semantic_digest(self) -> str:
+        """返回与输入文件排版无关的 canonical contract 内容摘要。"""
+
+        payload = {
+            "schema_version": self.schema_version,
+            "contract_version": self.contract_version,
+            "guest_arch": self.guest_arch,
+            "guest_memory_model": self.guest_memory_model,
+            "host_arch": self.host_arch,
+            "host_memory_model": self.host_memory_model,
+            "translation": {
+                "plain_load": self.translation.plain_load.value,
+                "plain_store": self.translation.plain_store.value,
+                "lock_rmw": self.translation.lock_rmw.value,
+                "memory_xchg": self.translation.memory_xchg.value,
+                "lfence": self.translation.lfence.value,
+                "sfence": self.translation.sfence.value,
+                "mfence": self.translation.mfence.value,
+                "syscall": self.translation.syscall.value,
+            },
+        }
+        encoded = json.dumps(
+            payload,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
 
 __all__ = [
     "ContractError",
     "ContractIssue",
+    "FenceOperation",
+    "LoweringOperation",
     "MemoryOrderContract",
     "TargetFence",
     "TargetOrdering",

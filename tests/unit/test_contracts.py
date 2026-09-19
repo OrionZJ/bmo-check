@@ -4,6 +4,8 @@ import pytest
 
 from bmo_check_core import (
     ContractError,
+    FenceOperation,
+    LoweringOperation,
     MemoryOrderContract,
     TargetFence,
     TargetOrdering,
@@ -68,3 +70,45 @@ def test_translation_contract_rejects_untyped_fields() -> None:
             sfence=TargetFence.WW,
             mfence=TargetFence.RWRW,
         )
+
+
+def test_contract_queries_keep_all_lowering_rules_on_one_typed_boundary() -> None:
+    contract = _contract(syscall="unknown")
+
+    assert contract.translation.ordering_for(LoweringOperation.PLAIN_LOAD) == (
+        TargetOrdering.RELAXED
+    )
+    assert contract.translation.ordering_for(LoweringOperation.PLAIN_STORE) == (
+        TargetOrdering.RELAXED
+    )
+    assert contract.translation.ordering_for(LoweringOperation.LOCK_RMW) == (
+        TargetOrdering.ACQ_REL
+    )
+    assert contract.translation.ordering_for(LoweringOperation.MEMORY_XCHG) == (
+        TargetOrdering.ACQ_REL
+    )
+    # 未描述 syscall 的 contract 不能被调用方猜成 acquire/release/full。
+    assert contract.translation.ordering_for(LoweringOperation.SYSCALL) == (
+        TargetOrdering.UNKNOWN
+    )
+    assert contract.translation.fence_for(FenceOperation.LFENCE) == TargetFence.RR
+    assert contract.translation.fence_for(FenceOperation.SFENCE) == TargetFence.WW
+    assert contract.translation.fence_for(FenceOperation.MFENCE) == TargetFence.RWRW
+
+
+def test_contract_queries_reject_raw_names() -> None:
+    contract = _contract()
+
+    with pytest.raises(ContractError, match="LoweringOperation"):
+        contract.translation.ordering_for("plain_load")  # type: ignore[arg-type]
+    with pytest.raises(ContractError, match="FenceOperation"):
+        contract.translation.fence_for("mfence")  # type: ignore[arg-type]
+
+
+def test_semantic_digest_binds_contract_content_not_yaml_formatting() -> None:
+    contract = _contract()
+
+    assert len(contract.semantic_digest()) == 64
+    assert contract.semantic_digest() == _contract().semantic_digest()
+    assert contract.semantic_digest() != _contract(contract_version="dbt6-mo-off-v3").semantic_digest()
+    assert contract.semantic_digest() != _contract(syscall="full").semantic_digest()

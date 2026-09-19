@@ -3,6 +3,8 @@
 from .model import (
     ContractError,
     ContractIssue,
+    FenceOperation,
+    LoweringOperation,
     MemoryOrderContract,
     TargetFence,
     TargetOrdering,
@@ -23,6 +25,8 @@ from .semantics import (
 __all__ = [
     "ContractError",
     "ContractIssue",
+    "FenceOperation",
+    "LoweringOperation",
     "MemoryOrderContract",
     "TargetFence",
     "TargetOrdering",
