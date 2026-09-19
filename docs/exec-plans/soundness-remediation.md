@@ -843,3 +843,28 @@ join/handle/futex），为 W3/W4/W14 建立 typed ledger 缺口，而不修改 p
 - 剩余风险不变：sidecar 尚无 wire→core adapter 和 import ledger；下一提交
   只实现严格的只读转换，schema major mismatch 或 identity 不可解析时拒绝，
   不修改 TraceStore/verdict。
+
+### RU4.4 lifecycle sidecar → core ledger 适配已完成
+
+- 提交：`7e40a90`（`Adapt lifecycle sidecar to core ledger`）。
+- finding：F05、F06、F18；witness：W3、W4、W14。
+- 新增只读 `lifecycle_metadata_to_ledger()`。它只接受 v2 sidecar，严格解析
+  `TraceId`、`ThreadInstanceId`、`ThreadHandleId`、callback context/target、
+  join 和 synchronization contract；未知 major 版本、身份无法解析、handle
+  token/generation 不成对或同一线程的事实互相冲突时直接返回 typed
+  `LifecycleMetadataError`，不降级成 COMPLETE。
+- sidecar 顶层不完整会传递到每个已导入的 thread record；sidecar 声明的
+  thread universe 仍由 core ledger 保留，因此缺失的线程、START/END、join
+  target 或同步 contract 不会被空列表解释成“没有关系”。callback target
+  候选不一致时保留并集，同时把 record 标为 `INCOMPLETE`。
+- `ThreadLifecycleRecord` 现在显式保留 `callback_targets`，并校验其
+  `FunctionId` 身份唯一性；该字段仍只描述候选事实，不定义内存序。没有
+  新增任何 benchmark/application-only 分支，也没有修改 checker、TraceStore
+  或 SAFE/TRACE_SAFE verdict。
+- focused adapter/lifecycle tests：`14 passed`；随后完整默认 suite：
+  `554 passed, 10 skipped`；`git diff --check` 通过。
+- 剩余风险：sidecar 还没有绑定单一 TraceStore subject、完整 import ledger
+  和 producer 端的丢失/截断证明。下一原子边界进入 RU5 前，应先审计现有
+  TraceStore/import 流程并建立其 subject/completeness characterization；
+  在 import ledger 完成前，不能把 sidecar 的 COMPLETE 直接当作
+  `TRACE_SAFE` 的完整 trace 证明。
