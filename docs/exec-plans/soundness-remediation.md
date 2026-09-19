@@ -1118,3 +1118,23 @@ join/handle/futex），为 W3/W4/W14 建立 typed ledger 缺口，而不修改 p
   先为 program-order/conflict/synchronization 建立从旧切片到 `RelationId` 的
   characterization 和无损 adapter；relation universe 不完整时只能保留 full
   graph 或返回 `UNKNOWN`，不能仅凭新增类型恢复 SAFE。
+
+### RU3.3 静态切片关系 adapter 已完成
+
+- 提交：`4e6329b`（`Audit static projection relations`）。
+- finding：F01/F02；witness：W1/W2 的 PO、conflict 和 synchronization 边在
+  application projection 后被过滤，但旧 report 没有 relation identity 或删除
+  账本。
+- 新增 `build_projection_ledger()`，用 canonical `MemoryEventId` 为三类旧切片
+  关系生成有向/对称 `RelationId`，对照 source 与 projected relation universe。
+  未改变的关系才登记为 retained；被投影删除的关系保持为
+  `missing_relation_ids`，账本状态为 `INCOMPLETE`。adapter 不把 event-level
+  `ProofObject` 猜成 relation-level legality proof，也不使用模块名或测试名。
+  端点缺少稳定 event identity 时直接拒绝，不能任选一个关系端点。
+- focused projection/certificate/scope tests：`22 passed`；完整默认 suite：
+  `583 passed, 10 skipped`；`git diff --check` 通过。
+- 剩余风险：关系 adapter 目前是只读 characterization sidecar，尚未接入
+  `StaticCertificate` replay；因此它不会改变现有 verdict。下一原子边界应为
+  removed relation 设计并验证真正的 preservation `ProofFact`/premise，只有
+  relation universe、event universe 和 source/target obligation 都闭合时才
+  允许 projection 进入确定性证书，否则保留完整图或 `UNKNOWN`。
