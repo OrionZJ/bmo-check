@@ -47,7 +47,10 @@ from bmo_check_static.adapters import (
     DiagnosticSnapshotAdapterError,
     static_snapshot_from_certificate,
 )
-from bmo_check_static.slicing import build_shared_memory_slice_with_evidence
+from bmo_check_static.slicing import (
+    build_shared_memory_slice_with_evidence,
+    restrict_to_application_scope,
+)
 from bmo_check_static.threading.evidence import StaticThreadEvidence
 
 
@@ -266,6 +269,60 @@ def test_report_bridge_rejects_legacy_safe_even_after_unknown_discharge() -> Non
             legacy,
             binding_from_manifest(report.recovery.manifest, scope=scope),
         )
+
+
+def test_application_projection_records_removed_event_decision() -> None:
+    event = MemoryEvent(
+        id="runtime-effect",
+        module="/lib/runtime.so",
+        module_sha256="c" * 64,
+        pc=0x3000,
+        kind=EventKind.OPAQUE_CALL,
+        address=AbstractAddress(
+            kind=AddressKind.GLOBAL,
+            base="runtime:private",
+            provenance={"runtime_internal": True},
+        ),
+        thread_role="main",
+        provenance={"runtime_internal": True},
+    )
+    scoped = restrict_to_application_scope(
+        SharedMemorySlice(
+            events=(event,),
+            coverage=PruningCoverage(total_events=1, remaining_shared_events=1),
+        ),
+        executable_sha256=HASH,
+    )
+    unknown = UnknownFact(
+        kind=UnknownKind.UNKNOWN_MEMORY_EFFECT,
+        reason="unmodeled runtime effect remains outside the application proof",
+        impact="the full-process scope is not closed",
+        module="/bin/litmus",
+        pc=0x4000,
+    )
+    report = _empty_report().model_copy(
+        update={
+            "memory_events": MemoryEventReport(
+                module_path="/bin/litmus",
+                module_sha256=HASH,
+                events=(event,),
+            ),
+            "shared_state": SharedStateReport(),
+            "shared_slice": scoped,
+            "unknowns": (unknown,),
+        }
+    )
+    legacy = verify_portability(report, analysis_options={"scope": "application"})
+    assert legacy.verdict == Verdict.UNKNOWN
+
+    result = build_static_certificate_from_report(
+        report,
+        legacy,
+        binding_from_manifest(report.recovery.manifest, scope="application"),
+    )
+
+    assert len(result.certificate.removal_decisions) == 1
+    assert result.certificate.removal_decisions[0].scope == "application"
 
 
 def test_bridge_rejects_dynamic_observation() -> None:

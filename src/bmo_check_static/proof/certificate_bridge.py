@@ -123,6 +123,27 @@ def _validate_static_nodes(ledger: EvidenceLedger, scope: str) -> None:
             )
 
 
+def _removed_event_ids_for_report(report: ProgramSliceReport) -> tuple[str, ...]:
+    """Collect every event removed before the certificate boundary.
+
+    The shared-state pass records its removals explicitly.  A later projection,
+    such as application scope, can remove additional events and records those
+    removals only in the final slice proof objects.  Dropping that second set
+    would make the certificate's event universe disagree with the proof ledger.
+    """
+
+    removed: list[str] = []
+    if report.shared_state is not None:
+        removed.extend(report.shared_state.removed_event_ids)
+    if report.shared_slice is not None:
+        removed.extend(
+            event_id
+            for proof in report.shared_slice.proof_objects
+            for event_id in proof.event_ids
+        )
+    return tuple(dict.fromkeys(removed))
+
+
 def build_static_certificate_with_evidence(
     slice_evidence: StaticSliceEvidence,
     portability_evidence: StaticPortabilityEvidence,
@@ -240,11 +261,7 @@ def build_static_certificate_from_report(
     # removal_decisions 必须逐事件绑定到可回放的 ProofFact；不再依赖旧的
     # 字符串 ID 是否“看起来像”同一事件。
     decisions: list[RemovalDecision] = []
-    removed_event_ids = (
-        report.shared_state.removed_event_ids
-        if report.shared_state is not None
-        else ()
-    )
+    removed_event_ids = _removed_event_ids_for_report(report)
     proof_models: list[ProofObject] = []
     if report.shared_state is not None:
         proof_models.extend(report.shared_state.proofs)
