@@ -535,3 +535,15 @@ FUTEX、歧义 object label、端点不属于当前 window、partial-width 和 t
 下一步不扩大 consumer 迁移面：先为两个 adapter 增加统一的 relation
 completeness/obligation characterization，确认“all exact”不会被误解为
 RF/CO/FR universe 完整；随后才评审是否迁移正式 checker consumer。
+
+RU2.1 第一窄步已在 `5642332` 完成：identity 层新增稳定
+`PropositionId`/`ObligationId`，`MemoryRelation.proposition_id` 和
+`ExecutionRelations.proposition_ids` 使用有向端点、对象和范围材料生成可重算
+的命题身份。`all_exact_width` 只表示当前提交的 relation 没有超出 exact-width
+支持集，不表示 obligation 或 relation universe 完整；event universe、obligation
+ledger 和 proof discharge 仍未迁移。focused identity/semantics/boundary tests
+为 `39 passed`，完整默认 suite 为 `502 passed, 10 skipped`。
+
+下一提交只推进 RU2.2：为 static fixed-execution adapter 增加显式 event-universe
+ledger，区分 retained、removed-with-proof 和 unresolved；旧 `covered_events`
+不得承担 universe completeness 或 Unknown discharge 语义。
