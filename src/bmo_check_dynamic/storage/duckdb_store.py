@@ -769,6 +769,11 @@ class TraceStore:
     def event_count(self) -> int:
         return int(self.connection.execute("SELECT count(*) FROM events").fetchone()[0])
 
+    def event_inventory(self) -> tuple[int, str]:
+        """返回 decoded event 的数量和 canonical digest，供 certificate replay。"""
+
+        return self.event_count(), self._digest_events()
+
     def close(self) -> None:
         self.connection.close()
 

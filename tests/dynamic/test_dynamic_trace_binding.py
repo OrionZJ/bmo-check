@@ -12,6 +12,7 @@ from bmo_check_dynamic.adapters import (
     verify_dynamic_certificate_coverage,
 )
 from bmo_check_dynamic.model import DynamicCertificate, TraceScope, TraceVerdict
+from bmo_check_dynamic.pipeline import analyze_trace
 from bmo_check_dynamic.trace import trace_digest
 from bmo_check_dynamic.model import BinaryFingerprint
 
@@ -106,6 +107,26 @@ def test_determinate_legacy_certificate_is_explain_only(
         verify_dynamic_certificate_coverage(certificate)
     with pytest.raises(DynamicTraceBindingError, match="coverage ledger"):
         bind_dynamic_certificate_to_trace(certificate, trace_dir, contract)
+
+
+def test_binding_replays_decoded_event_inventory(
+    trace_manifest, tmp_path: Path
+) -> None:
+    trace_dir = tmp_path / "replay-events"
+    manifest = trace_manifest(trace_dir)
+    _write_trace(trace_dir, Path(manifest.executable.path))
+    contract = _contract_path()
+    certificate = analyze_trace(trace_dir, dbt_contract=contract)
+    assert certificate.verdict == TraceVerdict.TRACE_SAFE
+    assert certificate.coverage is not None
+
+    bad_coverage = certificate.coverage.model_copy(
+        update={"event_sha256": "f" * 64}
+    )
+    tampered = certificate.model_copy(update={"coverage": bad_coverage})
+
+    with pytest.raises(DynamicTraceBindingError, match="event digest"):
+        bind_dynamic_certificate_to_trace(tampered, trace_dir, contract)
 
 
 @pytest.mark.parametrize(

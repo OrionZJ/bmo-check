@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import hashlib
+import tempfile
 from dataclasses import dataclass
+from itertools import chain
 from pathlib import Path
 
 from bmo_check_core import DynamicDiagnosticSnapshot, TraceId
 
 from ..model import CoverageState, DynamicCertificate, TraceManifest, TraceVerdict
+from ..storage import TraceStore, TraceStoreError
 from ..trace import trace_digest
+from ..trace.format import TraceReader, event_files
 from .diagnostic_snapshot import dynamic_snapshot_from_trace
 
 
@@ -58,6 +62,43 @@ def verify_dynamic_certificate_coverage(certificate: DynamicCertificate) -> None
     if coverage.windows.state is not CoverageState.COMPLETE:
         raise DynamicTraceBindingError(
             "determinate dynamic certificate has incomplete window coverage"
+        )
+
+
+def replay_dynamic_event_inventory(
+    certificate: DynamicCertificate,
+    trace_dir: Path,
+) -> None:
+    """从原始 chunk 重建 decoded-event inventory，不相信证书计数。"""
+
+    verify_dynamic_certificate_coverage(certificate)
+    if certificate.verdict not in {
+        TraceVerdict.TRACE_SAFE,
+        TraceVerdict.COUNTEREXAMPLE,
+    }:
+        return
+    try:
+        with tempfile.TemporaryDirectory(prefix="bmo-check-replay-") as directory:
+            with TraceStore(Path(directory) / "events.duckdb") as store:
+                store.add_events(
+                    chain.from_iterable(
+                        TraceReader(path) for path in event_files(trace_dir)
+                    ),
+                    max_pages_per_access=16,
+                    batch_size=50_000,
+                )
+                event_count, event_digest = store.event_inventory()
+    except (OSError, ValueError, TraceStoreError) as error:
+        raise DynamicTraceBindingError(
+            f"cannot replay dynamic event inventory: {error}"
+        ) from error
+    if event_count != certificate.coverage.event_count:
+        raise DynamicTraceBindingError(
+            "replayed event count differs from dynamic coverage"
+        )
+    if event_digest != certificate.coverage.event_sha256:
+        raise DynamicTraceBindingError(
+            "replayed event digest differs from dynamic coverage"
         )
 
 
@@ -169,6 +210,7 @@ def bind_dynamic_certificate_to_trace(
 
     actual_trace_digest = trace_digest(trace_dir)
     actual_contract_digest = _sha256(dbt_contract, label="DBT contract")
+    replay_dynamic_event_inventory(certificate, trace_dir)
     expected_fields = (
         ("manifest trace ID", certificate.scope.trace_ids, (manifest.trace_id,)),
         ("trace digest", certificate.scope.trace_sha256, (actual_trace_digest,)),
@@ -219,5 +261,6 @@ __all__ = [
     "BoundDynamicEvidence",
     "DynamicTraceBindingError",
     "bind_dynamic_certificate_to_trace",
+    "replay_dynamic_event_inventory",
     "verify_dynamic_certificate_coverage",
 ]
