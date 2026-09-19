@@ -266,6 +266,40 @@ class MemoryEventId(StableId):
         return cls(_digest(cls.prefix, material))
 
 
+@dataclass(frozen=True, slots=True)
+class RelationId(StableId):
+    """一个有稳定端点的程序关系身份。"""
+
+    prefix: ClassVar[str] = "relation"
+
+    @classmethod
+    def from_parts(
+        cls,
+        kind: str,
+        subjects: Iterable[StableId],
+        *,
+        symmetric: bool = False,
+        discriminator: str = "",
+    ) -> "RelationId":
+        if not isinstance(symmetric, bool):
+            raise IdentityMaterialError("relation symmetry must be boolean")
+        values = tuple(subjects)
+        if not values or any(not isinstance(item, StableId) for item in values):
+            raise IdentityMaterialError("relation subjects must be non-empty StableId values")
+        normalized = tuple(sorted(item.value for item in values)) if symmetric else tuple(
+            item.value for item in values
+        )
+        material = {
+            "discriminator": _text("relation discriminator", discriminator)
+            if discriminator
+            else None,
+            "kind": _text("relation kind", kind),
+            "subjects": normalized,
+            "symmetric": symmetric,
+        }
+        return cls(_digest(cls.prefix, material))
+
+
 class ObjectOrigin(StrEnum):
     # GLOBAL 表示 ELF 全局对象或符号来源。
     GLOBAL = "global"
@@ -533,6 +567,7 @@ __all__ = [
     "ObjectOrigin",
     "ObligationId",
     "PropositionId",
+    "RelationId",
     "StableId",
     "ThreadHandleId",
     "ThreadInstanceId",

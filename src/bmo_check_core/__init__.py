@@ -20,6 +20,7 @@ from .identity import (
     ObjectOrigin,
     ObligationId,
     PropositionId,
+    RelationId,
     StableId,
     ThreadHandleId,
     ThreadInstanceId,
@@ -124,6 +125,12 @@ from .trace_import import (
     TraceImportState,
     TraceLayerRecord,
 )
+from .projection import (
+    ProjectionLedger,
+    ProjectionRelationDisposition,
+    ProjectionRelationEntry,
+    ProjectionRelationKind,
+)
 from .obligations import (
     ObligationInventory,
     ObligationKind,
@@ -159,6 +166,7 @@ __all__ = [
     "ObjectOrigin",
     "ObligationId",
     "PropositionId",
+    "RelationId",
     "StableId",
     "SyncOperationKind",
     "SynchronizationIdentity",
@@ -242,6 +250,10 @@ __all__ = [
     "TraceImportLedger",
     "TraceImportState",
     "TraceLayerRecord",
+    "ProjectionLedger",
+    "ProjectionRelationDisposition",
+    "ProjectionRelationEntry",
+    "ProjectionRelationKind",
     "ObligationInventory",
     "ObligationKind",
     "ObligationMatchStatus",
