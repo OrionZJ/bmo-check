@@ -90,6 +90,7 @@ from .universe import (
     EventUniverseEntry,
     EventUniverseLedger,
 )
+from .obligations import ObligationInventory, ObligationKind, ProofObligation
 
 __all__ = [
     "AbstractObjectId",
@@ -166,4 +167,7 @@ __all__ = [
     "EventDisposition",
     "EventUniverseEntry",
     "EventUniverseLedger",
+    "ObligationInventory",
+    "ObligationKind",
+    "ProofObligation",
 ]
