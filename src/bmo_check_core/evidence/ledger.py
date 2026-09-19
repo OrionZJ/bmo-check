@@ -59,6 +59,45 @@ class EvidenceLedger:
             raise LedgerError("an UnknownFact cannot have conflicting discharges")
         self._discharges[discharge.unknown_id] = discharge
 
+    def add_typed_discharge(
+        self,
+        discharge: UnknownDischarge,
+        obligation: object,
+        registry: object,
+    ) -> None:
+        """只允许 typed proposition/rule 完整匹配时关闭 Unknown。
+
+        旧 ``add_discharge`` 保留给 legacy reader；新 certificate producer 必须
+        走这个入口，避免用同 scope 的任意 ProofFact 关闭无关 Unknown。
+        """
+
+        from ..obligations import (
+            ObligationMatchStatus,
+            ProofObligation,
+            match_proof_to_obligation,
+            match_unknown_to_obligation,
+        )
+        from .rules import ProofRuleRegistry, ProofRuleReplayStatus, replay_proof_rule
+
+        if not isinstance(obligation, ProofObligation):
+            raise LedgerError("typed discharge requires a ProofObligation")
+        if not isinstance(registry, ProofRuleRegistry):
+            raise LedgerError("typed discharge requires a ProofRuleRegistry")
+        unknown = self._nodes.get(discharge.unknown_id)
+        proof = self._nodes.get(discharge.proof_id)
+        unknown_match = match_unknown_to_obligation(unknown, obligation)
+        if unknown_match.status is not ObligationMatchStatus.MATCH:
+            raise LedgerError(f"typed Unknown binding is not closed: {unknown_match.reason}")
+        proof_match = match_proof_to_obligation(proof, obligation)
+        if proof_match.status is not ObligationMatchStatus.MATCH:
+            raise LedgerError(f"typed proof binding is not closed: {proof_match.reason}")
+        if not isinstance(proof, ProofFact):
+            raise LedgerError("typed discharge proof is not a ProofFact")
+        replay = replay_proof_rule(proof, self, registry)
+        if replay.status is not ProofRuleReplayStatus.VALID:
+            raise LedgerError(f"typed proof rule is not replayable: {replay.reason}")
+        self.add_discharge(discharge)
+
     def get(self, evidence_id: EvidenceId) -> EvidenceNode | None:
         return self._nodes.get(evidence_id)
 
