@@ -616,7 +616,21 @@ obligation 从 `REMOVED_WITH_PROOF` ledger entry 逐项绑定 event 与 Evidence
 proposition、registered proof rule 和 conflict/projection 的 route consumer
 仍未迁移。
 
-下一提交继续 RU2.4 的 characterization：定义 typed Unknown proposition 与
-event/object/thread scope 的稳定绑定，先让缺少唯一 proposition identity 的
-Unknown 无法被 discharge，再评审旧 UnknownFact adapter；不把任何 dynamic
-observation 或 benchmark 结果提升为 ProofFact。
+RU2.4 的首个 typed Unknown proposition 边界已在 `a594a03` 完成：新增
+`UnknownProposition`，由注册命题 kind、analysis scope 和稳定 subjects 计算
+`PropositionId`；`UnknownFact` 可绑定该 proposition，且 proposition scope 必须
+与 Unknown scope 相同。带 proposition 的 Unknown 会把 proposition 内容纳入
+自身 EvidenceId，旧 schema 的 `proposition=None` 仍按 legacy identity 生成，
+不会靠补空字段升级。现有 ledger 仍只允许静态 provenance，ObservedFact 与
+DiagnosticHint 没有新入口进入 Unknown 或 SAFE closure。
+
+本提交 focused evidence/diagnostic tests 为 `25 passed`；随后完整默认 suite
+为 `523 passed, 10 skipped`；`git diff --check` 通过。剩余风险：现有 static
+producer 尚未为每个 Unknown 生成 proposition，旧 `supporting_context` 仍可能
+是唯一定位信息；因此本提交没有收紧旧 SAFE 路径，也没有声称 RU2.4 已完成。
+
+下一提交继续 RU2.4 的窄迁移：为一个不涉及 checker verdict 的 static
+recovery evidence adapter 从已有稳定 instruction/event/object 事实构造
+`UnknownProposition`，缺少唯一 subject 时明确保持 legacy/incomplete；同时
+增加 verifier/invariant 测试，证明无 proposition 的旧 Unknown 不能被新 typed
+discharge 伪装成已闭合命题。
