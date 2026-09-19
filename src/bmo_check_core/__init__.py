@@ -117,6 +117,13 @@ from .universe import (
     EventUniverseEntry,
     EventUniverseLedger,
 )
+from .trace_import import (
+    TraceChunkRecord,
+    TraceImportLayer,
+    TraceImportLedger,
+    TraceImportState,
+    TraceLayerRecord,
+)
 from .obligations import (
     ObligationInventory,
     ObligationKind,
@@ -230,6 +237,11 @@ __all__ = [
     "EventDisposition",
     "EventUniverseEntry",
     "EventUniverseLedger",
+    "TraceChunkRecord",
+    "TraceImportLayer",
+    "TraceImportLedger",
+    "TraceImportState",
+    "TraceLayerRecord",
     "ObligationInventory",
     "ObligationKind",
     "ObligationMatchStatus",
