@@ -88,6 +88,18 @@ def _operations(
     return normalized
 
 
+def _functions(
+    name: str,
+    values: tuple[FunctionId, ...],
+) -> tuple[FunctionId, ...]:
+    if any(not isinstance(value, FunctionId) for value in values):
+        raise ValueError(f"{name} must contain FunctionId values")
+    normalized = tuple(sorted(set(values), key=lambda value: value.value))
+    if len(normalized) != len(values):
+        raise ValueError(f"{name} contains duplicate identities")
+    return normalized
+
+
 @dataclass(frozen=True, slots=True)
 class ThreadLifecycleRecord:
     """一个产生过相关事件的 thread subject 的生命周期账本项。"""
@@ -106,6 +118,8 @@ class ThreadLifecycleRecord:
     end_operation: LifecycleOperationId | None = None
     # callback_context 记录 wrapper、多 caller 和实际 callback 的组合身份。
     callback_context: LifecycleContextId | None = None
+    # callback_targets 保留实际候选函数；不能只留下 context 摘要后丢目标集合。
+    callback_targets: tuple[FunctionId, ...] = ()
     # 非 COMPLETE 时必须说明缺少哪条生命周期事实。
     completeness: CompletenessState = CompletenessState(
         CompletenessStatus.INCOMPLETE,
@@ -132,6 +146,11 @@ class ThreadLifecycleRecord:
             self.callback_context, LifecycleContextId
         ):
             raise ValueError("callback_context must be a LifecycleContextId")
+        object.__setattr__(
+            self,
+            "callback_targets",
+            _functions("callback_targets", self.callback_targets),
+        )
         if not isinstance(self.completeness, CompletenessState):
             raise ValueError("completeness must be a CompletenessState")
         if self.completeness.status is CompletenessStatus.COMPLETE:

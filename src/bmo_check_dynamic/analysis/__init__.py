@@ -10,6 +10,10 @@ from .communication import (
 )
 from .partition import analyze_application_partition
 from .lifecycle_adapter import characterize_trace_lifecycle
+from .lifecycle_schema_adapter import (
+    LifecycleMetadataError,
+    lifecycle_metadata_to_ledger,
+)
 from .site import locate_instruction_site
 from .windows import AnalysisWindow, build_windows
 
@@ -27,4 +31,6 @@ __all__ = [
     "locate_instruction_site",
     "analyze_application_partition",
     "characterize_trace_lifecycle",
+    "LifecycleMetadataError",
+    "lifecycle_metadata_to_ledger",
 ]
