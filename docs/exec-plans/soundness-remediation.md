@@ -1138,3 +1138,21 @@ join/handle/futex），为 W3/W4/W14 建立 typed ledger 缺口，而不修改 p
   removed relation 设计并验证真正的 preservation `ProofFact`/premise，只有
   relation universe、event universe 和 source/target obligation 都闭合时才
   允许 projection 进入确定性证书，否则保留完整图或 `UNKNOWN`。
+
+### RU3.4 bridge 携带 projection coverage 已完成
+
+- 提交：`6f54419`（`Bind static projection coverage`）。
+- finding：F01/F02；witness：application-scope static bridge 只携带 event
+  removal decision 时，relation projection 的缺失无法被 certificate-side
+  consumer 看到。
+- `StaticSliceEvidence` 和 `StaticCertificateEvidence` 现在可携带只读
+  `ProjectionLedger`。bridge 从原始 `MemoryEventReport`、`SharedStateReport`
+  和最终 `SharedMemorySlice` 重建 source/projected relation universe，缺少
+  event identity 或关系端点时直接失败；PO/conflict/synchronization 删除仍被
+  标为 `INCOMPLETE`，不会被空列表解释成“没有 obligation”。
+- focused bridge/projection tests：`11 passed`；完整默认 suite：
+  `584 passed, 10 skipped`；`git diff --check` 通过。
+- 剩余风险：账本目前仍是 sidecar，`StaticCertificate` replay 尚未检查它，
+  因而这一步没有重新开放 SAFE。下一原子边界必须把 relation-level
+  preservation proposition 与 ProofFact/premise 绑定，并在 verifier 中拒绝
+  incomplete projection；不能用 bridge 携带账本替代 legality-preserving proof。
