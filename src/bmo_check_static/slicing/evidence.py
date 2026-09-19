@@ -5,6 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from bmo_check_core import (
+    CompletenessState,
+    CompletenessStatus,
+    EventDisposition,
+    EventUniverseEntry,
+    EventUniverseLedger,
     EvidenceId,
     EvidenceLedger,
     MemoryEventId,
@@ -48,6 +53,8 @@ class StaticSliceEvidence:
     proof_links: tuple[SliceProofLink, ...] = ()
     # removal_decisions 逐事件记录删除依据，不能由批量计数推导。
     removal_decisions: tuple[RemovalDecision, ...] = ()
+    # event_universe 是新 producer 的逐事件对账；None 只允许旧 bridge 使用。
+    event_universe: EventUniverseLedger | None = None
 
     @property
     def proof_ids(self) -> tuple[EvidenceId, ...]:
@@ -136,6 +143,69 @@ def build_shared_memory_slice_with_evidence(
             )
         )
 
+    removed_by_event = {
+        decision.event_id: decision.proof_id
+        for decision in decisions
+    }
+    legacy_by_canonical = {
+        link.canonical_id: link.legacy_id for link in memory_events.event_links
+    }
+    retained_legacy = {event.id for event in report.events}
+    unknown_legacy: set[str] = set()
+    for unknown in memory_events.report.unknowns:
+        event_id = unknown.details.get("event_id")
+        if isinstance(event_id, str):
+            unknown_legacy.add(event_id)
+        event_ids = unknown.details.get("event_ids")
+        if isinstance(event_ids, list):
+            unknown_legacy.update(
+                value for value in event_ids if isinstance(value, str)
+            )
+
+    universe_entries: list[EventUniverseEntry] = []
+    missing_reasons: set[str] = set()
+    for canonical_id in memory_events.event_ids:
+        legacy_id = legacy_by_canonical[canonical_id]
+        if legacy_id in unknown_legacy:
+            # canonical UnknownFact 当前没有 event subject；省略 entry 比猜一个
+            # UnknownFact 更安全，ledger 会把它暴露为 missing event。
+            missing_reasons.add("legacy Unknown lacks a unique canonical event subject")
+            continue
+        if canonical_id in removed_by_event:
+            universe_entries.append(
+                EventUniverseEntry(
+                    canonical_id,
+                    EventDisposition.REMOVED_WITH_PROOF,
+                    proof_ids=(removed_by_event[canonical_id],),
+                )
+            )
+        elif legacy_id in retained_legacy:
+            universe_entries.append(
+                EventUniverseEntry(canonical_id, EventDisposition.RETAINED)
+            )
+        else:
+            missing_reasons.add("producer output omitted an unremoved event")
+
+    if memory_events.unknown_ids or shared_state.unknown_ids or missing_reasons:
+        reasons = set(missing_reasons)
+        if memory_events.unknown_ids:
+            reasons.add("memory-event producer has unresolved UnknownFact")
+        if shared_state.unknown_ids:
+            reasons.add("shared-state producer has unresolved UnknownFact")
+        completeness = CompletenessState(
+            CompletenessStatus.INCOMPLETE,
+            scope,
+            reason="; ".join(sorted(reasons)),
+        )
+    else:
+        completeness = CompletenessState(CompletenessStatus.COMPLETE, scope)
+    event_universe = EventUniverseLedger(
+        stage=scope,
+        input_event_ids=memory_events.event_ids,
+        entries=tuple(universe_entries),
+        completeness=completeness,
+    )
+
     return StaticSliceEvidence(
         report=report,
         ledger=ledger,
@@ -146,6 +216,7 @@ def build_shared_memory_slice_with_evidence(
                 key=lambda item: (item.event_id.value, item.proof_id.value),
             )
         ),
+        event_universe=event_universe,
     )
 
 

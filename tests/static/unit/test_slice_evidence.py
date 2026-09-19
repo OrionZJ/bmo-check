@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from bmo_check_core import EvidenceLedger, ProofFact
+from bmo_check_core import CompletenessStatus, EvidenceLedger, ProofFact
 from bmo_check_static.analysis.evidence import (
     MemoryEventIdentityLink,
     StaticMemoryEventEvidence,
@@ -18,6 +18,8 @@ from bmo_check_static.model import (
     ProofObject,
     ProofReason,
     SharedStateReport,
+    UnknownFact,
+    UnknownKind,
     ThreadDiscoveryReport,
     AbstractAddress,
 )
@@ -90,6 +92,11 @@ def test_slice_evidence_converts_each_removed_event_to_a_decision(elf_fixture) -
     assert snapshot.report.events == ()
     assert len(snapshot.removal_decisions) == 1
     assert len(snapshot.proof_links) == 1
+    assert snapshot.event_universe is not None
+    assert snapshot.event_universe.completeness.status is CompletenessStatus.COMPLETE
+    assert snapshot.event_universe.removed_event_ids == (
+        memory.event_links[0].canonical_id,
+    )
     proof = snapshot.ledger.get(snapshot.proof_links[0].canonical_id)
     assert isinstance(proof, ProofFact)
     assert proof.covered_events == (memory.event_links[0].canonical_id,)
@@ -105,3 +112,59 @@ def test_slice_evidence_refuses_unmapped_removed_event(elf_fixture) -> None:
 
     with pytest.raises(SliceEvidenceError, match="unmapped event"):
         build_shared_memory_slice_with_evidence(memory, shared, threads)
+
+
+def test_slice_evidence_records_retained_event_in_universe(elf_fixture) -> None:
+    memory, shared, threads = _inputs(elf_fixture)
+    shared = StaticSharedStateEvidence(
+        report=shared.report.model_copy(
+            update={
+                "kept_event_ids": ("event-1",),
+                "removed_event_ids": (),
+                "proofs": (),
+            }
+        ),
+        ledger=shared.ledger,
+    )
+
+    snapshot = build_shared_memory_slice_with_evidence(memory, shared, threads)
+
+    assert snapshot.event_universe is not None
+    assert snapshot.event_universe.retained_event_ids == (
+        memory.event_links[0].canonical_id,
+    )
+    assert snapshot.event_universe.completeness.status is CompletenessStatus.COMPLETE
+
+
+def test_slice_evidence_does_not_guess_unknown_event_subject(elf_fixture) -> None:
+    memory, shared, threads = _inputs(elf_fixture)
+    memory = StaticMemoryEventEvidence(
+        report=memory.report.model_copy(
+            update={
+                "unknowns": (
+                    UnknownFact(
+                        kind=UnknownKind.UNKNOWN_SHARED_ADDRESS,
+                        reason="address remains open",
+                        impact="may alias",
+                        details={"event_id": "event-1"},
+                    ),
+                )
+            }
+        ),
+        ledger=memory.ledger,
+        event_links=memory.event_links,
+    )
+    shared = StaticSharedStateEvidence(
+        report=shared.report.model_copy(
+            update={"removed_event_ids": (), "kept_event_ids": ("event-1",), "proofs": ()}
+        ),
+        ledger=shared.ledger,
+    )
+
+    snapshot = build_shared_memory_slice_with_evidence(memory, shared, threads)
+
+    assert snapshot.event_universe is not None
+    assert snapshot.event_universe.completeness.status is CompletenessStatus.INCOMPLETE
+    assert snapshot.event_universe.missing_event_ids == (
+        memory.event_links[0].canonical_id,
+    )
