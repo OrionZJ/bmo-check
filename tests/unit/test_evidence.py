@@ -7,6 +7,7 @@ import pytest
 from bmo_check_core.evidence import (
     DiagnosticHint,
     EvidenceAttribute,
+    EvidenceMaterialError,
     EvidenceLedger,
     LedgerError,
     ObservedFact,
@@ -15,6 +16,7 @@ from bmo_check_core.evidence import (
     UnknownDischarge,
     UnknownFact,
     UnknownKind,
+    UnknownProposition,
 )
 from bmo_check_core.identity import (
     EvidenceId,
@@ -64,6 +66,57 @@ def test_proof_and_unknown_have_content_bound_ids(identities: dict[str, object])
     ledger.add(proof)
     with pytest.raises(LedgerError, match="id/content mismatch"):
         ledger.add(changed)
+
+
+def test_unknown_can_bind_a_typed_proposition_without_legacy_id_guessing(
+    identities: dict[str, object],
+) -> None:
+    producer = ProducerId("static-analysis", "c4")
+    subject = identities["instruction"]
+    assert isinstance(subject, InstructionId)
+    proposition = UnknownProposition.create(
+        kind=UnknownKind.UNKNOWN_ESCAPE.value,
+        scope="scope-a",
+        subjects=(subject,),
+    )
+    unknown = UnknownFact.create(
+        schema_version="2",
+        producer=producer,
+        kind=UnknownKind.UNKNOWN_ESCAPE,
+        reason="escape proof is open",
+        subject=subject,
+        scope="scope-a",
+        proposition=proposition,
+    )
+
+    assert proposition.id == proposition.expected_id()
+    assert unknown.proposition == proposition
+    assert unknown.id == unknown.expected_id()
+    legacy = UnknownFact.create(
+        schema_version="2",
+        producer=producer,
+        kind=UnknownKind.UNKNOWN_ESCAPE,
+        reason="escape proof is open",
+        subject=subject,
+        scope="scope-a",
+    )
+    assert legacy.proposition is None
+    assert legacy.id != unknown.id
+
+    with pytest.raises(EvidenceMaterialError, match="scope"):
+        UnknownFact.create(
+            schema_version="2",
+            producer=producer,
+            kind=UnknownKind.UNKNOWN_ESCAPE,
+            reason="escape proof is open",
+            subject=subject,
+            scope="scope-a",
+            proposition=UnknownProposition.create(
+                kind=UnknownKind.UNKNOWN_ESCAPE.value,
+                scope="scope-b",
+                subjects=(subject,),
+            ),
+        )
 
 
 def test_ledger_rejects_missing_and_nonproof_premises(identities: dict[str, object]) -> None:

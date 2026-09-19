@@ -37,6 +37,7 @@ from .evidence import (
     UnknownDischarge,
     UnknownFact,
     UnknownKind,
+    UnknownProposition,
 )
 from .contracts import (
     ContractError,
@@ -130,6 +131,7 @@ __all__ = [
     "UnknownDischarge",
     "UnknownFact",
     "UnknownKind",
+    "UnknownProposition",
     "ContractError",
     "ContractIssue",
     "FenceOperation",

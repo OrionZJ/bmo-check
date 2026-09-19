@@ -6,7 +6,14 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import TypeAlias
 
-from ..identity import EvidenceId, MemoryEventId, StableId, ThreadInstanceId, TraceId
+from ..identity import (
+    EvidenceId,
+    MemoryEventId,
+    PropositionId,
+    StableId,
+    ThreadInstanceId,
+    TraceId,
+)
 
 
 class EvidenceMaterialError(ValueError):
@@ -133,6 +140,15 @@ def _memory_event_ids(
     for value in values:
         if not isinstance(value, MemoryEventId):
             raise EvidenceMaterialError(f"{name} must contain MemoryEventId values")
+        normalized.append(value)
+    return tuple(sorted(set(normalized), key=lambda item: item.value))
+
+
+def _stable_ids(name: str, values: tuple[StableId, ...]) -> tuple[StableId, ...]:
+    normalized: list[StableId] = []
+    for value in values:
+        if not isinstance(value, StableId):
+            raise EvidenceMaterialError(f"{name} must contain StableId values")
         normalized.append(value)
     return tuple(sorted(set(normalized), key=lambda item: item.value))
 
@@ -499,6 +515,71 @@ class DiagnosticHint:
 
 
 @dataclass(frozen=True, slots=True)
+class UnknownProposition:
+    """一个 Unknown 尚未闭合的、可稳定定位的命题。"""
+
+    # id 绑定 kind、scope 和 subjects；不能用 UnknownFact 的 EvidenceId 代替。
+    id: PropositionId
+    # kind 是注册的命题类别，例如 missing-provenance 或 memory-effect。
+    kind: str
+    # scope 限定这个命题属于哪个 binary/分析阶段。
+    scope: str
+    # subjects 指向受影响的 instruction/object/thread/event 等实体。
+    subjects: tuple[StableId, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.id, PropositionId):
+            raise EvidenceMaterialError("UnknownProposition id must be a PropositionId")
+        _text("unknown proposition kind", self.kind)
+        _text("unknown proposition scope", self.scope)
+        object.__setattr__(
+            self,
+            "subjects",
+            _stable_ids("unknown proposition subjects", self.subjects),
+        )
+        if self.id != self.expected_id():
+            raise EvidenceMaterialError(
+                "UnknownProposition id does not match its canonical content"
+            )
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        kind: str,
+        scope: str,
+        subjects: tuple[StableId, ...] = (),
+    ) -> "UnknownProposition":
+        normalized = _stable_ids("unknown proposition subjects", subjects)
+        _text("unknown proposition kind", kind)
+        _text("unknown proposition scope", scope)
+        return cls(
+            id=PropositionId.from_parts(
+                f"unknown:{kind}",
+                (scope, *(item.value for item in normalized)),
+            ),
+            kind=kind,
+            scope=scope,
+            subjects=normalized,
+        )
+
+    def expected_id(self) -> PropositionId:
+        return PropositionId.from_parts(
+            f"unknown:{self.kind}",
+            (self.scope, *(item.value for item in self.subjects)),
+        )
+
+
+def _unknown_proposition_content(proposition: UnknownProposition) -> dict[str, object]:
+    return {
+        "id": proposition.id.value,
+        "kind": proposition.kind,
+        "scope": proposition.scope,
+        "subjects": [item.value for item in proposition.subjects],
+    }
+
+
+@dataclass(frozen=True, slots=True)
 class UnknownFact:
     # id 绑定 Unknown 的完整原因和来源，避免用“缺少记录”表达 Unknown。
     id: EvidenceId
@@ -514,6 +595,8 @@ class UnknownFact:
     subject: StableId | None
     # scope 说明该 Unknown 阻塞哪一个分析范围。
     scope: str
+    # proposition 把 Unknown 绑定到未证明命题；None 仅供旧 schema adapter 使用。
+    proposition: UnknownProposition | None = None
     # provenance 只能引用静态 ProofFact/UnknownFact，不能引用动态事实。
     provenance: tuple[EvidenceId, ...] = ()
     # supporting_context 保留定位信息，但不充当 proof premise。
@@ -530,6 +613,13 @@ class UnknownFact:
         _text("unknown reason", self.reason)
         _subject_value(self.subject, self.scope)
         _text("unknown scope", self.scope)
+        if self.proposition is not None:
+            if not isinstance(self.proposition, UnknownProposition):
+                raise EvidenceMaterialError("UnknownFact proposition must be typed")
+            if self.proposition.scope != self.scope:
+                raise EvidenceMaterialError(
+                    "UnknownFact proposition scope must match UnknownFact scope"
+                )
         object.__setattr__(self, "provenance", _evidence_ids("unknown provenance", self.provenance))
         normalized_context = tuple(_text("unknown context", item) for item in self.supporting_context)
         object.__setattr__(self, "supporting_context", normalized_context)
@@ -544,6 +634,7 @@ class UnknownFact:
         reason: str,
         subject: StableId | None,
         scope: str,
+        proposition: UnknownProposition | None = None,
         provenance: tuple[EvidenceId, ...] = (),
         supporting_context: tuple[str, ...] = (),
     ) -> "UnknownFact":
@@ -553,7 +644,17 @@ class UnknownFact:
             raise EvidenceMaterialError("UnknownFact producer must be a ProducerId")
         if not isinstance(kind, UnknownKind):
             raise EvidenceMaterialError("UnknownFact kind must be an UnknownKind")
+        if proposition is not None and not isinstance(proposition, UnknownProposition):
+            raise EvidenceMaterialError("UnknownFact proposition must be typed")
         context = tuple(_text("unknown context", item) for item in supporting_context)
+        content = {
+            "context": list(context),
+            "kind": kind.value,
+            "reason": reason,
+            "scope": scope,
+        }
+        if proposition is not None:
+            content["proposition"] = _unknown_proposition_content(proposition)
         return cls(
             id=_make_id(
                 EvidenceCategory.UNKNOWN_FACT,
@@ -562,12 +663,7 @@ class UnknownFact:
                 subject,
                 scope,
                 normalized_provenance,
-                {
-                    "context": list(context),
-                    "kind": kind.value,
-                    "reason": reason,
-                    "scope": scope,
-                },
+                content,
             ),
             schema_version=schema_version,
             producer=producer,
@@ -575,11 +671,20 @@ class UnknownFact:
             reason=reason,
             subject=subject,
             scope=scope,
+            proposition=proposition,
             provenance=normalized_provenance,
             supporting_context=context,
         )
 
     def expected_id(self) -> EvidenceId:
+        content = {
+            "context": list(self.supporting_context),
+            "kind": self.kind.value,
+            "reason": self.reason,
+            "scope": self.scope,
+        }
+        if self.proposition is not None:
+            content["proposition"] = _unknown_proposition_content(self.proposition)
         return _make_id(
             EvidenceCategory.UNKNOWN_FACT,
             self.schema_version,
@@ -587,12 +692,7 @@ class UnknownFact:
             self.subject,
             self.scope,
             self.provenance,
-            {
-                "context": list(self.supporting_context),
-                "kind": self.kind.value,
-                "reason": self.reason,
-                "scope": self.scope,
-            },
+            content,
         )
 
 

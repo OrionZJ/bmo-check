@@ -12,6 +12,7 @@ from .model import (
     UnknownDischarge,
     UnknownFact,
     UnknownKind,
+    UnknownProposition,
 )
 from .ledger import EvidenceLedger, LedgerError
 
@@ -29,4 +30,5 @@ __all__ = [
     "UnknownDischarge",
     "UnknownFact",
     "UnknownKind",
+    "UnknownProposition",
 ]
