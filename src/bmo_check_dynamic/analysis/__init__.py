@@ -9,6 +9,7 @@ from .communication import (
     thread_handoffs_complete,
 )
 from .partition import analyze_application_partition
+from .lifecycle_adapter import characterize_trace_lifecycle
 from .site import locate_instruction_site
 from .windows import AnalysisWindow, build_windows
 
@@ -25,4 +26,5 @@ __all__ = [
     "thread_handoffs_complete",
     "locate_instruction_site",
     "analyze_application_partition",
+    "characterize_trace_lifecycle",
 ]
