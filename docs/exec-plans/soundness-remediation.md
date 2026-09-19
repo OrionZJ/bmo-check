@@ -666,8 +666,19 @@ RU2.4 的 certificate-side audit 已在 `79e2930` 完成：
 certificate schema 尚未携带完整 event/obligation universe，因而 audit 不能替代
 RU6 独立 replay；typed Unknown 也还没有 registered proof rule 可供 discharge。
 
-下一提交进入 RU2.5 的 characterization：定义 registered proof rule、静态
-premises 和 proposition conclusion 的 typed value object，先拒绝
-ObservedFact/DiagnosticHint 作为 premise，再评审如何让 rule closure 与
-Unknown obligation 匹配；不把 rule registration 直接接到旧 SAFE certificate
-入口。
+RU2.5 的 typed proof 基础已在 `63ef502` 完成：`ProofFact` 可选绑定版本化
+`RegisteredProofRule` 和带 scope 的 `ProofConclusion`。这两个字段进入
+ProofFact 的 content-bound identity；旧 proof 未提供它们时仍保留 legacy
+identity，不能靠空字段升级。`EvidenceLedger` 原有 premise 检查继续只允许
+ProofFact，因此 ObservedFact/DiagnosticHint 不能成为 proof premise；本提交
+没有把新 rule 接到旧 SAFE verdict 入口。
+
+本提交 focused evidence/obligation/certificate tests 为 `31 passed`；随后完整
+默认 suite 为 `528 passed, 10 skipped`；`git diff --check` 通过。剩余风险：
+尚无 rule registry/replay evaluator 来核对 conclusion 是否真正由 premises
+推出，旧 certificate 仍可能只携带裸 rule 字符串；RU2.5 尚未完成。
+
+下一提交继续 RU2.5 的窄边界：增加不可变的 registered-rule registry 与
+最小 replay contract，要求 rule name/version、premise 类型和 conclusion
+proposition 明确匹配；未注册或缺 conclusion 的 legacy proof 只能返回
+`INCOMPLETE`，不改变旧 certificate 的解释路径。
