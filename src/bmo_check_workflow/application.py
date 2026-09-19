@@ -450,6 +450,7 @@ def analyze_workload(request: HybridWorkflowRequest) -> HybridWorkflowResult:
             request.trace_dir,
             contract_path,
             max_sites=request.max_snapshot_sites,
+            config=request.dynamic_config,
         ),
     )
     if not isinstance(dynamic_evidence, BoundDynamicEvidence):

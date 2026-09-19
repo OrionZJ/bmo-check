@@ -9,6 +9,7 @@ from bmo_check_core import TraceId
 from bmo_check_dynamic.adapters import (
     DynamicTraceBindingError,
     bind_dynamic_certificate_to_trace,
+    replay_dynamic_coverage,
     verify_dynamic_certificate_coverage,
 )
 from bmo_check_dynamic.model import DynamicCertificate, TraceScope, TraceVerdict
@@ -127,6 +128,54 @@ def test_binding_replays_decoded_event_inventory(
 
     with pytest.raises(DynamicTraceBindingError, match="event digest"):
         bind_dynamic_certificate_to_trace(tampered, trace_dir, contract)
+
+
+def test_replay_reconstructs_communication_and_window_coverage(
+    trace_manifest, tmp_path: Path
+) -> None:
+    trace_dir = tmp_path / "replay-coverage"
+    manifest = trace_manifest(trace_dir, control_closed=True)
+    (trace_dir / "modules.tsv").write_text(
+        f"0x1000\t0x2000\t{manifest.executable.path}\n", encoding="utf-8"
+    )
+    from bmo_check_dynamic.model import EventFlags, EventKind, TraceEvent
+    from bmo_check_dynamic.trace import TraceWriter
+
+    known = EventFlags.VALUE_KNOWN
+    with TraceWriter(trace_dir / "events-1.bin") as writer:
+        writer.write(TraceEvent(1, 1, 0, 0x1100, EventKind.LOAD, 0x4000, 4, 1, known))
+        writer.write(TraceEvent(1, 2, 0, 0x1101, EventKind.STORE, 0x5000, 4, 1, known))
+    with TraceWriter(trace_dir / "events-2.bin") as writer:
+        writer.write(TraceEvent(2, 1, 0, 0x1200, EventKind.LOAD, 0x5000, 4, 1, known))
+        writer.write(TraceEvent(2, 2, 0, 0x1201, EventKind.STORE, 0x4000, 4, 1, known))
+
+    contract = _contract_path()
+    certificate = analyze_trace(trace_dir, dbt_contract=contract)
+    assert certificate.verdict == TraceVerdict.COUNTEREXAMPLE
+    replay_dynamic_coverage(certificate, trace_dir)
+
+    assert certificate.coverage is not None
+    communication = certificate.coverage.communication.model_copy(
+        update={"external_edge_count": certificate.coverage.communication.external_edge_count + 1}
+    )
+    tampered = certificate.model_copy(
+        update={"coverage": certificate.coverage.model_copy(update={"communication": communication})}
+    )
+    with pytest.raises(DynamicTraceBindingError, match="communication coverage"):
+        replay_dynamic_coverage(tampered, trace_dir)
+
+    fake_subject = TraceId.from_parts(
+        "trace-1.2", "a" * 64, (), ("tampered",), "b" * 64
+    )
+    subject_tampered = certificate.model_copy(
+        update={
+            "coverage": certificate.coverage.model_copy(
+                update={"trace_subject": fake_subject.value}
+            )
+        }
+    )
+    with pytest.raises(DynamicTraceBindingError, match="subject"):
+        replay_dynamic_coverage(subject_tampered, trace_dir)
 
 
 @pytest.mark.parametrize(

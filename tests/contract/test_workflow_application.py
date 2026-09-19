@@ -251,12 +251,13 @@ def _install_route_stubs(
         assert analyze_request.config is request.dynamic_config
         return dynamic_certificate
 
-    def fake_bind(certificate, trace_dir, contract, *, max_sites):
+    def fake_bind(certificate, trace_dir, contract, *, max_sites, config):
         calls.append("bind")
         assert certificate is dynamic_certificate
         assert trace_dir == request.trace_dir
         assert contract == request.static_request.dbt_contract
         assert max_sites == request.max_snapshot_sites
+        assert config is request.dynamic_config
         return bound
 
     monkeypatch.setattr(
