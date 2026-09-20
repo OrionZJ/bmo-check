@@ -51,7 +51,7 @@ dynamic:
     max_window_events: 64
     max_executions: 20000
     max_communication_edges: 100000
-    max_communication_active_events: 100000
+    max_communication_active_events: 600000
     max_object_events: 5000000
     max_pages_per_access: 16
     batch_size: 50000

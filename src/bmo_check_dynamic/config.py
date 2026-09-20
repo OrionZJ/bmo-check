@@ -14,7 +14,7 @@ class DynamicConfig:
     max_executions: int = 20_000
     max_communication_edges: int = 100_000
     # 通信扫描按页维护活动集合；先检查最热页，避免排序前就占满内存。
-    max_communication_active_events: int = 100_000
+    max_communication_active_events: int = 600_000
     # 对象 generation 的 UPDATE 会在 DuckDB 中建立地址范围连接；超过预算
     # 时直接返回 UNKNOWN，不能让一次分析把进程内存耗尽。
     max_object_events: int = 5_000_000

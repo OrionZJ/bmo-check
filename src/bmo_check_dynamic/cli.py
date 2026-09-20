@@ -484,7 +484,7 @@ def _add_analysis_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--max-window-events", type=int, default=64)
     parser.add_argument("--max-executions", type=int, default=20_000)
     parser.add_argument("--max-communication-edges", type=int, default=100_000)
-    parser.add_argument("--max-communication-active-events", type=int, default=100_000)
+    parser.add_argument("--max-communication-active-events", type=int, default=600_000)
     parser.add_argument("--max-object-events", type=int, default=5_000_000)
     parser.add_argument("--max-pages-per-access", type=int, default=16)
     parser.add_argument("--batch-size", type=int, default=50_000)

@@ -352,7 +352,7 @@ def find_communication_edges(
     store: TraceStore,
     *,
     limit: int | None = None,
-    max_active_events: int = 100_000,
+    max_active_events: int = 600_000,
     required_pc_range: tuple[int, int] | None = None,
     edge_pc_range: tuple[int, int] | None = None,
     stats: CommunicationScanStats | None = None,
