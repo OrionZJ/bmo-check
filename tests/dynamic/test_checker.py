@@ -113,6 +113,36 @@ def test_overlapping_mixed_width_writes_use_symbolic_coherence() -> None:
     assert result.status == "safe"
 
 
+def test_mixed_width_atomic_write_uses_symbolic_coherence() -> None:
+    """完整覆盖的混合宽度 RMW 应进入 overlap 模型，而不是提前 UNKNOWN。"""
+    events = (
+        TraceEvent(1, 1, 0, 0x10, EventKind.STORE, 0x1000, 8),
+        TraceEvent(1, 2, 0, 0x11, EventKind.ATOMIC_RMW, 0x1004, 4),
+    )
+    result = check_window(
+        AnalysisWindow("mixed-atomic-writes", events, ()),
+        max_executions=100,
+        control_flow_closed=False,
+    )
+    assert result.status == "safe"
+    assert result.reason != "mixed-width atomic coherence is not supported"
+
+
+def test_partial_mixed_width_atomic_read_remains_unknown() -> None:
+    """RMW 不能把一次读拆成不同写源；无法证明时必须保留 UNKNOWN。"""
+    events = (
+        TraceEvent(1, 1, 0, 0x10, EventKind.STORE, 0x1004, 4),
+        TraceEvent(2, 1, 0, 0x20, EventKind.ATOMIC_RMW, 0x1000, 8),
+    )
+    result = check_window(
+        AnalysisWindow("partial-mixed-atomic-read", events, ()),
+        max_executions=100,
+        control_flow_closed=False,
+    )
+    assert result.status == "unknown"
+    assert result.reason == "mixed-width atomic read-from is not supported"
+
+
 def test_read_with_unwritten_part_uses_initial_value_for_that_part() -> None:
     events = (
         TraceEvent(1, 1, 0, 0x10, EventKind.STORE, 0x1000, 4),

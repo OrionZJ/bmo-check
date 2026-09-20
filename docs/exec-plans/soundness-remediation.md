@@ -230,7 +230,9 @@ ExecutionWitness
 RU1 只规范 fixed execution legality，不负责 ELF recovery、alias proof、window选择或 certificate completeness。
 
 1. **RU1.1 Characterize vocabulary**：建立 `AccessRange`、`MemoryOperation`、`OrderingClass`、`RelationKind`、`ExecutionRelations`；先记录差异，不改 verdict。
-2. **RU1.2 Canonical byte-location**：统一 exact/overlap/disjoint/partial；static 暂不支持 mixed-width 时保持 `UNKNOWN`。
+2. **RU1.2 Canonical byte-location**：统一 exact/overlap/disjoint/partial；dynamic
+   overlap-connected coherence 允许普通写与完整覆盖的 mixed-width RMW 进入符号模型，
+   但 RMW 读范围无法由单一写完整覆盖时仍保持 `UNKNOWN`。
 3. **RU1.3 Canonical source PPO**：依据 x86-TSO specification与 herd oracle定义，删除 route-specific source legality 豁免。
 4. **RU1.4 Versioned translation policy**：plain、Fence、LOCK/XCHG/RMW、syscall规则来自同一 immutable parsed contract，其canonical内容进入digest。
 5. **RU1.5 Canonical RF/CO/FR**：共同 exact-width子集必须一致；byte-partial扩展带明确 capability。

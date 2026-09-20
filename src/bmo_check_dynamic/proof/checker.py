@@ -46,13 +46,9 @@ def check_window(
         for right in writes[index + 1 :]:
             if left.overlaps(right) and _location(left) != _location(right):
                 mixed_write_overlap = True
-                if left.kind == EventKind.ATOMIC_RMW or right.kind == EventKind.ATOMIC_RMW:
-                    return WindowResult(
-                        window_id=window.window_id,
-                        event_ids=tuple(event.event_id for event in window.events),
-                        status="unknown",
-                        reason="mixed-width atomic coherence is not supported",
-                    )
+                # 混合宽度写必须交给同一个 overlap-component 符号模型。
+                # 该模型仍会对无法证明的原子读值返回 UNKNOWN；这里不能
+                # 因为其中一个写是 RMW 就提前丢弃可分析的完整覆盖关系。
 
     reads = tuple(event for event in memory if event.kind.is_read)
     partial_reads = False
