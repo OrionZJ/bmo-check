@@ -1410,3 +1410,29 @@ join/handle/futex），为 W3/W4/W14 建立 typed ledger 缺口，而不修改 p
   `CounterexampleTrace` 纳入可序列化 certificate；旧静态 JSON 仍是 legacy view，
   非空剪枝/反例结果会保守停在 `UNKNOWN`。下一单元应先为 rule registry 和
   counterexample witness 建立 characterization，再决定是否扩展 schema。
+
+### RU6.8 static v2 diagnostics replay 已完成
+
+- 提交：`017aa71`（`Replay static v2 diagnostics snapshots`）。
+- finding：F07/F09；witness：v2 static certificate → diagnostics snapshot。
+- `static_snapshot_from_certificate()` 不再把 v2 证书送回 v1 verifier；它要求四类
+  typed completeness sidecar，并调用同一个 `verify_static_certificate_v2()`。
+  sidecar 缺失、digest 变化或 Unknown/Proof closure 不一致时，诊断入口明确失败，
+  不会把旧 summary 当成已 replay 的 SAFE。
+- focused tests：`15 passed`；本单元只运行静态 v2 相关聚焦测试，下一完整回归需
+  覆盖 workflow 和动态路线。
+- 剩余风险：rule registry、静态 counterexample witness 和 certificate JSON 仍未
+  进入独立 replay；当前改动只关闭 v2 证书到 diagnostics 的 route bypass。
+
+### RU6.9 static v2 workflow serialization 已完成
+
+- 提交：`277adc4`（`Persist static v2 completeness digests`）。
+- finding：F07/F15；witness：`hybrid-workflow-report-v2` 的 static canonical summary。
+- workflow report 现在保留 v2 的 event-universe、obligation、Unknown 和
+  projection 四类 digest。读取器要求 v2 summary 四项都是合法 SHA-256，旧 schema
+  携带这些字段会失败；因此写入/读取报告不会把可 replay 的完整性输入压成只含
+  proof roots 的旧 summary。
+- focused tests：`20 passed`；旧 static/dynamic report round-trip 保持通过。
+- 剩余风险：workflow report 仍不携带 typed sidecar 本体和 rule registry；它是
+  可审计摘要，不替代 `verify_static_certificate_v2()` 的独立 replay。静态
+  `CounterexampleTrace` 也仍待单独建模和重放。
