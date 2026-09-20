@@ -423,8 +423,12 @@ COUNTEREXAMPLE必须包含events、PO/RF/CO/FR、Fence/atomic/sync、source/targ
 
 - RU1 已建立 primitive 身份和 byte-range 关系边界，但 static/dynamic PPO、
   RF/CO/FR、Fence 和 atomic boundary 仍未迁移到 canonical consumer。
-- event universe、obligation、proposition identity 尚未贯穿所有 certificate 路径。
-- application scope、trace completeness、lifecycle identity 和 certificate replay 仍可能产生 false confidence。
+- event universe、obligation、proposition identity 已贯穿 v2 static/dynamic replay
+  主路径，但旧 CLI/legacy JSON 仍是 explain-only，不能当作独立证书。
+- application scope、lifecycle identity 和 semantic-kernel 迁移仍可能让相关输入
+  停在 `UNKNOWN`；不能用 corpus 通过率替代这些证明。
+- 静态 v2 的 typed proof-rule registry digest、剪枝 proof producer 和
+  `CounterexampleTrace` replay 尚未实现；缺这些输入时只能保守降级为 `UNKNOWN`。
 - C0 后完整默认 suite 已通过；后续仍需按 RU1～RU7 的 unit 逐步补齐。
 
 ### C0.1 已完成
@@ -1384,8 +1388,9 @@ join/handle/futex），为 W3/W4/W14 建立 typed ledger 缺口，而不修改 p
   本地输出目录，不进入 Git。该限制不影响动态证书的独立 replay 和 fail-closed
   聚合；大型 workload 结果仍必须按资源预算单独复核。
 - 动态侧剩余边界：旧 dynamic schema 仍只能 explain-only；`TRACE_SAFE` 仍只
-  描述绑定的 trace event skeleton。静态 RU6.2、静态 SAFE replay 和静态 precision
-  work 不在本次闭环内，继续保留为后续路线。
+  描述绑定的 trace event skeleton。静态 v2 replay 已在 RU6.7～RU6.9 接入应用、
+  diagnostics 和 workflow，但 typed proof-rule registry、counterexample witness
+  和静态 precision work 继续保留为后续路线。
 
 ### RU6.7 static v2 completeness replay 已完成
 
@@ -1419,7 +1424,7 @@ join/handle/futex），为 W3/W4/W14 建立 typed ledger 缺口，而不修改 p
   typed completeness sidecar，并调用同一个 `verify_static_certificate_v2()`。
   sidecar 缺失、digest 变化或 Unknown/Proof closure 不一致时，诊断入口明确失败，
   不会把旧 summary 当成已 replay 的 SAFE。
-- focused tests：`15 passed`；本单元只运行静态 v2 相关聚焦测试，下一完整回归需
+- focused tests：`15 passed`；后续 RU6.9 的完整默认 suite 为 `610 passed, 10 skipped`，
   覆盖 workflow 和动态路线。
 - 剩余风险：rule registry、静态 counterexample witness 和 certificate JSON 仍未
   进入独立 replay；当前改动只关闭 v2 证书到 diagnostics 的 route bypass。
