@@ -448,7 +448,7 @@ COUNTEREXAMPLE必须包含events、PO/RF/CO/FR、Fence/atomic/sync、source/targ
 
 ### C0.1 通信扫描完整性收口
 
-- 实现提交：本单元首个提交（下一条文档提交会回填稳定哈希）。
+- 实现提交：`37dcbe4`（`Complete dynamic communication graph scans`）。
 - finding：F03/F13；witness：application-only trace 中
   `application_atomic_count == 0` 时提前跳过通信扫描，导致候选边集合为空且
   无法区分“确实无边”和“尚未枚举”。
