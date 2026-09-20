@@ -683,6 +683,27 @@ class CanonicalStaticCertificateSummary(_StrictModel):
     discharged_unknown_ids: tuple[str, ...]
     # bounded 阻止有限 no-counterexample 被外推成 SAFE。
     bounded: bool
+    # v2 completeness digests must survive workflow serialization; missing values
+    # are allowed only for the legacy explain-only schema.
+    event_universe_sha256: str | None = None
+    obligation_sha256: str | None = None
+    unknown_sha256: str | None = None
+    projection_sha256: str | None = None
+
+    @model_validator(mode="after")
+    def require_v2_completeness(self) -> "CanonicalStaticCertificateSummary":
+        fields = (
+            self.event_universe_sha256,
+            self.obligation_sha256,
+            self.unknown_sha256,
+            self.projection_sha256,
+        )
+        if self.schema_version == "static-certificate-v2":
+            if any(value is None or not _sha256(value) for value in fields):
+                raise ValueError("static v2 summary requires completeness digests")
+        elif any(value is not None for value in fields):
+            raise ValueError("legacy static summary cannot carry completeness digests")
+        return self
 
 
 class StaticObligationSummary(_StrictModel):
@@ -1269,6 +1290,26 @@ def _static_summary(result: HybridWorkflowResult) -> StaticWorkflowSummary:
             relevant_unknown_ids=tuple(item.value for item in certificate.relevant_unknowns),
             discharged_unknown_ids=tuple(item.value for item in verification.discharged_unknowns),
             bounded=certificate.bounded,
+            event_universe_sha256=(
+                certificate.completeness.event_universe_sha256
+                if certificate.completeness is not None
+                else None
+            ),
+            obligation_sha256=(
+                certificate.completeness.obligation_sha256
+                if certificate.completeness is not None
+                else None
+            ),
+            unknown_sha256=(
+                certificate.completeness.unknown_sha256
+                if certificate.completeness is not None
+                else None
+            ),
+            projection_sha256=(
+                certificate.completeness.projection_sha256
+                if certificate.completeness is not None
+                else None
+            ),
         )
     return StaticWorkflowSummary(
         verdict=CertificateVerdict(legacy.verdict.value),

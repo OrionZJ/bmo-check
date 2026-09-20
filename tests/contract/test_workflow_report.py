@@ -72,12 +72,41 @@ from bmo_check_workflow import (
     load_hybrid_workflow_report,
     save_hybrid_workflow_report,
 )
+from bmo_check_workflow.report import CanonicalStaticCertificateSummary
 
 
 HASH = "a" * 64
 TRACE_HASH = "d" * 64
 CONTRACT_HASH = "c" * 64
 DBT_REVISION = "b" * 40
+
+
+def test_workflow_static_v2_summary_preserves_completeness_digests() -> None:
+    kwargs = dict(
+        schema_version="static-certificate-v2",
+        verdict=CertificateVerdict.SAFE,
+        binary_closure_id="closure",
+        dbt_contract_version="dbt6-mo-off-v1",
+        dbt_revision=DBT_REVISION,
+        scope="full",
+        proof_root_ids=(),
+        proof_closure_ids=(),
+        removal_decisions=(),
+        relevant_unknown_ids=(),
+        discharged_unknown_ids=(),
+        bounded=False,
+    )
+    with pytest.raises(ValueError, match="completeness digests"):
+        CanonicalStaticCertificateSummary(**kwargs)
+
+    summary = CanonicalStaticCertificateSummary(
+        **kwargs,
+        event_universe_sha256=HASH,
+        obligation_sha256=HASH,
+        unknown_sha256=HASH,
+        projection_sha256=HASH,
+    )
+    assert summary.projection_sha256 == HASH
 
 
 def _result(
