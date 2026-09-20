@@ -227,6 +227,8 @@ def test_v2_report_bridge_replays_complete_empty_static_subject() -> None:
     assert result.event_universe.completeness.status is CompletenessStatus.COMPLETE
     assert result.obligation_inventory is not None
     assert result.obligation_inventory.is_enumerated
+    snapshot = static_snapshot_from_certificate(result)
+    assert snapshot.verdict is CertificateVerdict.SAFE
 
 
 def test_report_bridge_rejects_a_legacy_static_result() -> None:

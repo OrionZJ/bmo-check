@@ -17,6 +17,7 @@ from bmo_check_core import (
     StaticDiagnosticSnapshot,
     UnknownFact,
     verify_static_certificate,
+    verify_static_certificate_v2,
 )
 
 from ..proof.certificate_bridge import StaticCertificateEvidence
@@ -56,11 +57,31 @@ def static_snapshot_from_certificate(
             "static_snapshot_from_certificate expects StaticCertificateEvidence"
         )
     try:
-        verification = verify_static_certificate(
-            evidence.certificate,
-            evidence.ledger,
-            expected_binding=evidence.certificate.binding,
-        )
+        if evidence.certificate.schema_version == "static-certificate-v2":
+            if (
+                evidence.event_universe is None
+                or evidence.obligation_inventory is None
+                or evidence.projection_ledger is None
+                or evidence.projection_obligations is None
+            ):
+                raise DiagnosticSnapshotAdapterError(
+                    "static v2 certificate is missing completeness sidecars"
+                )
+            verification = verify_static_certificate_v2(
+                evidence.certificate,
+                evidence.ledger,
+                event_universe=evidence.event_universe,
+                obligation_inventory=evidence.obligation_inventory,
+                projection_ledger=evidence.projection_ledger,
+                projection_obligations=evidence.projection_obligations,
+                expected_binding=evidence.certificate.binding,
+            )
+        else:
+            verification = verify_static_certificate(
+                evidence.certificate,
+                evidence.ledger,
+                expected_binding=evidence.certificate.binding,
+            )
     except ValueError as error:
         raise DiagnosticSnapshotAdapterError(
             f"static certificate replay failed before diagnostics: {error}"
