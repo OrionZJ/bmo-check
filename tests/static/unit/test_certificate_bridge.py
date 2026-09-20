@@ -204,6 +204,31 @@ def test_v2_bridge_rejects_missing_static_completeness_ledgers() -> None:
         )
 
 
+def test_v2_report_bridge_replays_complete_empty_static_subject() -> None:
+    scope = "static.test"
+    report = _empty_report().model_copy(
+        update={
+            "recovery": _empty_report().recovery.model_copy(
+                update={"thread_roles": ThreadDiscoveryReport()}
+            )
+        }
+    )
+    legacy = verify_portability(report)
+    result = build_static_certificate_from_report(
+        report,
+        legacy,
+        binding_from_manifest(report.recovery.manifest, scope=scope),
+        schema_version="static-certificate-v2",
+    )
+
+    assert result.certificate.schema_version == "static-certificate-v2"
+    assert result.certificate.verdict is CertificateVerdict.SAFE
+    assert result.event_universe is not None
+    assert result.event_universe.completeness.status is CompletenessStatus.COMPLETE
+    assert result.obligation_inventory is not None
+    assert result.obligation_inventory.is_enumerated
+
+
 def test_report_bridge_rejects_a_legacy_static_result() -> None:
     scope = "static.test"
     report = _empty_report()

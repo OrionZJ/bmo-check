@@ -16,9 +16,12 @@ from bmo_check_core import (
     CertificateError,
     CertificateCompleteness,
     CertificateVerdict,
+    CompletenessState,
     CompletenessStatus,
     EvidenceLedger,
     EvidenceId,
+    EventDisposition,
+    EventUniverseEntry,
     EventUniverseLedger,
     MemoryEventId,
     ObservedFact,
@@ -26,6 +29,7 @@ from bmo_check_core import (
     ProjectionLedger,
     ProjectionError,
     ObligationInventory,
+    build_conflict_obligation_inventory,
     StaticCertificate,
     StaticVerification,
     UnknownFact as CanonicalUnknownFact,
@@ -39,6 +43,7 @@ from bmo_check_core import (
     digest_projection_ledger,
     digest_unknown_ids,
     verify_static_certificate,
+    verify_static_certificate_v2,
 )
 from bmo_check_static.binary.evidence import emit_static_unknown
 from bmo_check_static.model import (
@@ -165,6 +170,130 @@ def _removed_event_ids_for_report(report: ProgramSliceReport) -> tuple[str, ...]
     return tuple(dict.fromkeys(removed))
 
 
+def _build_event_universe_for_report(
+    report: ProgramSliceReport,
+    snapshot: object,
+    ledger: EvidenceLedger,
+    decisions: tuple[RemovalDecision, ...],
+    *,
+    scope: str,
+) -> EventUniverseLedger:
+    """把旧 report 的事件入口逐项对账为 v2 event universe。
+
+    没有完整 memory-event 输入或无法唯一绑定 Unknown 时保留缺口。这里不
+    用 ``shared_slice.events`` 的数量推断输入已经闭合。
+    """
+
+    event_ids = tuple(snapshot.event_ids)  # type: ignore[attr-defined]
+    removed = {item.event_id: item.proof_id for item in decisions}
+    retained = (
+        {event.id for event in report.shared_slice.events}
+        if report.shared_slice is not None
+        else set()
+    )
+    unknown_by_event: dict[MemoryEventId, set[EvidenceId]] = {}
+    for node in ledger.nodes():
+        if isinstance(node, CanonicalUnknownFact) and isinstance(node.subject, MemoryEventId):
+            unknown_by_event.setdefault(node.subject, set()).add(node.id)
+
+    links = tuple(snapshot.event_links)  # type: ignore[attr-defined]
+    entries: list[EventUniverseEntry] = []
+    reasons: set[str] = set()
+    if report.memory_events is None:
+        reasons.add("memory-event input report is missing")
+    for canonical_id in event_ids:
+        legacy_ids = tuple(
+            link.legacy_id for link in links if link.canonical_id == canonical_id
+        )
+        legacy_id = legacy_ids[0] if legacy_ids else None
+        if canonical_id in removed:
+            entries.append(
+                EventUniverseEntry(
+                    canonical_id,
+                    EventDisposition.REMOVED_WITH_PROOF,
+                    proof_ids=(removed[canonical_id],),
+                )
+            )
+        elif canonical_id in unknown_by_event:
+            entries.append(
+                EventUniverseEntry(
+                    canonical_id,
+                    EventDisposition.UNRESOLVED,
+                    unknown_ids=tuple(
+                        sorted(unknown_by_event[canonical_id], key=lambda item: item.value)
+                    ),
+                )
+            )
+        elif legacy_id is not None and legacy_id in retained:
+            entries.append(EventUniverseEntry(canonical_id, EventDisposition.RETAINED))
+        else:
+            reasons.add(f"event {canonical_id.value!r} has no unique disposition")
+
+    completeness = (
+        CompletenessState(CompletenessStatus.COMPLETE, scope)
+        if not reasons
+        else CompletenessState(
+            CompletenessStatus.INCOMPLETE,
+            scope,
+            reason="; ".join(sorted(reasons)),
+        )
+    )
+    return EventUniverseLedger(
+        stage=scope,
+        input_event_ids=event_ids,
+        entries=tuple(entries),
+        completeness=completeness,
+    )
+
+
+def _build_conflict_obligations_for_report(
+    report: ProgramSliceReport,
+    event_universe: EventUniverseLedger,
+    ledger: EvidenceLedger,
+    snapshot: object,
+    *,
+    scope: str,
+) -> ObligationInventory:
+    """为现有 conflict 候选建立 sidecar；候选边界不完整时显式标记。"""
+
+    legacy_to_canonical = {
+        link.legacy_id: link.canonical_id
+        for link in snapshot.event_links  # type: ignore[attr-defined]
+        if isinstance(link.canonical_id, MemoryEventId)
+    }
+    pairs: list[tuple[MemoryEventId, MemoryEventId]] = []
+    issues: list[str] = []
+    shared_slice = report.shared_slice
+    if report.memory_events is None or shared_slice is None:
+        issues.append("static conflict input is missing")
+    if event_universe.completeness.status is not CompletenessStatus.COMPLETE:
+        issues.append("event universe is incomplete")
+    for candidate in shared_slice.conflicts if shared_slice is not None else ():
+        first = legacy_to_canonical.get(candidate.first_event)
+        second = legacy_to_canonical.get(candidate.second_event)
+        if first is None or second is None:
+            issues.append("conflict candidate has no canonical event identity")
+            continue
+        pairs.append((first, second))
+    if ledger.unresolved_unknowns(scope):
+        issues.append("static Unknown facts remain unresolved")
+    candidate_state = (
+        CompletenessState(CompletenessStatus.COMPLETE, scope)
+        if not issues
+        else CompletenessState(
+            CompletenessStatus.INCOMPLETE,
+            scope,
+            reason="; ".join(sorted(set(issues))),
+        )
+    )
+    return build_conflict_obligation_inventory(
+        pairs,
+        event_universe=event_universe,
+        candidate_completeness=candidate_state,
+        scope=scope,
+    )
+
+
 def build_static_certificate_with_evidence(
     slice_evidence: StaticSliceEvidence,
     portability_evidence: StaticPortabilityEvidence,
@@ -199,6 +328,28 @@ def build_static_certificate_with_evidence(
     )
     projection_ledger = slice_evidence.projection_ledger
     projection_obligations = slice_evidence.projection_obligations
+    if (
+        schema_version == "static-certificate-v2"
+        and projection_ledger is None
+        and verdict is CertificateVerdict.UNKNOWN
+    ):
+        # UNKNOWN 也要绑定一个明确的失败 sidecar；不能用 None 让 v2
+        # verifier 把“没有投影输入”误解为空 relation universe。
+        projection_ledger = ProjectionLedger(
+            stage=binding.scope,
+            input_relation_ids=(),
+            entries=(),
+            preservation_rule=None,
+            completeness=CompletenessState(
+                CompletenessStatus.INCOMPLETE,
+                binding.scope,
+                reason="static projection input is unavailable",
+            ),
+        )
+        projection_obligations = build_projection_relation_obligation_inventory(
+            projection_ledger,
+            scope=binding.scope,
+        )
     if projection_ledger is not None:
         try:
             verify_projection_ledger(
@@ -272,11 +423,27 @@ def build_static_certificate_with_evidence(
         completeness=completeness,
     )
     try:
-        verification = verify_static_certificate(
-            certificate,
-            ledger,
-            expected_binding=binding,
-        )
+        if schema_version == "static-certificate-v2":
+            assert completeness is not None
+            assert slice_evidence.event_universe is not None
+            assert portability_evidence.obligation_inventory is not None
+            assert projection_ledger is not None
+            assert projection_obligations is not None
+            verification = verify_static_certificate_v2(
+                certificate,
+                ledger,
+                event_universe=slice_evidence.event_universe,
+                obligation_inventory=portability_evidence.obligation_inventory,
+                projection_ledger=projection_ledger,
+                projection_obligations=projection_obligations,
+                expected_binding=binding,
+            )
+        else:
+            verification = verify_static_certificate(
+                certificate,
+                ledger,
+                expected_binding=binding,
+            )
     except CertificateError as error:
         raise CertificateBridgeError(
             f"canonical static certificate replay failed: {error}"
@@ -485,6 +652,22 @@ def build_static_certificate_from_report(
             canonical_scope=binding.scope,
         )
 
+    merged_report_ledger = _merge_ledgers(proof_ledger, portability_ledger)
+    event_universe = _build_event_universe_for_report(
+        report,
+        snapshot,
+        merged_report_ledger,
+        tuple(decisions),
+        scope=binding.scope,
+    )
+    obligation_inventory = _build_conflict_obligations_for_report(
+        report,
+        event_universe,
+        merged_report_ledger,
+        snapshot,
+        scope=binding.scope,
+    )
+
     slice_evidence = StaticSliceEvidence(
         report=(
             report.shared_slice
@@ -497,13 +680,14 @@ def build_static_certificate_from_report(
             for link in snapshot.proof_links
         ),
         removal_decisions=tuple(decisions),
+        event_universe=event_universe,
         projection_ledger=projection_ledger,
         projection_obligations=projection_obligations,
     )
     portability_evidence = StaticPortabilityEvidence(
         certificate=portability_certificate,
         ledger=portability_ledger,
-        obligation_inventory=None,
+        obligation_inventory=obligation_inventory,
     )
     return build_static_certificate_with_evidence(
         slice_evidence,

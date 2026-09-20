@@ -24,6 +24,7 @@ from .verification import (
     audit_unknown_propositions,
     verify_typed_discharge,
     verify_static_certificate,
+    verify_static_certificate_v2,
     verify_trace_certificate,
 )
 
@@ -43,6 +44,7 @@ __all__ = [
     "verify_typed_discharge",
     "TraceVerdict",
     "verify_static_certificate",
+    "verify_static_certificate_v2",
     "verify_trace_certificate",
     "digest_event_universe",
     "digest_obligation_inventory",

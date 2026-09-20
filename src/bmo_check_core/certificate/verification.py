@@ -3,13 +3,35 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ..evidence import EvidenceLedger, LedgerError, ObservedFact, ProofFact, UnknownFact
-from ..evidence import ProofRuleRegistry, ProofRuleReplayStatus, replay_proof_rule
+from ..evidence import (
+    ProofRuleRegistry,
+    ProofRuleReplayStatus,
+    replay_proof_rule,
+)
 from ..identity import EvidenceId, MemoryEventId
 from ..obligations import (
+    ObligationInventory,
     ObligationMatchStatus,
     ProofObligation,
     match_proof_to_obligation,
     match_unknown_to_obligation,
+)
+from ..projection import (
+    ProjectionError,
+    ProjectionLedger,
+    ProjectionRelationDisposition,
+    verify_projection_ledger,
+)
+from ..universe import (
+    CompletenessStatus,
+    EventDisposition,
+    EventUniverseLedger,
+)
+from .digests import (
+    digest_event_universe,
+    digest_obligation_inventory,
+    digest_projection_ledger,
+    digest_unknown_ids,
 )
 from .model import (
     CertificateBinding,
@@ -171,6 +193,7 @@ def verify_static_certificate(
     ledger: EvidenceLedger,
     *,
     expected_binding: CertificateBinding | None = None,
+    _allow_v2: bool = False,
 ) -> StaticVerification:
     """验证静态证书的 proof closure、Unknown 保存和 binary/DBT 绑定。"""
 
@@ -241,11 +264,12 @@ def verify_static_certificate(
     if certificate.verdict == CertificateVerdict.COUNTEREXAMPLE and certificate.relevant_unknowns:
         raise CertificateError("COUNTEREXAMPLE cannot contain relevant UnknownFacts")
 
-    _reject_legacy_determinate_schema(
-        certificate.schema_version,
-        kind="static",
-        verdict=certificate.verdict,
-    )
+    if not _allow_v2:
+        _reject_legacy_determinate_schema(
+            certificate.schema_version,
+            kind="static",
+            verdict=certificate.verdict,
+        )
 
     return StaticVerification(
         certificate=certificate,
@@ -253,6 +277,291 @@ def verify_static_certificate(
         discharged_unknowns=tuple(sorted(discharged, key=lambda item: item.value)),
         unknown_propositions=unknown_propositions,
     )
+
+
+def _verify_event_universe_v2(
+    certificate: StaticCertificate,
+    ledger: EvidenceLedger,
+    universe: EventUniverseLedger,
+    closure_ids: set[EvidenceId],
+    *,
+    require_typed_proof: bool,
+) -> None:
+    """核对 event ledger 的逐项去向，不把 digest 当成完整性证明。"""
+
+    if universe.stage != certificate.binding.scope:
+        raise CertificateError("static event universe scope does not match certificate")
+    input_ids = set(universe.input_event_ids)
+    entry_ids = {entry.event_id for entry in universe.entries}
+    if not entry_ids.issubset(input_ids):
+        raise CertificateError("static event universe contains an out-of-scope event")
+    for entry in universe.entries:
+        if entry.disposition is EventDisposition.REMOVED_WITH_PROOF:
+            for proof_id in entry.proof_ids:
+                if proof_id not in closure_ids:
+                    raise CertificateError("event removal proof is outside proof closure")
+                proof = ledger.get(proof_id)
+                if not isinstance(proof, ProofFact):
+                    raise CertificateError("event removal proof is not a ProofFact")
+                if proof.scope != certificate.binding.scope:
+                    raise CertificateError("event removal proof scope does not match certificate")
+                if entry.event_id not in proof.covered_events and proof.subject != entry.event_id:
+                    raise CertificateError("event removal proof does not cover the event")
+                if require_typed_proof and (
+                    proof.registered_rule is None or proof.conclusion is None
+                ):
+                    raise CertificateError("event removal proof is not typed")
+        elif entry.disposition is EventDisposition.UNRESOLVED:
+            for unknown_id in entry.unknown_ids:
+                unknown = ledger.get(unknown_id)
+                if not isinstance(unknown, UnknownFact):
+                    raise CertificateError("event universe Unknown is missing from the ledger")
+                if unknown.scope != certificate.binding.scope:
+                    raise CertificateError("event universe Unknown scope does not match certificate")
+                if unknown_id not in certificate.relevant_unknowns:
+                    raise CertificateError("event universe Unknown is missing from the certificate")
+
+    removed_by_universe = {
+        entry.event_id
+        for entry in universe.entries
+        if entry.disposition is EventDisposition.REMOVED_WITH_PROOF
+    }
+    removed_by_certificate = {decision.event_id for decision in certificate.removal_decisions}
+    if removed_by_universe != removed_by_certificate:
+        raise CertificateError("event universe and removal decisions disagree")
+
+
+def _verify_projection_sidecars_v2(
+    certificate: StaticCertificate,
+    ledger: EvidenceLedger,
+    projection_ledger: ProjectionLedger,
+    projection_obligations: ObligationInventory,
+    *,
+    proof_registry: ProofRuleRegistry | None,
+) -> None:
+    """核对 relation ledger 和其 obligation inventory 的同一输入。"""
+
+    if projection_ledger.stage != certificate.binding.scope:
+        raise CertificateError("projection ledger scope does not match certificate")
+    from ..obligations import build_projection_relation_obligation_inventory
+
+    expected = build_projection_relation_obligation_inventory(
+        projection_ledger,
+        scope=certificate.binding.scope,
+    )
+    if projection_obligations != expected:
+        raise CertificateError("projection obligation inventory does not match its ledger")
+
+    for entry in projection_ledger.entries:
+        if entry.disposition is ProjectionRelationDisposition.REMOVED_WITH_PROOF:
+            for proof_id in entry.proof_ids:
+                proof = ledger.get(proof_id)
+                if not isinstance(proof, ProofFact):
+                    raise CertificateError("projection removal proof is missing")
+                if proof.scope != certificate.binding.scope:
+                    raise CertificateError("projection proof scope does not match certificate")
+        elif entry.disposition is ProjectionRelationDisposition.UNRESOLVED:
+            for unknown_id in entry.unknown_ids:
+                unknown = ledger.get(unknown_id)
+                if not isinstance(unknown, UnknownFact):
+                    raise CertificateError("projection Unknown is missing from the ledger")
+
+    if projection_ledger.completeness.status is CompletenessStatus.COMPLETE:
+        try:
+            verify_projection_ledger(
+                projection_ledger,
+                ledger,
+                expected_scope=certificate.binding.scope,
+            )
+        except ProjectionError as error:
+            raise CertificateError(f"projection sidecar replay failed: {error}") from error
+    if projection_obligations.obligations and proof_registry is None:
+        raise CertificateError("projection proof rule registry is missing")
+    if proof_registry is not None:
+        for entry in projection_ledger.entries:
+            for proof_id in entry.proof_ids:
+                proof = ledger.get(proof_id)
+                if not isinstance(proof, ProofFact):
+                    raise CertificateError("projection proof is missing")
+                replay = replay_proof_rule(proof, ledger, proof_registry)
+                if replay.status is not ProofRuleReplayStatus.VALID:
+                    raise CertificateError(f"projection proof rule is not replayable: {replay.reason}")
+
+
+def _verify_obligation_closure_v2(
+    certificate: StaticCertificate,
+    ledger: EvidenceLedger,
+    inventory: ObligationInventory,
+    closure: tuple[ProofFact, ...],
+    *,
+    proof_registry: ProofRuleRegistry | None,
+) -> None:
+    """对确定性 SAFE 要求每个 proposition 有 typed、可回放的 proof。"""
+
+    if inventory.scope != certificate.binding.scope:
+        raise CertificateError("static obligation inventory scope does not match certificate")
+    if not inventory.is_enumerated:
+        raise CertificateError("static obligation inventory is incomplete")
+    if not inventory.obligations:
+        return
+    if proof_registry is None:
+        raise CertificateError("static proof rule registry is missing")
+
+    for obligation in inventory.obligations:
+        matches = [
+            proof
+            for proof in closure
+            if match_proof_to_obligation(proof, obligation).status
+            is ObligationMatchStatus.MATCH
+        ]
+        if not matches:
+            raise CertificateError(
+                "deterministic static certificate has an unclosed obligation"
+            )
+        # A typed conclusion is necessary before the immutable rule registry can
+        # replay this obligation. Legacy proofs therefore remain explain-only.
+        if any(
+            proof.registered_rule is None or proof.conclusion is None
+            for proof in matches
+        ):
+            raise CertificateError("static obligation proof is not typed")
+        if all(
+            replay_proof_rule(proof, ledger, proof_registry).status
+            is not ProofRuleReplayStatus.VALID
+            for proof in matches
+        ):
+            raise CertificateError("static obligation proof rule is not replayable")
+
+
+def _verify_discharges_v2(
+    certificate: StaticCertificate,
+    ledger: EvidenceLedger,
+    inventory: ObligationInventory,
+    *,
+    proof_registry: ProofRuleRegistry | None,
+) -> None:
+    """UnknownDischarge 必须同时绑定同一 proposition 的 obligation。"""
+
+    for discharge in ledger.discharges():
+        unknown = ledger.get(discharge.unknown_id)
+        proof = ledger.get(discharge.proof_id)
+        if not isinstance(unknown, UnknownFact) or not isinstance(proof, ProofFact):
+            raise CertificateError("static discharge references missing evidence")
+        if not any(
+            match_unknown_to_obligation(unknown, obligation).status
+            is ObligationMatchStatus.MATCH
+            and match_proof_to_obligation(proof, obligation).status
+            is ObligationMatchStatus.MATCH
+            for obligation in inventory.obligations
+        ):
+            raise CertificateError("static discharge does not match an obligation")
+        if proof_registry is None:
+            raise CertificateError("static discharge proof rule registry is missing")
+        replay = replay_proof_rule(proof, ledger, proof_registry)
+        if replay.status is not ProofRuleReplayStatus.VALID:
+            raise CertificateError(f"static discharge proof rule is not replayable: {replay.reason}")
+
+
+def verify_static_certificate_v2(
+    certificate: StaticCertificate,
+    ledger: EvidenceLedger,
+    *,
+    event_universe: EventUniverseLedger,
+    obligation_inventory: ObligationInventory,
+    projection_ledger: ProjectionLedger,
+    projection_obligations: ObligationInventory,
+    expected_binding: CertificateBinding | None = None,
+    proof_registry: ProofRuleRegistry | None = None,
+) -> StaticVerification:
+    """独立重放 static v2 的 universe、obligation 和 projection 完整性。
+
+    v2 不相信 producer 提交的 digest 或 ``complete`` 标记。先走旧的
+    proof/Unknown 边界，再从 typed sidecar 重算内容；不能闭合的确定性
+    SAFE/COUNTEREXAMPLE 仍保守失败，不能把缺失输入解释成没有义务。
+    """
+
+    if certificate.schema_version != "static-certificate-v2":
+        raise CertificateError("static v2 replay requires static-certificate-v2")
+    if not isinstance(event_universe, EventUniverseLedger):
+        raise CertificateError("static v2 replay requires an event universe")
+    if not isinstance(obligation_inventory, ObligationInventory):
+        raise CertificateError("static v2 replay requires an obligation inventory")
+    if not isinstance(projection_ledger, ProjectionLedger):
+        raise CertificateError("static v2 replay requires a projection ledger")
+    if not isinstance(projection_obligations, ObligationInventory):
+        raise CertificateError("static v2 replay requires projection obligations")
+    completeness = certificate.completeness
+    if completeness is None:
+        raise CertificateError("static v2 replay requires completeness digests")
+
+    # The base verifier deliberately keeps v1 behavior unchanged.  Calling it
+    # with a v2 certificate would hit the legacy gate, so replay its structural
+    # checks locally and suppress only that one gate.
+    base = verify_static_certificate(
+        certificate,
+        ledger,
+        expected_binding=expected_binding,
+        _allow_v2=True,
+    )
+    _verify_event_universe_v2(
+        certificate,
+        ledger,
+        event_universe,
+        {fact.id for fact in base.proof_closure},
+        require_typed_proof=certificate.verdict is not CertificateVerdict.UNKNOWN,
+    )
+    _verify_projection_sidecars_v2(
+        certificate,
+        ledger,
+        projection_ledger,
+        projection_obligations,
+        proof_registry=proof_registry,
+    )
+    if obligation_inventory.scope != certificate.binding.scope:
+        raise CertificateError("static obligation inventory scope does not match certificate")
+    if certificate.verdict in {
+        CertificateVerdict.SAFE,
+        CertificateVerdict.COUNTEREXAMPLE,
+    }:
+        if event_universe.completeness.status is not CompletenessStatus.COMPLETE:
+            raise CertificateError("deterministic static certificate has an incomplete event universe")
+        if projection_ledger.completeness.status is not CompletenessStatus.COMPLETE:
+            raise CertificateError("deterministic static certificate has an incomplete projection ledger")
+        if projection_obligations.completeness.status is not CompletenessStatus.COMPLETE:
+            raise CertificateError("deterministic static certificate has incomplete projection obligations")
+        if obligation_inventory.completeness.status is not CompletenessStatus.COMPLETE:
+            raise CertificateError("deterministic static certificate has incomplete obligations")
+    expected_unknowns = tuple(node.id for node in ledger.unresolved_unknowns(certificate.binding.scope))
+    if set(certificate.relevant_unknowns) != set(expected_unknowns):
+        raise CertificateError("static Unknown inventory is not independently closed")
+    if completeness.event_universe_sha256 != digest_event_universe(event_universe):
+        raise CertificateError("event universe digest does not match certificate")
+    if completeness.obligation_sha256 != digest_obligation_inventory(obligation_inventory):
+        raise CertificateError("obligation digest does not match certificate")
+    if completeness.unknown_sha256 != digest_unknown_ids(
+        certificate.binding.scope,
+        expected_unknowns,
+    ):
+        raise CertificateError("Unknown digest does not match certificate")
+    if completeness.projection_sha256 != digest_projection_ledger(projection_ledger):
+        raise CertificateError("projection digest does not match certificate")
+    _verify_discharges_v2(
+        certificate,
+        ledger,
+        obligation_inventory,
+        proof_registry=proof_registry,
+    )
+    if certificate.verdict is CertificateVerdict.SAFE:
+        _verify_obligation_closure_v2(
+            certificate,
+            ledger,
+            obligation_inventory,
+            base.proof_closure,
+            proof_registry=proof_registry,
+        )
+    elif certificate.verdict is CertificateVerdict.COUNTEREXAMPLE:
+        raise CertificateError("static v2 counterexample witness replay is not implemented")
+    return base
 
 
 def verify_trace_certificate(
@@ -294,5 +603,6 @@ __all__ = [
     "TypedDischargeVerification",
     "verify_typed_discharge",
     "verify_static_certificate",
+    "verify_static_certificate_v2",
     "verify_trace_certificate",
 ]

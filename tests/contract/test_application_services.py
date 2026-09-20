@@ -198,7 +198,7 @@ def test_static_analyze_service_downgrades_unreplayable_legacy_certificate(
     assert result.legacy_certificate.verdict.value == "UNKNOWN"
     assert result.canonical_certificate is None
     assert result.canonical_error is not None
-    assert "explain-only" in result.canonical_error
+    assert "projection ledgers" in result.canonical_error
     assert analyze_static(request).verdict.value == "UNKNOWN"
 
 

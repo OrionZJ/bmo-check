@@ -382,6 +382,7 @@ def analyze_with_evidence(
             report,
             legacy_certificate,
             binding,
+            schema_version="static-certificate-v2",
         )
     except CertificateBridgeError as error:
         # SAFE 绝不能在 canonical closure 无法重放时继续从旧 JSON 输出。
