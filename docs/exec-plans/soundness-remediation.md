@@ -1432,7 +1432,8 @@ join/handle/futex），为 W3/W4/W14 建立 typed ledger 缺口，而不修改 p
   projection 四类 digest。读取器要求 v2 summary 四项都是合法 SHA-256，旧 schema
   携带这些字段会失败；因此写入/读取报告不会把可 replay 的完整性输入压成只含
   proof roots 的旧 summary。
-- focused tests：`20 passed`；旧 static/dynamic report round-trip 保持通过。
+- focused tests：`20 passed`；完整默认 suite：`610 passed, 10 skipped`；旧
+  static/dynamic report round-trip 保持通过。
 - 剩余风险：workflow report 仍不携带 typed sidecar 本体和 rule registry；它是
   可审计摘要，不替代 `verify_static_certificate_v2()` 的独立 replay。静态
   `CounterexampleTrace` 也仍待单独建模和重放。
