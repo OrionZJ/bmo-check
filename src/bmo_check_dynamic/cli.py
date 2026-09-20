@@ -495,9 +495,9 @@ def _add_analysis_options(parser: argparse.ArgumentParser) -> None:
         "--application-only",
         action="store_true",
         help=(
-            "prove main-ELF-touching communication; use the disjoint-partition fast path "
-            "when available, otherwise scan main-touched pages; runtime-only edges "
-            "remain covered by the DBT contract"
+            "prove main-ELF-touching communication after scanning all candidate pages; "
+            "runtime-only edges are counted and excluded from the application window "
+            "only after the complete scan"
         ),
     )
 

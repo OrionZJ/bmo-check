@@ -46,9 +46,12 @@ def build_trace_coverage(
         for edge in getattr(window, "communication_edges", ())
     )
     assigned_digest = digest_edges(assigned_edges)
+    communication_reason = scan_stats.resource_limit_reason or (
+        None if scan_stats.complete else "communication edge scan is incomplete"
+    )
     communication_state = coverage_state(
         scan_stats.complete,
-        () if scan_stats.complete else ("communication edge scan is incomplete",),
+        () if communication_reason is None else (communication_reason,),
     )
     window_state = coverage_state(not window_unknowns, window_unknowns)
     return TraceCoverage(
@@ -65,11 +68,19 @@ def build_trace_coverage(
             scoped_edge_sha256=edge_digest,
             external_edge_count=scan_stats.external_edges,
             state=communication_state,
-            reason=(
-                None
-                if communication_state is CoverageState.COMPLETE
-                else "communication edge scan is incomplete"
+            reason=None
+            if communication_state is CoverageState.COMPLETE
+            else communication_reason,
+            candidate_page_count=scan_stats.candidate_page_count,
+            candidate_event_count=scan_stats.candidate_event_count,
+            scanned_event_page_records=scan_stats.scanned_event_page_records,
+            scanned_event_count=scan_stats.scanned_event_count,
+            filtered_event_count=scan_stats.filtered_event_count,
+            filtered_event_reasons=tuple(
+                sorted(scan_stats.filtered_event_reasons.items())
             ),
+            resource_limited_event_count=scan_stats.resource_limited_event_count,
+            resource_limit_reason=scan_stats.resource_limit_reason,
         ),
         windows=WindowCoverage(
             input_edge_count=len(edges),

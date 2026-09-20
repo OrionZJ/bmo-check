@@ -446,6 +446,25 @@ COUNTEREXAMPLE必须包含events、PO/RF/CO/FR、Fence/atomic/sync、source/targ
   cross-module pruning、FUTEX ordering、certificate ledger 和 TraceStore identity
   仍未修复。完整默认 suite 尚未在本 unit 结束时运行。
 
+### C0.1 通信扫描完整性收口
+
+- 实现提交：本单元首个提交（下一条文档提交会回填稳定哈希）。
+- finding：F03/F13；witness：application-only trace 中
+  `application_atomic_count == 0` 时提前跳过通信扫描，导致候选边集合为空且
+  无法区分“确实无边”和“尚未枚举”。
+- 删除该条件分支。无论 application partition 是否为 `safe`、是否存在应用原子
+  访存，pipeline 都会对候选页做有界、流式的地址重叠扫描；运行库页上的混合边
+  仍先进入扫描，纯外部边只在完整扫描后计入排除计数。
+- `CommunicationScanStats` 和 `CommunicationCoverage` 记录候选页/事件、已读的
+  event-page 记录、页外过滤原因、资源限制事件数和原因。扫描未闭合时保留
+  `communication_edges_complete=false`，typed `IncompleteRecovery` 和最终
+  `UNKNOWN`；空边集合不再单独构成安全结论。
+- focused dynamic tests：`44 passed`；完整默认 suite：`610 passed, 10 skipped`；
+  `git diff --check` 通过。blackscholes 重跑可在完整扫描后得到 `TRACE_SAFE`；
+  swaptions/canneal 因候选页超过活动集合预算保留 `UNKNOWN`，并记录资源原因。
+- 剩余风险：当前资源闸门在扫描前按最大候选页大小保守返回 `UNKNOWN`，尚未实现
+  更细的活动区间预算；这属于后续性能/覆盖率工作，不能放宽完整性门槛。
+
 ### C0.2 已完成
 
 - 提交：`5ce5994`。

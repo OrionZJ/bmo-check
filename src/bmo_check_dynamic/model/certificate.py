@@ -157,7 +157,7 @@ class DynamicCertificate(StrictModel):
     communication_edge_count: int
     # application scope 排除两端都在外部模块的边；扫描完整时此值精确。
     external_runtime_edge_count: int = 0
-    # false 表示使用了分区快速路径，或边扫描被资源上限截断。
+    # false 表示通信图尚未完整扫描，或边扫描被资源上限截断。
     communication_edges_complete: bool = True
     indirect_target_count: int
     # 分区证据帮助解释应用访问；整体验证仍由所有 windows 决定。

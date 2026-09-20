@@ -38,6 +38,15 @@ class CommunicationCoverage(StrictModel):
     external_edge_count: int = 0
     state: CoverageState
     reason: str | None = None
+    # 候选页和事件账本区分“扫描过”与“未进入候选页”。
+    candidate_page_count: int = 0
+    candidate_event_count: int = 0
+    scanned_event_page_records: int = 0
+    scanned_event_count: int | None = None
+    filtered_event_count: int = 0
+    filtered_event_reasons: tuple[tuple[str, int], ...] = ()
+    resource_limited_event_count: int | None = None
+    resource_limit_reason: str | None = None
 
     @model_validator(mode="after")
     def validate_coverage(self) -> "CommunicationCoverage":
@@ -48,15 +57,37 @@ class CommunicationCoverage(StrictModel):
                 self.candidate_edge_count,
                 self.scoped_edge_count,
                 self.external_edge_count,
+                self.candidate_page_count,
+                self.candidate_event_count,
+                self.scanned_event_page_records,
+                self.filtered_event_count,
             )
         ):
             raise ValueError("communication coverage counts cannot be negative")
+        if self.scanned_event_count is not None and self.scanned_event_count < 0:
+            raise ValueError("scanned event count cannot be negative")
+        if (
+            self.resource_limited_event_count is not None
+            and self.resource_limited_event_count < 0
+        ):
+            raise ValueError("resource-limited event count cannot be negative")
+        if self.scanned_event_count is not None and self.scanned_event_count > self.candidate_event_count:
+            raise ValueError("scanned events cannot exceed candidate events")
+        if self.filtered_event_count > self.input_event_count:
+            raise ValueError("filtered events cannot exceed input events")
+        if any(
+            not isinstance(reason, str) or not reason or count < 0
+            for reason, count in self.filtered_event_reasons
+        ):
+            raise ValueError("filtered event reasons must contain non-negative counts")
         _digest("input event digest", self.input_event_sha256)
         _digest("scoped edge digest", self.scoped_edge_sha256)
         if self.scoped_edge_count > self.candidate_edge_count:
             raise ValueError("scoped edges cannot exceed candidate edges")
         if self.state is CoverageState.COMPLETE and self.reason is not None:
             raise ValueError("complete communication coverage cannot carry a reason")
+        if self.state is CoverageState.COMPLETE and self.resource_limit_reason is not None:
+            raise ValueError("complete communication coverage cannot carry a resource limit")
         if self.state is not CoverageState.COMPLETE and not self.reason:
             raise ValueError("incomplete communication coverage requires a reason")
         return self

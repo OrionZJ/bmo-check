@@ -29,9 +29,10 @@ def test_only_cross_thread_overlapping_write_forms_edge(tmp_path: Path) -> None:
         TraceEvent(2, 2, 0, 0x21, EventKind.LOAD, 0x2000, 4),
         TraceEvent(3, 1, 0, 0x30, EventKind.LOAD, 0x2000, 4),
     )
+    stats = CommunicationScanStats()
     with TraceStore(tmp_path / "trace.duckdb") as store:
         store.add_events(events, max_pages_per_access=16, batch_size=2)
-        edges = tuple(find_communication_edges(store))
+        edges = tuple(find_communication_edges(store, stats=stats))
     assert len(edges) == 1
     assert edges[0].address == 0x1004
     assert edges[0].size == 4
@@ -41,6 +42,11 @@ def test_only_cross_thread_overlapping_write_forms_edge(tmp_path: Path) -> None:
     assert edges[0].second_endpoint == CommunicationEndpoint(
         "t2:e1", 2, 1, EventKind.LOAD
     )
+    assert stats.candidate_page_count == 1
+    assert stats.candidate_event_count == 2
+    assert stats.scanned_event_count == 2
+    assert stats.filtered_event_count == 2
+    assert stats.filtered_event_reasons == {"not_candidate_page": 2}
 
 
 def test_compact_edge_sink_preserves_edge_and_window_facts(tmp_path: Path) -> None:

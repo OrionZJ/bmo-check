@@ -26,14 +26,40 @@ def explain_certificate(certificate: DynamicCertificate) -> str:
             "External runtime edges excluded: "
             f"{certificate.external_runtime_edge_count}"
         )
-    if not certificate.communication_edges_complete:
-        if certificate.verdict == TraceVerdict.TRACE_SAFE:
-            lines.append(
-                "Communication edges: not enumerated; verified thread handoffs and "
-                "disjoint application writes were used"
+    if certificate.coverage is not None:
+        communication = certificate.coverage.communication
+        scanned = (
+            "unknown"
+            if communication.scanned_event_count is None
+            else str(communication.scanned_event_count)
+        )
+        lines.append(
+            "Communication scan coverage: "
+            f"{communication.candidate_page_count} candidate pages, "
+            f"{communication.candidate_event_count} candidate events, "
+            f"{scanned} unique events scanned, "
+            f"{communication.scanned_event_page_records} page records read"
+        )
+        if communication.filtered_event_count:
+            reasons = ", ".join(
+                f"{reason}={count}"
+                for reason, count in communication.filtered_event_reasons
             )
-        else:
-            lines.append("Communication edges: enumeration incomplete")
+            lines.append(
+                "Communication scan filtered events: "
+                f"{communication.filtered_event_count} ({reasons})"
+            )
+        if communication.resource_limited_event_count is not None:
+            lines.append(
+                "Communication scan resource-limited candidate events: "
+                f"{communication.resource_limited_event_count}"
+            )
+    if not certificate.communication_edges_complete:
+        lines.append("Communication edges: enumeration incomplete")
+        if certificate.coverage is not None:
+            reason = certificate.coverage.communication.reason
+            if reason:
+                lines.append(f"Communication scan reason: {reason}")
     if certificate.verdict == TraceVerdict.TRACE_SAFE:
         lines.append(
             "Meaning: no RVWMO-only execution was found for the recorded event skeleton."

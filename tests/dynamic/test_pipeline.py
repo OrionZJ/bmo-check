@@ -140,7 +140,7 @@ def test_application_scope_without_main_module_range_stays_unknown(
     assert any("known main-module range" in reason for reason in certificate.unknown_reasons)
 
 
-def test_application_partition_can_close_without_runtime_graph(
+def test_application_partition_requires_complete_communication_scan(
     trace_manifest, tmp_path: Path, monkeypatch
 ) -> None:
     trace_dir = tmp_path / "disjoint-workers"
@@ -159,21 +159,26 @@ def test_application_partition_can_close_without_runtime_graph(
         writer.write(TraceEvent(2, 2, 4, 0x1104, EventKind.STORE, 0x5000, 4))
         writer.write(TraceEvent(2, 3, 9, 0x1201, EventKind.THREAD_END))
 
-    def unexpected_graph_scan(*_args, **_kwargs):
-        raise AssertionError("a closed disjoint partition must not scan runtime edges")
+    calls = 0
+
+    def graph_scan(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        _kwargs["stats"].complete = True
+        return iter(())
 
     monkeypatch.setattr(
-        "bmo_check_dynamic.pipeline.find_communication_edges", unexpected_graph_scan
+        "bmo_check_dynamic.pipeline.find_communication_edges", graph_scan
     )
     certificate = analyze_trace(
         trace_dir,
         dbt_contract=_contract(tmp_path),
         config=DynamicConfig(application_only=True),
     )
-    assert certificate.verdict == TraceVerdict.UNKNOWN
-    assert not certificate.communication_edges_complete
+    assert calls == 1
+    assert certificate.verdict == TraceVerdict.TRACE_SAFE
+    assert certificate.communication_edges_complete
     assert certificate.windows == ()
-    assert certificate.unknown_kinds
 
 
 def test_application_atomic_event_does_not_use_partition_shortcut(
@@ -214,7 +219,7 @@ def test_application_atomic_event_does_not_use_partition_shortcut(
 
 
 def test_application_only_cannot_skip_library_mediated_communication(
-    trace_manifest, tmp_path: Path, monkeypatch
+    trace_manifest, tmp_path: Path
 ) -> None:
     """主模块分区不能证明外部库访问不会触碰应用拥有的对象。"""
 
@@ -240,21 +245,36 @@ def test_application_only_cannot_skip_library_mediated_communication(
         writer.write(TraceEvent(3, 2, 7, 0x3001, EventKind.LOAD, 0x5000, 4))
         writer.write(TraceEvent(3, 3, 8, 0x3002, EventKind.THREAD_END))
 
-    def unexpected_graph_scan(*_args, **_kwargs):
-        raise AssertionError("C0.1 fixture must expose the incomplete fast path")
-
-    monkeypatch.setattr(
-        "bmo_check_dynamic.pipeline.find_communication_edges", unexpected_graph_scan
-    )
     certificate = analyze_trace(
         trace_dir,
         dbt_contract=_contract(tmp_path),
         config=DynamicConfig(application_only=True),
     )
 
-    assert certificate.verdict == TraceVerdict.UNKNOWN
-    assert not certificate.communication_edges_complete
-    assert certificate.unknown_kinds
+    assert certificate.communication_edges_complete
+    assert certificate.communication_edge_count == 1
+    assert certificate.external_runtime_edge_count == 0
+    assert certificate.coverage is not None
+    communication = certificate.coverage.communication
+    assert communication.candidate_page_count == 1
+    assert communication.candidate_event_count == 2
+    assert communication.scanned_event_count == 2
+    assert communication.scanned_event_page_records >= 2
+
+    limited = analyze_trace(
+        trace_dir,
+        dbt_contract=_contract(tmp_path),
+        config=DynamicConfig(
+            application_only=True,
+            max_communication_active_events=1,
+        ),
+    )
+    assert limited.verdict == TraceVerdict.UNKNOWN
+    assert limited.coverage is not None
+    limited_communication = limited.coverage.communication
+    assert limited_communication.resource_limited_event_count == 2
+    assert limited_communication.resource_limit_reason is not None
+    assert "active-set limit" in limited_communication.resource_limit_reason
 
 
 def test_futex_without_contract_ordering_is_unknown(

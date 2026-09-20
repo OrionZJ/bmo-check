@@ -63,6 +63,22 @@ class CommunicationScanStats:
     external_edges: int = 0
     # 命中返回边数上限或活动集合上限时为 false，不能据此给出 TRACE_SAFE。
     complete: bool = False
+    # candidate_page_count 是进入页扫描的候选页数量；页外事件不会被当成已扫描。
+    candidate_page_count: int = 0
+    # candidate_event_count 是候选页上的去重访存事件数量。
+    candidate_event_count: int = 0
+    # 扫描器按页读取同一事件可能多次；这里记录实际读过的 event-page 记录。
+    scanned_event_page_records: int = 0
+    # 只有完整扫描时才能把去重事件数确定为 candidate_event_count。
+    scanned_event_count: int | None = None
+    # 不在候选页上的访存事件及其过滤原因，不能被解释为通信不存在。
+    filtered_event_count: int = 0
+    filtered_event_reasons: dict[str, int] = field(default_factory=dict)
+    # 资源闸门触发时，未处理事件的精确数量可能无法知道；原因仍必须保留。
+    resource_limited_event_count: int | None = None
+    resource_limit_reason: str | None = None
+    # 防止 pipeline 的资源预检和真正扫描重复计算事件全集。
+    universe_recorded: bool = False
 
 
 class CommunicationEdgeSink(Protocol):
@@ -262,6 +278,62 @@ def max_communication_page_events(
     return int(row[0] or 0)
 
 
+def prepare_communication_scan_stats(
+    store: TraceStore,
+    *,
+    required_pc_range: tuple[int, int] | None,
+    stats: CommunicationScanStats,
+) -> None:
+    """记录通信扫描的候选页、候选事件和页外过滤账本。
+
+    event_pages 只索引访存事件。候选页要求跨线程且至少包含一个写入；
+    其余访存事件属于页级过滤输入。这个统计不把过滤事件当成“没有通信”，
+    只说明它们没有进入本轮地址重叠扫描。
+    """
+
+    if stats.universe_recorded:
+        return
+    page_filter = ""
+    params: tuple[int, ...] = ()
+    if required_pc_range is not None:
+        page_filter = "AND bool_or(e.pc >= ? AND e.pc < ?)"
+        params = tuple(int(value) for value in required_pc_range)
+    eligible_pages = f"""
+        WITH eligible_pages AS (
+            SELECT ep.page
+            FROM event_pages ep
+            JOIN events e USING (event_id)
+            GROUP BY ep.page
+            HAVING count(DISTINCT e.thread_id) > 1
+               AND count(*) FILTER (WHERE e.kind IN (2, 3)) > 0
+               {page_filter}
+        )
+    """
+    page_row = store.connection.execute(
+        eligible_pages + "SELECT count(*) FROM eligible_pages",
+        params,
+    ).fetchone()
+    event_row = store.connection.execute(
+        eligible_pages
+        + """
+        SELECT count(DISTINCT ep.event_id)
+        FROM event_pages ep
+        JOIN eligible_pages p USING (page)
+        """,
+        params,
+    ).fetchone()
+    input_row = store.connection.execute(
+        "SELECT count(*) FROM events WHERE kind IN (1, 2, 3, 37)"
+    ).fetchone()
+    stats.candidate_page_count = int(page_row[0] or 0)
+    stats.candidate_event_count = int(event_row[0] or 0)
+    input_event_count = int(input_row[0] or 0)
+    stats.filtered_event_count = max(input_event_count - stats.candidate_event_count, 0)
+    if stats.filtered_event_count:
+        stats.filtered_event_reasons["not_candidate_page"] = stats.filtered_event_count
+    stats.universe_recorded = True
+
+
 @dataclass(frozen=True, slots=True)
 class _ThreadHandoff:
     # parent_thread 是记录 create/join 的线程；其他 worker 不能冒充父线程。
@@ -293,11 +365,28 @@ def find_communication_edges(
     的边；主程序与运行库之间的混合边仍会返回。
     """
 
+    if stats is not None:
+        # 一个 stats 对象只描述本次扫描。重用对象时不能把上一次完整扫描的
+        # 标记带到本次受限扫描，否则早退会被错误解释成完整图。
+        stats.complete = False
+        stats.total_edges = 0
+        stats.external_edges = 0
+        stats.candidate_page_count = 0
+        stats.candidate_event_count = 0
+        stats.scanned_event_page_records = 0
+        stats.scanned_event_count = None
+        stats.filtered_event_count = 0
+        stats.filtered_event_reasons.clear()
+        stats.resource_limited_event_count = None
+        stats.resource_limit_reason = None
+        stats.universe_recorded = False
+
     # 单线程轨迹不可能产生通信边。跳过同页自连接，否则循环和库初始化会把
     # 同一页上的大量事件展开成无意义的二次方候选。
     if store.thread_count() < 2:
         if stats is not None:
             stats.complete = True
+            stats.scanned_event_count = 0
         return
 
     handoffs = _thread_handoffs(store)
@@ -309,6 +398,12 @@ def find_communication_edges(
                AND bool_or(e.pc >= ? AND e.pc < ?)
         """
         page_params = tuple(int(value) for value in required_pc_range)
+    if stats is not None:
+        prepare_communication_scan_stats(
+            store,
+            required_pc_range=required_pc_range,
+            stats=stats,
+        )
     page_cursor = store.connection.execute(
         f"""
         WITH eligible_pages AS (
@@ -320,7 +415,7 @@ def find_communication_edges(
                AND count(*) FILTER (WHERE e.kind IN (2, 3)) > 0
                {page_filter}
         )
-        SELECT page FROM eligible_pages
+        SELECT page FROM eligible_pages ORDER BY page
         """,
         page_params,
     )
@@ -348,6 +443,8 @@ def find_communication_edges(
             expirations: list[tuple[int, str]] = []
             endpoint_cache: dict[str, CommunicationEndpoint] = {}
             while rows := cursor.fetchmany(10_000):
+                if stats is not None:
+                    stats.scanned_event_page_records += len(rows)
                 for (
                     event_id_value,
                     thread,
@@ -509,10 +606,24 @@ def find_communication_edges(
                                 )
                             emitted += 1
                             if limit is not None and emitted >= limit:
+                                if stats is not None:
+                                    stats.resource_limit_reason = (
+                                        "communication edge limit reached before all candidate pages were scanned"
+                                    )
+                                    stats.resource_limited_event_count = (
+                                        stats.candidate_event_count
+                                    )
                                 return
                     # 只查可能产生边的其他线程访存；结束地址堆淘汰过期项，
                     # 避免同线程和读-读访问让每个事件都重扫整个活动集合。
                     if len(active) >= max_active_events:
+                        if stats is not None:
+                            stats.resource_limit_reason = (
+                                f"communication active set exceeds {max_active_events} events"
+                            )
+                            stats.resource_limited_event_count = (
+                                stats.candidate_event_count
+                            )
                         raise CommunicationLimitError(
                             f"communication active set exceeds {max_active_events} events"
                         )
@@ -536,6 +647,7 @@ def find_communication_edges(
                     heappush(expirations, (end, event_id))
     if stats is not None:
         stats.complete = True
+        stats.scanned_event_count = stats.candidate_event_count
 
 
 def _cached_communication_endpoint(

@@ -6,6 +6,7 @@ from .communication import (
     CommunicationScanStats,
     find_communication_edges,
     max_communication_page_events,
+    prepare_communication_scan_stats,
     thread_handoffs_complete,
 )
 from .partition import analyze_application_partition
@@ -28,6 +29,7 @@ __all__ = [
     "build_windows",
     "find_communication_edges",
     "max_communication_page_events",
+    "prepare_communication_scan_stats",
     "thread_handoffs_complete",
     "locate_instruction_site",
     "analyze_application_partition",

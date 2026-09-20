@@ -23,7 +23,7 @@ from bmo_check_dynamic.analysis import (
     build_windows,
     find_communication_edges,
     max_communication_page_events,
-    thread_handoffs_complete,
+    prepare_communication_scan_stats,
 )
 from bmo_check_dynamic.analysis.coverage import build_trace_coverage
 from bmo_check_dynamic.config import DynamicConfig
@@ -290,55 +290,6 @@ def analyze_trace(
                 raw_edge_sample = ()
                 edge_sample = ()
                 communication_edges_complete = False
-            elif (
-                config.application_only
-                and application_partition.status == "safe"
-                and thread_handoffs_complete(store)
-            ):
-                # 主模块分区已经逐字节排除了 worker/主线程的并发写重叠，
-                # create/start/end/join 又提供了生命周期边界。此时继续枚举
-                # 运行库热页不会增加应用证明，只会把外部边搬进内存。
-                application_atomic_count = int(
-                    store.connection.execute(
-                        """
-                        SELECT count(*) FROM events
-                        WHERE kind = 3 AND pc >= ? AND pc < ?
-                        """,
-                        (
-                            application_partition.module_start,
-                            application_partition.module_end,
-                        ),
-                    ).fetchone()[0]
-                )
-                if application_atomic_count == 0:
-                    raw_edge_sample = ()
-                    edge_sample = ()
-                    communication_edges_complete = False
-                else:
-                    # 原子访问可能和普通访问共同发布数据；不能把它从
-                    # “无共享普通写”的充分条件里悄悄删除。
-                    try:
-                        raw_edge_sample = _scan_communication_edges(
-                            store,
-                            limit=config.max_communication_edges + 1,
-                            max_active_events=config.max_communication_active_events,
-                            required_pc_range=(
-                                application_partition.module_start,
-                                application_partition.module_end,
-                            ),
-                            edge_pc_range=(
-                                application_partition.module_start,
-                                application_partition.module_end,
-                            ),
-                            stats=scan_stats,
-                        )
-                    except CommunicationLimitError as error:
-                        unknowns.append(str(error))
-                        raw_edge_sample = ()
-                        communication_edges_complete = False
-                    edge_sample = raw_edge_sample
-                    external_runtime_edges = scan_stats.external_edges
-                    communication_edges_complete = scan_stats.complete
             else:
                 required_pc_range = None
                 if config.application_only:
@@ -362,15 +313,25 @@ def analyze_trace(
                             application_partition.module_start,
                             application_partition.module_end,
                         )
+                prepare_communication_scan_stats(
+                    store,
+                    required_pc_range=required_pc_range,
+                    stats=scan_stats,
+                )
                 max_page_events = max_communication_page_events(
                     store, required_pc_range=required_pc_range
                 )
                 if max_page_events > config.max_communication_active_events:
-                    unknowns.append(
+                    reason = (
                         "communication page has "
                         f"{max_page_events} events, exceeding active-set limit "
                         f"{config.max_communication_active_events}"
                     )
+                    unknowns.append(reason)
+                    scan_stats.resource_limited_event_count = (
+                        scan_stats.candidate_event_count
+                    )
+                    scan_stats.resource_limit_reason = reason
                     raw_edge_sample = ()
                     communication_edges_complete = False
                 else:
@@ -392,6 +353,12 @@ def analyze_trace(
                         )
                     except CommunicationLimitError as error:
                         unknowns.append(str(error))
+                        if scan_stats.resource_limited_event_count is None:
+                            scan_stats.resource_limited_event_count = (
+                                scan_stats.candidate_event_count
+                            )
+                        if scan_stats.resource_limit_reason is None:
+                            scan_stats.resource_limit_reason = str(error)
                         raw_edge_sample = ()
                         communication_edges_complete = False
                 edge_sample = raw_edge_sample
@@ -475,8 +442,8 @@ def analyze_trace(
                 )
                 if not communication_edges_complete:
                     assumptions.append(
-                        "verified thread handoffs plus a disjoint application partition "
-                        "closed ordinary application writes; runtime edges were not enumerated"
+                        "communication scanning did not close; application partition and "
+                        "thread handoffs cannot replace the missing communication ledger"
                     )
             return DynamicCertificate(
                 schema_version="dynamic-certificate-v2",
