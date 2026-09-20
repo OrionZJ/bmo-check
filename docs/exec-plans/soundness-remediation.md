@@ -1386,3 +1386,27 @@ join/handle/futex），为 W3/W4/W14 建立 typed ledger 缺口，而不修改 p
 - 动态侧剩余边界：旧 dynamic schema 仍只能 explain-only；`TRACE_SAFE` 仍只
   描述绑定的 trace event skeleton。静态 RU6.2、静态 SAFE replay 和静态 precision
   work 不在本次闭环内，继续保留为后续路线。
+
+### RU6.7 static v2 completeness replay 已完成
+
+- 提交：`32ce8af`（`Replay static v2 certificate completeness`）。
+- finding：F07/F08/F09/F12；witness：W7/W8/W9。
+- `verify_static_certificate_v2()` 现在从 typed event universe、conflict
+  obligation inventory、projection ledger 和 relation obligations 重新检查输入，
+  再比较 certificate 中的四类 digest。缺 event、Unknown、relation 或 obligation
+  的确定性证书不能靠 producer 的空列表或 `complete` 标记通过。
+- static bridge 会为 report 构造 event disposition 和 conflict obligation
+  sidecar；缺少 memory/projection 输入时显式记录 `INCOMPLETE`。应用服务改为
+  请求 `static-certificate-v2`，完整的空/无通信 subject 可以独立 replay；缺少
+  线程、投影或 typed proof 时仍降级为 `UNKNOWN`，不改变旧 CLI JSON。
+- v2 replay 拒绝 ObservedFact/DiagnosticHint、无关 UnknownDischarge、未闭合
+  obligation、未绑定 rule registry 的 typed proof，以及尚未实现 witness replay
+  的 `COUNTEREXAMPLE`。因此当前 static producer 仍不能把带旧 ProofObject 的
+  剪枝结果升级成 SAFE；这属于后续 proof-rule registry 与 counterexample replay
+  边界，不是通过补空 sidecar 绕过的缺口。
+- focused tests：`15 passed`；完整默认 suite：`609 passed, 10 skipped`；
+  `git diff --check` 通过。
+- 剩余风险：静态 v2 还没有把 rule-registry digest、typed producer proof 和
+  `CounterexampleTrace` 纳入可序列化 certificate；旧静态 JSON 仍是 legacy view，
+  非空剪枝/反例结果会保守停在 `UNKNOWN`。下一单元应先为 rule registry 和
+  counterexample witness 建立 characterization，再决定是否扩展 schema。
