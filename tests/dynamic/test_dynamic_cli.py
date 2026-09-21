@@ -162,6 +162,49 @@ def test_slice_candidates_are_diagnostic_only(
     assert candidate["obligations"]
 
 
+def test_slice_plan_is_report_only(
+    trace_manifest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    trace_dir = tmp_path / "plan-trace"
+    trace_manifest(trace_dir)
+    with TraceWriter(trace_dir / "events-1.bin") as writer:
+        writer.write(TraceEvent(1, 1, 0, 0x10, EventKind.STORE, 0x1000, 4))
+    with TraceWriter(trace_dir / "events-2.bin") as writer:
+        writer.write(TraceEvent(2, 1, 0, 0x20, EventKind.LOAD, 0x1000, 4))
+    contract = tmp_path / "contract.yaml"
+    shutil.copyfile(
+        Path(__file__).resolve().parents[2]
+        / "specs"
+        / "dynamic"
+        / "dbt6-mo-off.yaml",
+        contract,
+    )
+    monkeypatch.setattr(
+        "bmo_check_dynamic.pipeline.check_window",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("slice plan must stop before proof")
+        ),
+    )
+    output = tmp_path / "slice-plan.json"
+
+    result = main(
+        [
+            "slice-plan",
+            str(trace_dir),
+            "--dbt-contract",
+            str(contract),
+            "--output",
+            str(output),
+        ]
+    )
+
+    assert result == 0
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    assert payload["schema_version"] == "slice-plan-report-v1"
+    assert payload["plans"][0]["status"] == "no-safe-split"
+    assert payload["plans"][0]["complete"] is False
+
+
 def test_packages_do_not_import_each_other() -> None:
     root = Path(__file__).resolve().parents[2] / "src"
     for path in (root / "bmo_check_dynamic").rglob("*.py"):

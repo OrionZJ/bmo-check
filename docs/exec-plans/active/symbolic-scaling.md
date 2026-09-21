@@ -142,6 +142,26 @@ when the window is connected by checker obligations, while `SPLIT_PROVEN` only
 means that the inventory has independent components and that checker integration
 is still pending. Both statuses have `complete=false`.
 
+## P5 validation and regression boundary
+
+Regression fixtures cover a communication hub, mixed-width accesses, a
+read-from domain without a precomputed communication edge, incomplete removal
+ledgers and the no-proof `CandidateSlice` state. They assert that candidate
+reports retain every source event, that mixed-width accesses are not merged by
+the heuristic, and that relation obligations prevent an unsafe partition. The
+normal `analyze` route remains unchanged; P1--P5 reports are observational and
+must not turn a resource-limited or unproved case into a verdict.
+
+### Frozen SB P3/P4 result
+
+On the same complete SB trace, `slice-candidates` found one 3,720-event window
+and 125,684 typed obligations. Its largest repeated-load group contained 3,615
+loads at one address; all 3,615 were communication endpoints, so the report
+proposed zero removals and retained all 3,720 events. `slice-plan` independently
+returned `NO_SAFE_SPLIT` with one 3,720-event partition. This is evidence that
+the current bottleneck is a connected communication/obligation hub, not a
+missing event-count threshold; it is not a verdict about SB.
+
 Large traces and temporary outputs remain local experiment artifacts and are
 not versioned by this plan.
 
@@ -177,5 +197,14 @@ not versioned by this plan.
 5. `feat: add symbolic encoding statistics` (complete)
 6. `test: characterize 3709-event SB window` (complete)
 
-Stop after checkpoint 6 and review the report before implementing any slicing
-or solver optimization.
+The follow-up scaling work is now split into atomic checkpoints:
+
+7. `feat: add relation graph diagnostics` (complete)
+8. `feat: define obligation preserving slice contract` (complete)
+9. `feat: report conservative slice candidates` (complete)
+10. `feat: plan obligation preserving partitions` (complete)
+11. P5 adversarial regression fixtures (in progress)
+
+The original checkpoint 6 was the review gate. The later checkpoints still do
+not connect a candidate or partition to the proof solver; any future solver
+optimization requires a separate proof-preserving integration review.
