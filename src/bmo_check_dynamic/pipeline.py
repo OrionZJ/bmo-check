@@ -27,6 +27,7 @@ from bmo_check_dynamic.analysis import (
     prepare_communication_scan_stats,
     WindowCharacterizationReport,
     characterize_windows,
+    build_candidate_slices,
 )
 from bmo_check_dynamic.analysis.coverage import build_trace_coverage
 from bmo_check_dynamic.config import DynamicConfig
@@ -39,6 +40,7 @@ from bmo_check_dynamic.model import (
     TraceManifest,
     TraceScope,
     TraceVerdict,
+    SliceCandidateReport,
 )
 from bmo_check_dynamic.proof import (
     characterize_symbolic_encoding,
@@ -56,6 +58,14 @@ class _WindowInspectionComplete(Exception):
 
     def __init__(self, report: WindowCharacterizationReport) -> None:
         super().__init__("window inspection completed")
+        self.report = report
+
+
+class _SliceCandidateInspectionComplete(Exception):
+    """窗口候选切片生成后跳过 proof。"""
+
+    def __init__(self, report: SliceCandidateReport) -> None:
+        super().__init__("slice candidate inspection completed")
         self.report = report
 
 
@@ -575,6 +585,51 @@ def characterize_trace(
         scoped_edge_count=0,
         external_edge_count=certificate.external_runtime_edge_count,
         communication_complete=certificate.communication_edges_complete,
+        analysis_reached_windows=False,
+        reasons=certificate.unknown_reasons,
+    )
+
+
+def candidate_slice_trace(
+    trace_dir: Path,
+    *,
+    dbt_contract: Path,
+    config: DynamicConfig | None = None,
+) -> SliceCandidateReport:
+    """生成 P3 候选切片报告，但不把候选交给 proof checker。"""
+
+    def inspect(
+        manifest: TraceManifest,
+        validation: object,
+        stored_event_count: int,
+        scan_stats: CommunicationScanStats,
+        edges: CompactCommunicationEdges | tuple[CommunicationEdge, ...],
+        windows: tuple[object, ...],
+        window_unknowns: tuple[str, ...],
+    ) -> None:
+        del stored_event_count, scan_stats, edges
+        report = SliceCandidateReport(
+            trace_id=manifest.trace_id,
+            trace_complete=bool(getattr(validation, "structurally_complete", False)),
+            analysis_reached_windows=True,
+            windows=build_candidate_slices(tuple(windows)),
+            reasons=tuple(window_unknowns),
+        )
+        raise _SliceCandidateInspectionComplete(report)
+
+    try:
+        certificate = analyze_trace(
+            trace_dir,
+            dbt_contract=dbt_contract,
+            config=config,
+            _window_observer=inspect,
+        )
+    except _SliceCandidateInspectionComplete as complete:
+        return complete.report
+
+    return SliceCandidateReport(
+        trace_id=certificate.scope.trace_ids[0],
+        trace_complete=certificate.trace_complete,
         analysis_reached_windows=False,
         reasons=certificate.unknown_reasons,
     )

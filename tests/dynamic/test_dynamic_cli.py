@@ -112,6 +112,56 @@ def test_characterize_scans_windows_without_running_proof(
     assert payload["symbolic"][0]["estimated_formula_terms"] > 0
 
 
+def test_slice_candidates_are_diagnostic_only(
+    trace_manifest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    trace_dir = tmp_path / "slice-trace"
+    trace_manifest(trace_dir)
+    with TraceWriter(trace_dir / "events-1.bin") as writer:
+        writer.write(TraceEvent(1, 1, 0, 0x10, EventKind.LOAD, 0x1000, 4))
+        writer.write(TraceEvent(1, 2, 0, 0x11, EventKind.LOAD, 0x1000, 4))
+    with TraceWriter(trace_dir / "events-2.bin") as writer:
+        writer.write(TraceEvent(2, 1, 0, 0x20, EventKind.STORE, 0x1000, 4))
+    contract = tmp_path / "contract.yaml"
+    shutil.copyfile(
+        Path(__file__).resolve().parents[2]
+        / "specs"
+        / "dynamic"
+        / "dbt6-mo-off.yaml",
+        contract,
+    )
+    monkeypatch.setattr(
+        "bmo_check_dynamic.pipeline.check_window",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("slice candidate report must stop before proof")
+        ),
+    )
+    output = tmp_path / "slice-candidates.json"
+
+    result = main(
+        [
+            "slice-candidates",
+            str(trace_dir),
+            "--dbt-contract",
+            str(contract),
+            "--output",
+            str(output),
+        ]
+    )
+
+    assert result == 0
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    assert payload["schema_version"] == "slice-candidate-report-v1"
+    assert payload["analysis_reached_windows"] is True
+    candidate = payload["windows"][0]
+    assert candidate["complete"] is False
+    assert candidate["removed_event_ids"] == []
+    assert candidate["retained_event_ids"] == ["t1:e1", "t1:e2", "t2:e1"]
+    assert candidate["proposed_event_ids"] == []
+    assert candidate["groups"][0]["communication_endpoint_count"] == 2
+    assert candidate["obligations"]
+
+
 def test_packages_do_not_import_each_other() -> None:
     root = Path(__file__).resolve().parents[2] / "src"
     for path in (root / "bmo_check_dynamic").rglob("*.py"):

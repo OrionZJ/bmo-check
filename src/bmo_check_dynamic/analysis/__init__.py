@@ -24,6 +24,7 @@ from .windows import (
     build_windows,
 )
 from .slice_contract import build_obligation_inventory
+from .slice_candidates import build_candidate_slice, build_candidate_slices
 from .window_diagnostics import (
     WindowCharacterizationReport,
     WindowDiagnostics,
@@ -56,6 +57,8 @@ __all__ = [
     "locate_instruction_site",
     "analyze_application_partition",
     "build_obligation_inventory",
+    "build_candidate_slice",
+    "build_candidate_slices",
     "build_trace_coverage",
     "coverage_state",
     "digest_edges",

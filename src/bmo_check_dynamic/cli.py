@@ -14,6 +14,7 @@ from bmo_check_dynamic.application import (
     AnalyzeRequest,
     CaptureRequest,
     analyze as analyze_request,
+    candidate_slices as candidate_slices_request,
     characterize as characterize_request,
     capture as capture_request,
 )
@@ -120,6 +121,20 @@ def _analyze(args: argparse.Namespace) -> int:
 
 def _characterize(args: argparse.Namespace) -> int:
     report = characterize_request(
+        AnalyzeRequest(
+            trace_dir=args.trace,
+            dbt_contract=args.dbt_contract,
+            config=_analysis_config(args),
+        )
+    )
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(report.model_dump_json(indent=2), encoding="utf-8")
+    print(report.model_dump_json(indent=2))
+    return 0
+
+
+def _slice_candidates(args: argparse.Namespace) -> int:
+    report = candidate_slices_request(
         AnalyzeRequest(
             trace_dir=args.trace,
             dbt_contract=args.dbt_contract,
@@ -544,6 +559,15 @@ def build_parser() -> argparse.ArgumentParser:
     characterize.add_argument("--output", type=Path, required=True)
     _add_analysis_options(characterize)
     characterize.set_defaults(handler=_characterize)
+
+    slice_candidates = subparsers.add_parser(
+        "slice-candidates",
+        help="report obligation-aware slice candidates without running proof",
+    )
+    slice_candidates.add_argument("trace", type=Path)
+    slice_candidates.add_argument("--output", type=Path, required=True)
+    _add_analysis_options(slice_candidates)
+    slice_candidates.set_defaults(handler=_slice_candidates)
 
     run = subparsers.add_parser("run", help="capture and immediately analyze")
     run.add_argument("--trace", type=Path, required=True)

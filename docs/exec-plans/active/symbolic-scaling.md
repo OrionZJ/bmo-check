@@ -119,6 +119,19 @@ or `candidate-only` object cannot be marked `PROVEN` and is not accepted by the
 current checker. This contract records obligations; it does not claim that any
 current event can be removed.
 
+## P3 candidate slice report
+
+`bmo-check slice-candidates TRACE --output REPORT` reuses the normal trace
+import, communication scan and window construction path. It emits a
+`slice-candidate-report-v1` containing the complete source event IDs, the
+typed obligation inventory, candidate groups and a removal ledger. The first
+candidate heuristic only describes repeated same-thread loads; communication
+endpoints are explicitly blocked. Every event remains in
+`retained_event_ids`, `removed_event_ids` is empty, and `complete` is false.
+The command stops before `check_window`, so the report cannot change a proof
+verdict. A future proven slice must satisfy the ledger and obligation contract
+before it may be passed to a checker.
+
 Large traces and temporary outputs remain local experiment artifacts and are
 not versioned by this plan.
 
