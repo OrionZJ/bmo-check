@@ -203,8 +203,49 @@ The follow-up scaling work is now split into atomic checkpoints:
 8. `feat: define obligation preserving slice contract` (complete)
 9. `feat: report conservative slice candidates` (complete)
 10. `feat: plan obligation preserving partitions` (complete)
-11. P5 adversarial regression fixtures (in progress)
+11. P5 adversarial regression fixtures (complete)
+12. P6 obligation bottleneck characterization (complete)
 
-The original checkpoint 6 was the review gate. The later checkpoints still do
-not connect a candidate or partition to the proof solver; any future solver
-optimization requires a separate proof-preserving integration review.
+The original checkpoint 6 was the review gate. P6 is a second review gate:
+`obligation-bottleneck` only reports the relation network and deliberately
+stops before `check_window`. No P7 work starts until this report has been
+reviewed.
+
+## P6 obligation bottleneck characterization
+
+`bmo-check obligation-bottleneck TRACE --output REPORT` reuses the same trace
+import, communication scan and window builder as `analyze`, then emits
+`trace-obligation-bottleneck-v1`. It is a diagnostics-only route: it never
+creates a solver, changes a window, applies a slice plan, or returns a proof
+verdict. A failed preflight or incomplete scan is preserved in `reasons` and
+does not become an empty, apparently independent graph.
+
+For every reached window the report contains:
+
+- counts for the typed inventory (`event_presence`, communication, source and
+  target PPO, read-from domains, coherence domains, and boundaries);
+- derived `from_read` relations using the same read-byte-part/later-write rule
+  as the existing symbolic encoder;
+- relation and event counts for the largest connected component;
+- articulation event IDs, bounded component summaries, and star-expanded graph
+  density;
+- repeated-load hotspot summaries with RF candidates, from-read exposure,
+  source/target PPO internal versus external relations, and communication
+  endpoints;
+- per-thread and per-address relation contributions.
+
+The graph is an explanatory projection, not a new proof graph. A hyperedge is
+expanded as a star around its first stable event ID solely to calculate
+connectivity, density and articulation points. `rf_candidate_count` counts
+whole-read covering writes; `from_read_candidate_count` counts byte-part
+relations and should match `characterize_symbolic_encoding` for the same
+window. The distinction is explicit because the symbolic model may split one
+read into several overlapping byte parts.
+
+The P6 regression fixture checks those two counts, boundary classification and
+that the CLI reaches the report without calling `check_window`. On the frozen
+SB trace, the report must be read as a bottleneck characterization only: it can
+say which relation families bind the 3,615-load hotspot and how large the
+obligation component is, but it cannot justify deleting a load, splitting the
+window, or changing `TRACE_SAFE`/`UNKNOWN`. No P7 implementation is included in
+this checkpoint.

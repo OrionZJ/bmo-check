@@ -17,6 +17,7 @@ from bmo_check_dynamic.application import (
     candidate_slices as candidate_slices_request,
     characterize as characterize_request,
     slice_plan as slice_plan_request,
+    obligation_bottleneck as obligation_bottleneck_request,
     capture as capture_request,
 )
 from bmo_check_dynamic.capture import CaptureError
@@ -159,6 +160,21 @@ def _slice_plan(args: argparse.Namespace) -> int:
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(report.model_dump_json(indent=2), encoding="utf-8")
     print(report.model_dump_json(indent=2))
+    return 0
+
+
+def _obligation_bottleneck(args: argparse.Namespace) -> int:
+    report = obligation_bottleneck_request(
+        AnalyzeRequest(
+            trace_dir=args.trace,
+            dbt_contract=args.dbt_contract,
+            config=_analysis_config(args),
+        )
+    )
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(report.model_dump_json(indent=2), encoding="utf-8")
+    print(report.model_dump_json(indent=2))
+    # 这是只读表征命令，不把诊断状态映射成 verdict exit code。
     return 0
 
 
@@ -592,6 +608,15 @@ def build_parser() -> argparse.ArgumentParser:
     slice_plan.add_argument("--output", type=Path, required=True)
     _add_analysis_options(slice_plan)
     slice_plan.set_defaults(handler=_slice_plan)
+
+    obligation_bottleneck = subparsers.add_parser(
+        "obligation-bottleneck",
+        help="characterize obligation bottlenecks without running proof",
+    )
+    obligation_bottleneck.add_argument("trace", type=Path)
+    obligation_bottleneck.add_argument("--output", type=Path, required=True)
+    _add_analysis_options(obligation_bottleneck)
+    obligation_bottleneck.set_defaults(handler=_obligation_bottleneck)
 
     run = subparsers.add_parser("run", help="capture and immediately analyze")
     run.add_argument("--trace", type=Path, required=True)

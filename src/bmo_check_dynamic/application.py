@@ -19,11 +19,13 @@ from bmo_check_dynamic.model import (
     SliceCandidateReport,
     SlicePlanReport,
     TraceManifest,
+    TraceObligationBottleneckReport,
 )
 from bmo_check_dynamic.pipeline import (
     analyze_trace,
     candidate_slice_trace,
     characterize_trace,
+    obligation_bottleneck_trace,
     slice_plan_trace,
 )
 
@@ -132,6 +134,16 @@ def slice_plan(request: AnalyzeRequest) -> SlicePlanReport:
     )
 
 
+def obligation_bottleneck(request: AnalyzeRequest) -> TraceObligationBottleneckReport:
+    """只表征 obligation 网络，不执行 proof 或改变窗口。"""
+
+    return obligation_bottleneck_trace(
+        request.trace_dir,
+        dbt_contract=request.dbt_contract,
+        config=request.config,
+    )
+
+
 __all__ = [
     "AnalyzeRequest",
     "CaptureRequest",
@@ -139,6 +151,7 @@ __all__ = [
     "analyze",
     "candidate_slices",
     "slice_plan",
+    "obligation_bottleneck",
     "characterize",
     "capture",
 ]

@@ -29,6 +29,7 @@ from bmo_check_dynamic.analysis import (
     characterize_windows,
     build_candidate_slices,
     plan_obligation_preserving_split,
+    characterize_obligation_bottleneck,
 )
 from bmo_check_dynamic.analysis.coverage import build_trace_coverage
 from bmo_check_dynamic.config import DynamicConfig
@@ -43,6 +44,7 @@ from bmo_check_dynamic.model import (
     TraceVerdict,
     SliceCandidateReport,
     SlicePlanReport,
+    TraceObligationBottleneckReport,
 )
 from bmo_check_dynamic.proof import (
     characterize_symbolic_encoding,
@@ -76,6 +78,14 @@ class _SlicePlanInspectionComplete(Exception):
 
     def __init__(self, report: SlicePlanReport) -> None:
         super().__init__("slice plan inspection completed")
+        self.report = report
+
+
+class _ObligationBottleneckInspectionComplete(Exception):
+    """P6 obligation 表征完成后跳过 proof。"""
+
+    def __init__(self, report: TraceObligationBottleneckReport) -> None:
+        super().__init__("obligation bottleneck inspection completed")
         self.report = report
 
 
@@ -683,6 +693,60 @@ def slice_plan_trace(
         return complete.report
 
     return SlicePlanReport(
+        trace_id=certificate.scope.trace_ids[0],
+        trace_complete=certificate.trace_complete,
+        analysis_reached_windows=False,
+        reasons=certificate.unknown_reasons,
+    )
+
+
+def obligation_bottleneck_trace(
+    trace_dir: Path,
+    *,
+    dbt_contract: Path,
+    config: DynamicConfig | None = None,
+) -> TraceObligationBottleneckReport:
+    """表征 obligation 网络，不启动 proof checker。
+
+    该 route 复用普通 trace pipeline 的导入、通信扫描和窗口边界。P6 只把
+    已经进入 checker 的窗口关系写成诊断报告；它不会删除事件、改变分区，
+    也不会把诊断结果送回 ``check_window``。
+    """
+
+    def inspect(
+        manifest: TraceManifest,
+        validation: object,
+        stored_event_count: int,
+        scan_stats: CommunicationScanStats,
+        edges: CompactCommunicationEdges | tuple[CommunicationEdge, ...],
+        windows: tuple[object, ...],
+        window_unknowns: tuple[str, ...],
+    ) -> None:
+        del stored_event_count, scan_stats, edges
+        report = TraceObligationBottleneckReport(
+            trace_id=manifest.trace_id,
+            trace_complete=bool(getattr(validation, "structurally_complete", False)),
+            analysis_reached_windows=True,
+            windows=tuple(
+                characterize_obligation_bottleneck(window) for window in windows
+            ),
+            reasons=tuple(window_unknowns),
+        )
+        raise _ObligationBottleneckInspectionComplete(report)
+
+    try:
+        certificate = analyze_trace(
+            trace_dir,
+            dbt_contract=dbt_contract,
+            config=config,
+            _window_observer=inspect,
+        )
+    except _ObligationBottleneckInspectionComplete as complete:
+        return complete.report
+
+    # 预检、导入或通信扫描在构造窗口前失败时，只能说明没有到达 P6；
+    # 这里保留 pipeline 已经记录的原因，不伪造空的 obligation 图。
+    return TraceObligationBottleneckReport(
         trace_id=certificate.scope.trace_ids[0],
         trace_complete=certificate.trace_complete,
         analysis_reached_windows=False,
