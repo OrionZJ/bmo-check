@@ -80,7 +80,7 @@ analysis budgets and the `characterize` command. The command stopped after
 window construction and arithmetic estimation; it did not write a
 certificate, call Z3, or make a verdict. The JSON remains an untracked local
 artifact at
-`.experiments/live-litmus-sb-characterization-20260921-v2/report.json`.
+`.experiments/live-litmus-sb-characterization-20260921-v3/report.json`.
 
 This closes the initial investigation checkpoint. The observed dominant
 costs are now recorded, but no event has been removed and no window has been
