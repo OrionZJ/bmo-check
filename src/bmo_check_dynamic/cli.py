@@ -16,6 +16,7 @@ from bmo_check_dynamic.application import (
     analyze as analyze_request,
     candidate_slices as candidate_slices_request,
     characterize as characterize_request,
+    slice_plan as slice_plan_request,
     capture as capture_request,
 )
 from bmo_check_dynamic.capture import CaptureError
@@ -135,6 +136,20 @@ def _characterize(args: argparse.Namespace) -> int:
 
 def _slice_candidates(args: argparse.Namespace) -> int:
     report = candidate_slices_request(
+        AnalyzeRequest(
+            trace_dir=args.trace,
+            dbt_contract=args.dbt_contract,
+            config=_analysis_config(args),
+        )
+    )
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(report.model_dump_json(indent=2), encoding="utf-8")
+    print(report.model_dump_json(indent=2))
+    return 0
+
+
+def _slice_plan(args: argparse.Namespace) -> int:
+    report = slice_plan_request(
         AnalyzeRequest(
             trace_dir=args.trace,
             dbt_contract=args.dbt_contract,
@@ -568,6 +583,15 @@ def build_parser() -> argparse.ArgumentParser:
     slice_candidates.add_argument("--output", type=Path, required=True)
     _add_analysis_options(slice_candidates)
     slice_candidates.set_defaults(handler=_slice_candidates)
+
+    slice_plan = subparsers.add_parser(
+        "slice-plan",
+        help="plan only obligation-preserving partitions without running proof",
+    )
+    slice_plan.add_argument("trace", type=Path)
+    slice_plan.add_argument("--output", type=Path, required=True)
+    _add_analysis_options(slice_plan)
+    slice_plan.set_defaults(handler=_slice_plan)
 
     run = subparsers.add_parser("run", help="capture and immediately analyze")
     run.add_argument("--trace", type=Path, required=True)

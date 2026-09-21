@@ -132,6 +132,16 @@ The command stops before `check_window`, so the report cannot change a proof
 verdict. A future proven slice must satisfy the ledger and obligation contract
 before it may be passed to a checker.
 
+## P4 obligation-preserving decomposition
+
+`bmo-check slice-plan TRACE --output REPORT` builds the obligation hypergraph and
+uses union-find to find only components whose obligations do not cross a
+partition. It never cuts by event count and never passes the proposed partitions
+to `check_window`. The report uses `slice-plan-v1`; `NO_SAFE_SPLIT` is returned
+when the window is connected by checker obligations, while `SPLIT_PROVEN` only
+means that the inventory has independent components and that checker integration
+is still pending. Both statuses have `complete=false`.
+
 Large traces and temporary outputs remain local experiment artifacts and are
 not versioned by this plan.
 

@@ -23,7 +23,10 @@ from .windows import (
     WindowInclusionReason,
     build_windows,
 )
-from .slice_contract import build_obligation_inventory
+from .slice_contract import (
+    build_obligation_inventory,
+    plan_obligation_preserving_split,
+)
 from .slice_candidates import build_candidate_slice, build_candidate_slices
 from .window_diagnostics import (
     WindowCharacterizationReport,
@@ -57,6 +60,7 @@ __all__ = [
     "locate_instruction_site",
     "analyze_application_partition",
     "build_obligation_inventory",
+    "plan_obligation_preserving_split",
     "build_candidate_slice",
     "build_candidate_slices",
     "build_trace_coverage",

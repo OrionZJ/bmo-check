@@ -14,11 +14,17 @@ from pathlib import Path
 from bmo_check_dynamic.capture import capture_program
 from bmo_check_dynamic.config import DynamicConfig
 from bmo_check_dynamic.analysis import WindowCharacterizationReport
-from bmo_check_dynamic.model import DynamicCertificate, SliceCandidateReport, TraceManifest
+from bmo_check_dynamic.model import (
+    DynamicCertificate,
+    SliceCandidateReport,
+    SlicePlanReport,
+    TraceManifest,
+)
 from bmo_check_dynamic.pipeline import (
     analyze_trace,
     candidate_slice_trace,
     characterize_trace,
+    slice_plan_trace,
 )
 
 
@@ -116,12 +122,23 @@ def candidate_slices(request: AnalyzeRequest) -> SliceCandidateReport:
     )
 
 
+def slice_plan(request: AnalyzeRequest) -> SlicePlanReport:
+    """只计算 obligation-preserving 分区计划，不执行 proof。"""
+
+    return slice_plan_trace(
+        request.trace_dir,
+        dbt_contract=request.dbt_contract,
+        config=request.config,
+    )
+
+
 __all__ = [
     "AnalyzeRequest",
     "CaptureRequest",
     "DynamicApplicationError",
     "analyze",
     "candidate_slices",
+    "slice_plan",
     "characterize",
     "capture",
 ]

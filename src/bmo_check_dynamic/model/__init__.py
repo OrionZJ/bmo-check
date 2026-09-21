@@ -37,6 +37,10 @@ from .slicing import (
     SliceCandidateStatus,
     SliceObligation,
     SliceObligationKind,
+    SlicePartition,
+    SlicePlan,
+    SlicePlanReport,
+    SlicePlanStatus,
     SliceRemovalLedgerEntry,
     stable_obligation_id,
 )
@@ -77,5 +81,9 @@ __all__ = [
     "SliceCandidateGroup",
     "CandidateSlice",
     "SliceCandidateReport",
+    "SlicePartition",
+    "SlicePlan",
+    "SlicePlanStatus",
+    "SlicePlanReport",
     "stable_obligation_id",
 ]

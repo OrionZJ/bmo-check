@@ -5,6 +5,7 @@ from bmo_check_dynamic.analysis import (
     AnalysisWindow,
     CommunicationEdge,
     build_obligation_inventory,
+    plan_obligation_preserving_split,
 )
 from bmo_check_dynamic.model import (
     CandidateSlice,
@@ -69,3 +70,29 @@ def test_candidate_only_slice_keeps_all_source_events() -> None:
     )
     assert candidate.status is SliceCandidateStatus.CANDIDATE_ONLY
     assert candidate.removed_event_ids == ()
+
+
+def test_split_plan_refuses_a_communication_connected_window() -> None:
+    plan = plan_obligation_preserving_split(_window())
+
+    assert plan.status.value == "no-safe-split"
+    assert plan.partition_count == 1
+    assert plan.complete is False
+
+
+def test_split_plan_can_describe_independent_event_components() -> None:
+    window = AnalysisWindow(
+        "independent",
+        (
+            TraceEvent(1, 1, 0, 0x10, EventKind.LOAD, 0x1000, 4),
+            TraceEvent(2, 1, 0, 0x20, EventKind.LOAD, 0x2000, 4),
+        ),
+        (),
+    )
+
+    plan = plan_obligation_preserving_split(window)
+
+    assert plan.status.value == "split-proven"
+    assert plan.partition_count == 2
+    assert plan.complete is False
+    assert all(partition.obligation_ids for partition in plan.partitions)

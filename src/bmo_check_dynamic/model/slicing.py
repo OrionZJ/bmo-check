@@ -29,6 +29,13 @@ class SliceCandidateStatus(StrEnum):
     REJECTED = "rejected"
 
 
+class SlicePlanStatus(StrEnum):
+    """obligation 图分解的决定；不会直接改变分析窗口。"""
+
+    NO_SAFE_SPLIT = "no-safe-split"
+    SPLIT_PROVEN = "split-proven"
+
+
 class SliceObligation(StrictModel):
     """必须由保留事件或独立 ProofFact 覆盖的关系命题。"""
 
@@ -150,6 +157,52 @@ class SliceCandidateReport(StrictModel):
     reasons: tuple[str, ...] = ()
 
 
+class SlicePartition(StrictModel):
+    """一个不跨 obligation 的候选求解分区。"""
+
+    partition_id: str
+    event_ids: tuple[str, ...]
+    obligation_ids: tuple[str, ...]
+
+
+class SlicePlan(StrictModel):
+    """P4 的保守分解结果；分区尚未接入现有 checker。"""
+
+    schema_version: str = "slice-plan-v1"
+    window_id: str
+    status: SlicePlanStatus
+    source_event_count: int
+    partition_count: int
+    partitions: tuple[SlicePartition, ...] = ()
+    largest_partition_event_count: int = 0
+    cross_partition_obligation_ids: tuple[str, ...] = ()
+    reason: str
+    complete: bool = False
+
+    @model_validator(mode="after")
+    def _validate_plan(self) -> "SlicePlan":
+        if self.source_event_count < 0 or self.partition_count < 0:
+            raise ValueError("slice plan counts cannot be negative")
+        if self.partition_count != len(self.partitions):
+            raise ValueError("partition_count does not match partitions")
+        if self.complete and self.status is not SlicePlanStatus.SPLIT_PROVEN:
+            raise ValueError("only a proven split may be complete")
+        if self.status is SlicePlanStatus.NO_SAFE_SPLIT and self.partition_count > 1:
+            raise ValueError("no-safe-split cannot contain multiple partitions")
+        return self
+
+
+class SlicePlanReport(StrictModel):
+    """整条 trace 的保守分解计划；不含 checker verdict。"""
+
+    schema_version: str = "slice-plan-report-v1"
+    trace_id: str
+    trace_complete: bool
+    analysis_reached_windows: bool
+    plans: tuple[SlicePlan, ...] = ()
+    reasons: tuple[str, ...] = ()
+
+
 def stable_obligation_id(
     kind: SliceObligationKind,
     event_ids: tuple[str, ...],
@@ -166,8 +219,12 @@ __all__ = [
     "SliceCandidateGroup",
     "SliceCandidateReport",
     "SliceCandidateStatus",
+    "SlicePlanStatus",
     "SliceObligation",
     "SliceObligationKind",
     "SliceRemovalLedgerEntry",
+    "SlicePartition",
+    "SlicePlan",
+    "SlicePlanReport",
     "stable_obligation_id",
 ]
