@@ -30,6 +30,16 @@ from .diagnostics import (
     WindowGraphDiagnostics,
     WindowGraphNode,
 )
+from .slicing import (
+    CandidateSlice,
+    SliceCandidateGroup,
+    SliceCandidateReport,
+    SliceCandidateStatus,
+    SliceObligation,
+    SliceObligationKind,
+    SliceRemovalLedgerEntry,
+    stable_obligation_id,
+)
 
 __all__ = [
     "BinaryFingerprint",
@@ -60,4 +70,12 @@ __all__ = [
     "WindowGraphAddress",
     "WindowGraphDiagnostics",
     "WindowGraphNode",
+    "SliceObligationKind",
+    "SliceCandidateStatus",
+    "SliceObligation",
+    "SliceRemovalLedgerEntry",
+    "SliceCandidateGroup",
+    "CandidateSlice",
+    "SliceCandidateReport",
+    "stable_obligation_id",
 ]

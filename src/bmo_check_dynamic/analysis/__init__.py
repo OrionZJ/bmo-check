@@ -23,6 +23,7 @@ from .windows import (
     WindowInclusionReason,
     build_windows,
 )
+from .slice_contract import build_obligation_inventory
 from .window_diagnostics import (
     WindowCharacterizationReport,
     WindowDiagnostics,
@@ -54,6 +55,7 @@ __all__ = [
     "thread_handoffs_complete",
     "locate_instruction_site",
     "analyze_application_partition",
+    "build_obligation_inventory",
     "build_trace_coverage",
     "coverage_state",
     "digest_edges",

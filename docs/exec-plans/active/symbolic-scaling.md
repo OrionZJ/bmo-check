@@ -107,6 +107,18 @@ uses the same endpoint and boundary inclusion records produced by
 `build_windows`; hand-built windows without inclusion records are treated
 conservatively as having only their explicit communication endpoints.
 
+## P2 obligation-preserving slice contract
+
+`model.slicing` and `analysis.slice_contract` define a typed, diagnostic-only
+contract for future slicing. The inventory records event presence,
+communication edges, source/target PPO, read-from candidate domains, coherence
+domains and ordering boundaries with stable IDs. A `CandidateSlice` must retain
+or explicitly account for the complete source event inventory; an approved
+removal requires an explicit `proof_fact_id` and a ledger entry. An incomplete
+or `candidate-only` object cannot be marked `PROVEN` and is not accepted by the
+current checker. This contract records obligations; it does not claim that any
+current event can be removed.
+
 Large traces and temporary outputs remain local experiment artifacts and are
 not versioned by this plan.
 
