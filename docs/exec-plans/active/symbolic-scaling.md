@@ -70,6 +70,20 @@ initial terms plus 16,397 conditional terms, or 319,215 estimated terms. This
 explains why the 100,000-term guard fires before solving; it does not claim
 that the Z3 formula is safe to materialize at a larger limit.
 
+## Frozen SB characterization run
+
+The report was regenerated from the complete local trace with the existing
+analysis budgets and the `characterize` command. The command stopped after
+window construction and arithmetic estimation; it did not write a
+certificate, call Z3, or make a verdict. The JSON remains an untracked local
+artifact at
+`.experiments/live-litmus-sb-characterization-20260921-v2/report.json`.
+
+This closes the initial investigation checkpoint. The observed dominant
+costs are now recorded, but no event has been removed and no window has been
+split. Any next change must first provide an obligation-preserving boundary
+summary and a removal ledger; otherwise the result remains `UNKNOWN`.
+
 The report explains why this input is expensive but does not claim that the
 window is safe to split or that the proof has a verdict. The saved JSON is a
 local experiment artifact under `.experiments/`.
@@ -107,7 +121,7 @@ not versioned by this plan.
 3. `feat: expose window characterization service` (complete)
 4. `feat: record event inclusion provenance` (complete)
 5. `feat: add symbolic encoding statistics` (complete)
-6. `test: characterize 3709-event SB window`
+6. `test: characterize 3709-event SB window` (complete)
 
 Stop after checkpoint 6 and review the report before implementing any slicing
 or solver optimization.
