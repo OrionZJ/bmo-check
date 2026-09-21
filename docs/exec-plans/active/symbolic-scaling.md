@@ -62,6 +62,14 @@ events (and exposes an explicit `unclassified` value if a future builder path
 cannot classify one). These records are provenance for the report only; they
 do not authorize removing an event or changing a proof obligation.
 
+The same report now includes a no-AST symbolic encoding estimate for each
+window. For the SB window it measured 3,690 read parts, 3,764 RF candidates,
+3,817 from-read candidates, 3,969 conditional-edge additions (3,891 unique
+edges), and 62,904 cycle edges. The encoder's arithmetic budget was 302,818
+initial terms plus 16,397 conditional terms, or 319,215 estimated terms. This
+explains why the 100,000-term guard fires before solving; it does not claim
+that the Z3 formula is safe to materialize at a larger limit.
+
 The report explains why this input is expensive but does not claim that the
 window is safe to split or that the proof has a verdict. The saved JSON is a
 local experiment artifact under `.experiments/`.
@@ -98,7 +106,7 @@ not versioned by this plan.
 2. `feat: add window structure diagnostics` (complete)
 3. `feat: expose window characterization service` (complete)
 4. `feat: record event inclusion provenance` (complete)
-5. `feat: add symbolic encoding statistics`
+5. `feat: add symbolic encoding statistics` (complete)
 6. `test: characterize 3709-event SB window`
 
 Stop after checkpoint 6 and review the report before implementing any slicing

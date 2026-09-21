@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import Counter
 
-from bmo_check_dynamic.model import EventKind, TraceEvent
+from bmo_check_dynamic.model import EventKind, SymbolicEncodingStats, TraceEvent
 from bmo_check_dynamic.model.manifest import StrictModel
 from bmo_check_dynamic.model import TraceManifest
 
@@ -59,7 +59,7 @@ class WindowDiagnostics(StrictModel):
 class WindowCharacterizationReport(StrictModel):
     """窗口构造阶段的机器可读快照，不包含任何 proof/verdict。"""
 
-    schema_version: str = "window-characterization-v1"
+    schema_version: str = "window-characterization-v2"
     trace_id: str
     trace_complete: bool
     event_count: int
@@ -76,6 +76,7 @@ class WindowCharacterizationReport(StrictModel):
     window_unknowns: tuple[str, ...] = ()
     reasons: tuple[str, ...] = ()
     windows: tuple[WindowDiagnostics, ...] = ()
+    symbolic: tuple[SymbolicEncodingStats, ...] = ()
 
 
 def characterize_window(window: AnalysisWindow) -> WindowDiagnostics:
@@ -201,6 +202,7 @@ def characterize_windows(
     edges: CompactCommunicationEdges | tuple[CommunicationEdge, ...],
     windows: tuple[AnalysisWindow, ...],
     window_unknowns: tuple[str, ...],
+    symbolic: tuple[SymbolicEncodingStats, ...] = (),
 ) -> WindowCharacterizationReport:
     """把同一条 pipeline 的窗口阶段输出保存为诊断快照。"""
 
@@ -223,6 +225,7 @@ def characterize_windows(
         analysis_reached_windows=True,
         window_unknowns=tuple(window_unknowns),
         windows=tuple(characterize_window(window) for window in windows),
+        symbolic=tuple(symbolic),
     )
 
 

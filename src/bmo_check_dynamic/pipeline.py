@@ -40,7 +40,11 @@ from bmo_check_dynamic.model import (
     TraceScope,
     TraceVerdict,
 )
-from bmo_check_dynamic.proof import check_window, load_supported_contract
+from bmo_check_dynamic.proof import (
+    characterize_symbolic_encoding,
+    check_window,
+    load_supported_contract,
+)
 from bmo_check_dynamic.storage import TraceStore, TraceStoreError
 from bmo_check_dynamic.trace import TraceReader, trace_digest, validate_trace
 from bmo_check_dynamic.trace import build_dynamic_certificate_binding
@@ -538,6 +542,7 @@ def characterize_trace(
             edges,
             windows,
             window_unknowns,
+            symbolic=tuple(characterize_symbolic_encoding(window) for window in windows),
         )
         raise _WindowInspectionComplete(report)
 

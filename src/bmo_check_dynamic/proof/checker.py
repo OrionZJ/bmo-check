@@ -12,6 +12,7 @@ from bmo_check_dynamic.model import (
     EventFlags,
     EventKind,
     ReadFromWitness,
+    SymbolicEncodingStats,
     TraceEvent,
     WindowResult,
 )
@@ -188,6 +189,99 @@ def check_window(
         examined_executions=examined,
         status="safe",
         reason="no RVWMO-only execution exists in the over-approximated trace window",
+    )
+
+
+def characterize_symbolic_encoding(window: AnalysisWindow) -> SymbolicEncodingStats:
+    """统计当前 symbolic encoder 的算术规模，不启动 solver 或生成 AST。"""
+
+    memory = tuple(event for event in window.events if event.kind.is_memory)
+    reads = tuple(event for event in memory if event.kind.is_read)
+    writes = tuple(event for event in memory if event.kind.is_write)
+    source_ppo = source_preserved_order(window.events)
+    target_ppo = target_preserved_order(window.events)
+    nodes = tuple(sorted(event.event_id for event in window.events))
+    coherence_groups = _overlap_components(writes)
+    coherence_pair_count = sum(
+        1
+        for group in coherence_groups
+        for left in group
+        for right in group
+        if left is not right and left.overlaps(right)
+    )
+    conditional_edges: set[Edge] = set()
+    conditional_edge_additions = 0
+    conditional_term_weight = 0
+    rf_part_count = 0
+    rf_candidate_count = 0
+    cross_thread_rf_edge_count = 0
+    from_read_candidate_count = 0
+    for read in reads:
+        for part in _read_parts(read, writes):
+            rf_part_count += 1
+            candidates = tuple(
+                write
+                for write in writes
+                if write.address <= part.address
+                and write.end_address >= part.end_address
+                and not (
+                    write.thread_id == read.thread_id and write.sequence >= read.sequence
+                )
+            )
+            rf_candidate_count += len(candidates)
+            cross_thread_rf_edge_count += sum(
+                write.thread_id != read.thread_id for write in candidates
+            )
+            for later in writes:
+                if (
+                    later.address >= part.end_address
+                    or later.end_address <= part.address
+                    or later.event_id == read.event_id
+                ):
+                    continue
+                condition_count = 1
+                for source in candidates:
+                    if not source.overlaps(later) or source is later:
+                        continue
+                    condition_count += 1
+                from_read_candidate_count += 1
+                conditional_edge_additions += 1
+                conditional_edges.add((read.event_id, later.event_id))
+                conditional_term_weight += 3 + condition_count
+
+    for group in coherence_groups:
+        for left in group:
+            for right in group:
+                if left is right or not left.overlaps(right):
+                    continue
+                conditional_edge_additions += 1
+                conditional_edges.add((left.event_id, right.event_id))
+                conditional_term_weight += 4
+
+    initial_formula_terms = len(nodes) * 3 + len(source_ppo) * 4 + len(target_ppo)
+    return SymbolicEncodingStats(
+        window_id=window.window_id,
+        event_count=len(window.events),
+        memory_event_count=len(memory),
+        read_count=len(reads),
+        write_count=len(writes),
+        node_count=len(nodes),
+        source_ppo_edge_count=len(source_ppo),
+        target_ppo_edge_count=len(target_ppo),
+        initial_formula_terms=initial_formula_terms,
+        coherence_component_count=len(coherence_groups),
+        coherence_write_count=sum(len(group) for group in coherence_groups),
+        coherence_pair_count=coherence_pair_count,
+        rf_part_count=rf_part_count,
+        rf_candidate_count=rf_candidate_count,
+        cross_thread_rf_edge_count=cross_thread_rf_edge_count,
+        from_read_candidate_count=from_read_candidate_count,
+        conditional_edge_additions=conditional_edge_additions,
+        conditional_edge_count=len(conditional_edges),
+        conditional_term_weight=conditional_term_weight,
+        cycle_edge_count=len(source_ppo | conditional_edges),
+        cycle_node_count=len(nodes),
+        estimated_formula_terms=initial_formula_terms + conditional_term_weight,
     )
 
 
