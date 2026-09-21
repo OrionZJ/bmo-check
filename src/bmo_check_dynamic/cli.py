@@ -18,6 +18,7 @@ from bmo_check_dynamic.application import (
     characterize as characterize_request,
     slice_plan as slice_plan_request,
     obligation_bottleneck as obligation_bottleneck_request,
+    cycle_relevance as cycle_relevance_request,
     capture as capture_request,
 )
 from bmo_check_dynamic.capture import CaptureError
@@ -175,6 +176,20 @@ def _obligation_bottleneck(args: argparse.Namespace) -> int:
     args.output.write_text(report.model_dump_json(indent=2), encoding="utf-8")
     print(report.model_dump_json(indent=2))
     # 这是只读表征命令，不把诊断状态映射成 verdict exit code。
+    return 0
+
+
+def _cycle_relevance(args: argparse.Namespace) -> int:
+    report = cycle_relevance_request(
+        AnalyzeRequest(
+            trace_dir=args.trace,
+            dbt_contract=args.dbt_contract,
+            config=_analysis_config(args),
+        )
+    )
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(report.model_dump_json(indent=2), encoding="utf-8")
+    print(report.model_dump_json(indent=2))
     return 0
 
 
@@ -617,6 +632,15 @@ def build_parser() -> argparse.ArgumentParser:
     obligation_bottleneck.add_argument("--output", type=Path, required=True)
     _add_analysis_options(obligation_bottleneck)
     obligation_bottleneck.set_defaults(handler=_obligation_bottleneck)
+
+    cycle_relevance = subparsers.add_parser(
+        "cycle-relevance",
+        help="characterize cycle-relevant relations without running proof",
+    )
+    cycle_relevance.add_argument("trace", type=Path)
+    cycle_relevance.add_argument("--output", type=Path, required=True)
+    _add_analysis_options(cycle_relevance)
+    cycle_relevance.set_defaults(handler=_cycle_relevance)
 
     run = subparsers.add_parser("run", help="capture and immediately analyze")
     run.add_argument("--trace", type=Path, required=True)

@@ -29,6 +29,7 @@ from .slice_contract import (
 )
 from .slice_candidates import build_candidate_slice, build_candidate_slices
 from .obligation_bottleneck import characterize_obligation_bottleneck
+from .cycle_relevance import characterize_cycle_relevance
 from .window_diagnostics import (
     WindowCharacterizationReport,
     WindowDiagnostics,
@@ -65,6 +66,7 @@ __all__ = [
     "build_candidate_slice",
     "build_candidate_slices",
     "characterize_obligation_bottleneck",
+    "characterize_cycle_relevance",
     "build_trace_coverage",
     "coverage_state",
     "digest_edges",

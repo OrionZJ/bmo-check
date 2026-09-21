@@ -20,12 +20,14 @@ from bmo_check_dynamic.model import (
     SlicePlanReport,
     TraceManifest,
     TraceObligationBottleneckReport,
+    TraceCycleRelevanceReport,
 )
 from bmo_check_dynamic.pipeline import (
     analyze_trace,
     candidate_slice_trace,
     characterize_trace,
     obligation_bottleneck_trace,
+    cycle_relevance_trace,
     slice_plan_trace,
 )
 
@@ -144,6 +146,16 @@ def obligation_bottleneck(request: AnalyzeRequest) -> TraceObligationBottleneckR
     )
 
 
+def cycle_relevance(request: AnalyzeRequest) -> TraceCycleRelevanceReport:
+    """只表征坏环关系和 PPO 可达性，不执行 proof。"""
+
+    return cycle_relevance_trace(
+        request.trace_dir,
+        dbt_contract=request.dbt_contract,
+        config=request.config,
+    )
+
+
 __all__ = [
     "AnalyzeRequest",
     "CaptureRequest",
@@ -152,6 +164,7 @@ __all__ = [
     "candidate_slices",
     "slice_plan",
     "obligation_bottleneck",
+    "cycle_relevance",
     "characterize",
     "capture",
 ]

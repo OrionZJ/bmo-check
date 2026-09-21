@@ -249,3 +249,64 @@ say which relation families bind the 3,615-load hotspot and how large the
 obligation component is, but it cannot justify deleting a load, splitting the
 window, or changing `TRACE_SAFE`/`UNKNOWN`. No P7 implementation is included in
 this checkpoint.
+
+## P7 cycle relevance characterization
+
+P7 is the next review-gated diagnostic. `bmo-check cycle-relevance TRACE
+--output REPORT` records `violation-cycle-semantics-v1` and
+`cycle-relevance-v1`, then stops before proof. The semantics object is recovered
+from the current finite and symbolic checker rather than from a new model:
+
+- the finite query rejects a target cycle in `target_ppo | communication_relations`
+  and requires a source cycle in `source_ppo | communication_relations`;
+- the symbolic query constrains `target_rank` over target PPO and conditional
+  relations, then selects a non-empty balanced source cycle;
+- cross-thread RF, coherence-order and from-read edges are conditional
+  communication relations; control-flow closure and value matching are still
+  required before a counterexample can be accepted.
+
+Every inventory relation is classified without being removed. Explicit PPO and
+from-read edges are `DIRECT_CYCLE_EDGE` unless an alternate PPO path exists;
+such edges are reported as `REACHABILITY_SUPPORT` candidates while retaining
+the `potentially_transitive_redundant` flag. RF/coherence domains are
+`CANDIDATE_DOMAIN_ONLY`; event, communication-endpoint and boundary records are
+`ORDERING_SUPPORT`. An unrecognized relation is `UNRESOLVED`. The JSON stores a
+bounded sample of per-obligation classifications plus complete class counts.
+
+For each side's PPO graph, the report calculates direct edges, transitive
+reachability pairs, transitive-reduction candidates, source-only/target-only/
+shared edges, communication-endpoint span relevance, and repeated-load hotspot
+contribution. RF, FR and coherence candidates are marked cycle-relevant by an
+SCC over-approximation that includes all candidate edges at once; this is a
+diagnostic upper bound, not a proof that every candidate occurs in one legal
+execution. The same SCC envelope is used only to identify potentially
+cycle-capable PPO edges; the separate transitive-reduction result is computed
+from the PPO graph alone. The report explicitly labels that estimate and leaves
+all checker relations unchanged.
+
+On the frozen 3,720-event SB window, P7 measured:
+
+- primary relation classes: 14,906 direct-cycle relations, 103,389
+  reachability-support PPO relations, 3,718 candidate-domain relations, and
+  7,488 ordering-support relations; no unresolved relation was observed;
+- source PPO: 59,060 direct edges, 6,693,496 reachability pairs, 55,332
+  transitive-reduction candidates;
+- target PPO: 55,418 direct edges, 153,846 reachability pairs, 48,057
+  transitive-reduction candidates;
+- source-only/target-only/shared PPO: 3,661 / 19 / 55,399;
+- the 3,615-load hotspot contributes 57,841 source and 54,225 target PPO
+  edges; 54,224 and 46,995 of those are transitive-reduction candidates;
+- RF has 3,764 candidates and FR has 3,817; the SCC diagnostic marks all of
+  them potentially cycle-relevant, so this result does not justify RF/FR
+  pruning ahead of PPO representation work.
+- The purely diagnostic estimate would replace 129,501 explicit relations by
+  about 26,112 after removing the two sides' transitive-reduction candidates;
+  this number is not a soundness claim and no relation was removed.
+
+The resulting research hypothesis is now explicit but unimplemented:
+`full PPO encoding -> cycle-relevant reachability summary`. The large
+transitive-reduction estimate supports studying a reachability-summary
+encoding before lazy RF/FR generation. A single SB trace cannot establish
+cross-workload scalability or soundness; P8 would require a proof-preserving
+representation design and independent regression witnesses. P7 ends at this
+review point and does not start that work.

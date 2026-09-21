@@ -30,6 +30,7 @@ from bmo_check_dynamic.analysis import (
     build_candidate_slices,
     plan_obligation_preserving_split,
     characterize_obligation_bottleneck,
+    characterize_cycle_relevance,
 )
 from bmo_check_dynamic.analysis.coverage import build_trace_coverage
 from bmo_check_dynamic.config import DynamicConfig
@@ -45,6 +46,7 @@ from bmo_check_dynamic.model import (
     SliceCandidateReport,
     SlicePlanReport,
     TraceObligationBottleneckReport,
+    TraceCycleRelevanceReport,
 )
 from bmo_check_dynamic.proof import (
     characterize_symbolic_encoding,
@@ -86,6 +88,14 @@ class _ObligationBottleneckInspectionComplete(Exception):
 
     def __init__(self, report: TraceObligationBottleneckReport) -> None:
         super().__init__("obligation bottleneck inspection completed")
+        self.report = report
+
+
+class _CycleRelevanceInspectionComplete(Exception):
+    """P7 cycle relevance 表征完成后跳过 proof。"""
+
+    def __init__(self, report: TraceCycleRelevanceReport) -> None:
+        super().__init__("cycle relevance inspection completed")
         self.report = report
 
 
@@ -747,6 +757,51 @@ def obligation_bottleneck_trace(
     # 预检、导入或通信扫描在构造窗口前失败时，只能说明没有到达 P6；
     # 这里保留 pipeline 已经记录的原因，不伪造空的 obligation 图。
     return TraceObligationBottleneckReport(
+        trace_id=certificate.scope.trace_ids[0],
+        trace_complete=certificate.trace_complete,
+        analysis_reached_windows=False,
+        reasons=certificate.unknown_reasons,
+    )
+
+
+def cycle_relevance_trace(
+    trace_dir: Path,
+    *,
+    dbt_contract: Path,
+    config: DynamicConfig | None = None,
+) -> TraceCycleRelevanceReport:
+    """表征坏环关系和 PPO 可达性，不启动 proof checker。"""
+
+    def inspect(
+        manifest: TraceManifest,
+        validation: object,
+        stored_event_count: int,
+        scan_stats: CommunicationScanStats,
+        edges: CompactCommunicationEdges | tuple[CommunicationEdge, ...],
+        windows: tuple[object, ...],
+        window_unknowns: tuple[str, ...],
+    ) -> None:
+        del stored_event_count, scan_stats, edges
+        report = TraceCycleRelevanceReport(
+            trace_id=manifest.trace_id,
+            trace_complete=bool(getattr(validation, "structurally_complete", False)),
+            analysis_reached_windows=True,
+            windows=tuple(characterize_cycle_relevance(window) for window in windows),
+            reasons=tuple(window_unknowns),
+        )
+        raise _CycleRelevanceInspectionComplete(report)
+
+    try:
+        certificate = analyze_trace(
+            trace_dir,
+            dbt_contract=dbt_contract,
+            config=config,
+            _window_observer=inspect,
+        )
+    except _CycleRelevanceInspectionComplete as complete:
+        return complete.report
+
+    return TraceCycleRelevanceReport(
         trace_id=certificate.scope.trace_ids[0],
         trace_complete=certificate.trace_complete,
         analysis_reached_windows=False,

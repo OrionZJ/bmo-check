@@ -230,3 +230,144 @@ class TraceObligationBottleneckReport(StrictModel):
     analysis_reached_windows: bool
     windows: tuple[ObligationBottleneckReport, ...] = ()
     reasons: tuple[str, ...] = ()
+
+
+class CycleRelevanceClass(StrEnum):
+    """P7 对关系在当前 cycle 查询中的主要作用分类。"""
+
+    DIRECT_CYCLE_EDGE = "direct_cycle_edge"
+    REACHABILITY_SUPPORT = "reachability_support"
+    CANDIDATE_DOMAIN_ONLY = "candidate_domain_only"
+    ORDERING_SUPPORT = "ordering_support"
+    UNRESOLVED = "unresolved"
+
+
+class ViolationCycleSemantics(StrictModel):
+    """从当前 finite/symbolic checker 恢复出的坏环契约。"""
+
+    schema_version: str = "violation-cycle-semantics-v1"
+    source_cycle_query: str
+    target_cycle_query: str
+    source_direct_relation_families: tuple[str, ...]
+    target_ordering_relation_families: tuple[str, ...]
+    conditional_relation_families: tuple[str, ...]
+    source_cycle_required: bool = True
+    target_cycle_forbidden: bool = True
+    requires_control_flow_closed: bool = True
+    requires_value_match: bool = True
+    finite_relation_builder: str
+    symbolic_relation_builder: str
+
+
+class CycleRelevanceCount(StrictModel):
+    """主要分类的数量；分类不会删除关系。"""
+
+    classification: CycleRelevanceClass
+    count: int
+
+
+class PPOCycleSummary(StrictModel):
+    """一侧 PPO 图的可达性和冗余候选统计。"""
+
+    side: str
+    direct_edge_count: int
+    reachability_pair_count: int
+    transitive_reduction_candidate_count: int
+    nonredundant_edge_count: int
+    cycle_relevant_direct_edge_count: int
+    communication_relevant_edge_count: int
+    internal_chain_edge_count: int
+    hotspot_incident_edge_count: int
+    hotspot_redundant_edge_count: int
+    hotspot_communication_relevant_edge_count: int
+    invalid_edge_count: int = 0
+
+
+class CandidateCycleSummary(StrictModel):
+    """RF/FR/CO 候选在 source/target 候选环中的有界统计。"""
+
+    kind: str
+    total_candidate_count: int
+    source_cycle_relevant_count: int
+    target_cycle_relevant_count: int
+    either_cycle_relevant_count: int
+    neither_cycle_relevant_count: int
+    max_candidates_per_event: int
+    cycle_relevance_is_overapproximation: bool = True
+
+
+class CycleHotspotSummary(StrictModel):
+    """重复 Load 热点对 PPO 与候选关系的贡献。"""
+
+    thread_id: int
+    address: int
+    size: int
+    kind: str
+    event_count: int
+    source_ppo_edge_count: int
+    source_ppo_redundant_count: int
+    source_ppo_communication_relevant_count: int
+    target_ppo_edge_count: int
+    target_ppo_redundant_count: int
+    target_ppo_communication_relevant_count: int
+    rf_candidate_count: int
+    rf_source_cycle_relevant_count: int
+    rf_target_cycle_relevant_count: int
+    fr_candidate_count: int
+    fr_source_cycle_relevant_count: int
+    fr_target_cycle_relevant_count: int
+
+
+class ObligationCycleClassification(StrictModel):
+    """单条 obligation 的诊断分类；只保留报告中的有界样本。"""
+
+    relation_id: str
+    relation_kind: str
+    event_ids: tuple[str, ...]
+    classification: CycleRelevanceClass
+    source_direct: bool = False
+    target_direct: bool = False
+    potentially_transitive_redundant: bool = False
+    reason: str
+
+
+class CycleRelevanceReport(StrictModel):
+    """单窗口 P7 cycle relevance 表征，不改变 checker 输入。"""
+
+    schema_version: str = "cycle-relevance-v1"
+    window_id: str
+    event_count: int
+    full_relation_count: int
+    cycle_direct_relation_count: int
+    reachability_support_count: int
+    candidate_domain_only_count: int
+    ordering_support_count: int
+    unresolved_count: int
+    semantics: ViolationCycleSemantics
+    classification_counts: tuple[CycleRelevanceCount, ...] = ()
+    source_ppo: PPOCycleSummary
+    target_ppo: PPOCycleSummary
+    source_only_ppo_edge_count: int
+    target_only_ppo_edge_count: int
+    shared_ppo_edge_count: int
+    rf: CandidateCycleSummary
+    fr: CandidateCycleSummary
+    coherence: CandidateCycleSummary
+    hotspots: tuple[CycleHotspotSummary, ...] = ()
+    hotspots_truncated: bool = False
+    obligation_classifications: tuple[ObligationCycleClassification, ...] = ()
+    obligation_classifications_truncated: bool = False
+    estimated_explicit_relation_reduction: int
+    estimated_explicit_relation_count_after_summary: int
+    estimate_is_diagnostic_only: bool = True
+
+
+class TraceCycleRelevanceReport(StrictModel):
+    """整条 trace 的 P7 cycle relevance 表征。"""
+
+    schema_version: str = "trace-cycle-relevance-v1"
+    trace_id: str
+    trace_complete: bool
+    analysis_reached_windows: bool
+    windows: tuple[CycleRelevanceReport, ...] = ()
+    reasons: tuple[str, ...] = ()
