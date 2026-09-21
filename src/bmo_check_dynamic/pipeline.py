@@ -4,6 +4,7 @@ import hashlib
 import json
 import tempfile
 from dataclasses import fields
+from collections.abc import Callable
 from itertools import chain
 from pathlib import Path
 
@@ -24,6 +25,8 @@ from bmo_check_dynamic.analysis import (
     find_communication_edges,
     max_communication_page_events,
     prepare_communication_scan_stats,
+    WindowCharacterizationReport,
+    characterize_windows,
 )
 from bmo_check_dynamic.analysis.coverage import build_trace_coverage
 from bmo_check_dynamic.config import DynamicConfig
@@ -42,6 +45,14 @@ from bmo_check_dynamic.storage import TraceStore, TraceStoreError
 from bmo_check_dynamic.trace import TraceReader, trace_digest, validate_trace
 from bmo_check_dynamic.trace import build_dynamic_certificate_binding
 from bmo_check_dynamic.trace.format import event_files
+
+
+class _WindowInspectionComplete(Exception):
+    """内部控制流：窗口诊断完成后跳过 proof，释放临时 TraceStore。"""
+
+    def __init__(self, report: WindowCharacterizationReport) -> None:
+        super().__init__("window inspection completed")
+        self.report = report
 
 
 def _scan_communication_edges(
@@ -76,6 +87,7 @@ def analyze_trace(
     *,
     dbt_contract: Path,
     config: DynamicConfig | None = None,
+    _window_observer: Callable[..., None] | None = None,
 ) -> DynamicCertificate:
     config = config or DynamicConfig()
     config.validate()
@@ -392,6 +404,17 @@ def analyze_trace(
                     store, edges, max_events=config.max_window_events
                 )
             unknowns.extend(window_unknowns)
+            if _window_observer is not None:
+                # 诊断观察必须发生在同一条 pipeline、同一个完整窗口集合上；
+                # observer 不能修改输入，抛出内部完成信号后才会跳过 proof。
+                _window_observer(
+                    manifest,
+                    validation,
+                    scan_stats,
+                    edge_sample,
+                    windows,
+                    window_unknowns,
+                )
             coverage = build_trace_coverage(
                 store,
                 import_ledger=store.import_ledger(),
@@ -490,6 +513,62 @@ def analyze_trace(
     finally:
         if temporary is not None:
             temporary.cleanup()
+
+
+def characterize_trace(
+    trace_dir: Path,
+    *,
+    dbt_contract: Path,
+    config: DynamicConfig | None = None,
+) -> WindowCharacterizationReport:
+    """只执行导入、通信扫描和窗口构造，不启动 proof checker。"""
+
+    def inspect(
+        manifest: TraceManifest,
+        validation: object,
+        scan_stats: CommunicationScanStats,
+        edges: CompactCommunicationEdges | tuple[CommunicationEdge, ...],
+        windows: tuple[object, ...],
+        window_unknowns: tuple[str, ...],
+    ) -> None:
+        report = characterize_windows(
+            manifest,
+            validation,
+            scan_stats,
+            edges,
+            windows,
+            window_unknowns,
+        )
+        raise _WindowInspectionComplete(report)
+
+    try:
+        certificate = analyze_trace(
+            trace_dir,
+            dbt_contract=dbt_contract,
+            config=config,
+            _window_observer=inspect,
+        )
+    except _WindowInspectionComplete as complete:
+        return complete.report
+
+    # preflight/storage 失败会在窗口阶段之前返回 certificate；不伪造窗口
+    # 统计，只记录没有到达窗口构造的原因。
+    return WindowCharacterizationReport(
+        trace_id=certificate.scope.trace_ids[0],
+        trace_complete=certificate.trace_complete,
+        event_count=certificate.event_count,
+        thread_count=certificate.thread_count,
+        candidate_page_count=0,
+        candidate_event_count=0,
+        scanned_event_count=None,
+        filtered_event_count=0,
+        communication_edge_count=certificate.communication_edge_count,
+        scoped_edge_count=0,
+        external_edge_count=certificate.external_runtime_edge_count,
+        communication_complete=certificate.communication_edges_complete,
+        analysis_reached_windows=False,
+        reasons=certificate.unknown_reasons,
+    )
 
 
 def _file_digest(path: Path) -> str:

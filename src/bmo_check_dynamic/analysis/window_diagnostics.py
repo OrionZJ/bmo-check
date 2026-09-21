@@ -4,7 +4,9 @@ from collections import Counter
 
 from bmo_check_dynamic.model import EventKind, TraceEvent
 from bmo_check_dynamic.model.manifest import StrictModel
+from bmo_check_dynamic.model import TraceManifest
 
+from .communication import CompactCommunicationEdges, CommunicationEdge, CommunicationScanStats
 from .windows import AnalysisWindow
 from bmo_check_dynamic.proof.relations import (
     source_preserved_order,
@@ -41,6 +43,28 @@ class WindowDiagnostics(StrictModel):
     max_rf_candidates: int
     p95_rf_candidates: int
     coherence_candidate_pair_count: int
+
+
+class WindowCharacterizationReport(StrictModel):
+    """窗口构造阶段的机器可读快照，不包含任何 proof/verdict。"""
+
+    schema_version: str = "window-characterization-v1"
+    trace_id: str
+    trace_complete: bool
+    event_count: int
+    thread_count: int
+    candidate_page_count: int
+    candidate_event_count: int
+    scanned_event_count: int | None
+    filtered_event_count: int
+    communication_edge_count: int
+    scoped_edge_count: int
+    external_edge_count: int
+    communication_complete: bool
+    analysis_reached_windows: bool
+    window_unknowns: tuple[str, ...] = ()
+    reasons: tuple[str, ...] = ()
+    windows: tuple[WindowDiagnostics, ...] = ()
 
 
 def characterize_window(window: AnalysisWindow) -> WindowDiagnostics:
@@ -146,4 +170,41 @@ def characterize_window(window: AnalysisWindow) -> WindowDiagnostics:
     )
 
 
-__all__ = ["WindowDiagnostics", "characterize_window"]
+def characterize_windows(
+    manifest: TraceManifest,
+    validation: object,
+    scan_stats: CommunicationScanStats,
+    edges: CompactCommunicationEdges | tuple[CommunicationEdge, ...],
+    windows: tuple[AnalysisWindow, ...],
+    window_unknowns: tuple[str, ...],
+) -> WindowCharacterizationReport:
+    """把同一条 pipeline 的窗口阶段输出保存为诊断快照。"""
+
+    edge_count = edges.edge_count if isinstance(edges, CompactCommunicationEdges) else len(edges)
+    event_count = int(getattr(validation, "event_count", 0))
+    thread_ids = tuple(getattr(validation, "thread_ids", ()))
+    return WindowCharacterizationReport(
+        trace_id=manifest.trace_id,
+        trace_complete=bool(getattr(validation, "structurally_complete", False)),
+        event_count=event_count,
+        thread_count=len(thread_ids),
+        candidate_page_count=scan_stats.candidate_page_count,
+        candidate_event_count=scan_stats.candidate_event_count,
+        scanned_event_count=scan_stats.scanned_event_count,
+        filtered_event_count=scan_stats.filtered_event_count,
+        communication_edge_count=scan_stats.total_edges,
+        scoped_edge_count=edge_count,
+        external_edge_count=scan_stats.external_edges,
+        communication_complete=scan_stats.complete,
+        analysis_reached_windows=True,
+        window_unknowns=tuple(window_unknowns),
+        windows=tuple(characterize_window(window) for window in windows),
+    )
+
+
+__all__ = [
+    "WindowCharacterizationReport",
+    "WindowDiagnostics",
+    "characterize_window",
+    "characterize_windows",
+]

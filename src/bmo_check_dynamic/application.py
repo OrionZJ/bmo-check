@@ -13,8 +13,9 @@ from pathlib import Path
 
 from bmo_check_dynamic.capture import capture_program
 from bmo_check_dynamic.config import DynamicConfig
+from bmo_check_dynamic.analysis import WindowCharacterizationReport
 from bmo_check_dynamic.model import DynamicCertificate, TraceManifest
-from bmo_check_dynamic.pipeline import analyze_trace
+from bmo_check_dynamic.pipeline import analyze_trace, characterize_trace
 
 
 class DynamicApplicationError(ValueError):
@@ -91,10 +92,21 @@ def analyze(request: AnalyzeRequest) -> DynamicCertificate:
     )
 
 
+def characterize(request: AnalyzeRequest) -> WindowCharacterizationReport:
+    """只运行 trace 导入、通信扫描和窗口构造，不执行 proof。"""
+
+    return characterize_trace(
+        request.trace_dir,
+        dbt_contract=request.dbt_contract,
+        config=request.config,
+    )
+
+
 __all__ = [
     "AnalyzeRequest",
     "CaptureRequest",
     "DynamicApplicationError",
     "analyze",
+    "characterize",
     "capture",
 ]

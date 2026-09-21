@@ -18,7 +18,12 @@ from .lifecycle_schema_adapter import (
 )
 from .site import locate_instruction_site
 from .windows import AnalysisWindow, build_windows
-from .window_diagnostics import WindowDiagnostics, characterize_window
+from .window_diagnostics import (
+    WindowCharacterizationReport,
+    WindowDiagnostics,
+    characterize_window,
+    characterize_windows,
+)
 
 __all__ = [
     "AnalysisWindow",
@@ -29,7 +34,9 @@ __all__ = [
     "CommunicationScanStats",
     "build_windows",
     "WindowDiagnostics",
+    "WindowCharacterizationReport",
     "characterize_window",
+    "characterize_windows",
     "find_communication_edges",
     "max_communication_page_events",
     "prepare_communication_scan_stats",

@@ -14,6 +14,7 @@ from bmo_check_dynamic.application import (
     AnalyzeRequest,
     CaptureRequest,
     analyze as analyze_request,
+    characterize as characterize_request,
     capture as capture_request,
 )
 from bmo_check_dynamic.capture import CaptureError
@@ -115,6 +116,20 @@ def _analyze(args: argparse.Namespace) -> int:
     args.output.write_text(certificate.model_dump_json(indent=2), encoding="utf-8")
     print(explain_certificate(certificate))
     return EXIT_CODES[certificate.verdict]
+
+
+def _characterize(args: argparse.Namespace) -> int:
+    report = characterize_request(
+        AnalyzeRequest(
+            trace_dir=args.trace,
+            dbt_contract=args.dbt_contract,
+            config=_analysis_config(args),
+        )
+    )
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(report.model_dump_json(indent=2), encoding="utf-8")
+    print(report.model_dump_json(indent=2))
+    return 0
 
 
 def _run(args: argparse.Namespace) -> int:
@@ -520,6 +535,15 @@ def build_parser() -> argparse.ArgumentParser:
     analyze.add_argument("--output", type=Path, required=True)
     _add_analysis_options(analyze)
     analyze.set_defaults(handler=_analyze)
+
+    characterize = subparsers.add_parser(
+        "characterize",
+        help="scan communication and windows without running the proof checker",
+    )
+    characterize.add_argument("trace", type=Path)
+    characterize.add_argument("--output", type=Path, required=True)
+    _add_analysis_options(characterize)
+    characterize.set_defaults(handler=_characterize)
 
     run = subparsers.add_parser("run", help="capture and immediately analyze")
     run.add_argument("--trace", type=Path, required=True)
