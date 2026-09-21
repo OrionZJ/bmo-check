@@ -19,7 +19,8 @@ The reproducible input is the existing local trace directory
 
 - trace id `439971d2-bce2-4751-86b7-44d8a38073eb`;
 - complete capture with zero dropped events;
-- 66,581 events across three threads;
+- 66,579 raw events across three threads (the prior certificate's stored
+  event count is 66,581 after two synthetic futex events);
 - 3,733 raw communication edges.
 
 The current window builder produces one relevant window with at least 3,709
@@ -48,7 +49,9 @@ observational and cannot change a verdict.
 
 On the frozen SB trace, the report recorded:
 
-- 66,579 imported events across three threads;
+- 66,579 raw trace events across three threads; the temporary TraceStore
+  materialized 66,581 events because two successful futex waits become
+  synthetic `FUTEX_WAIT` memory events;
 - 3,733 communication edges, all retained in the scoped edge set;
 - one window containing 3,720 events (3,718 memory events);
 - 59,060 source-PPO edges and 55,418 target-PPO edges;

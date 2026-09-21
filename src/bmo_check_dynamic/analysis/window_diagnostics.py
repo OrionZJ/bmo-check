@@ -59,10 +59,11 @@ class WindowDiagnostics(StrictModel):
 class WindowCharacterizationReport(StrictModel):
     """窗口构造阶段的机器可读快照，不包含任何 proof/verdict。"""
 
-    schema_version: str = "window-characterization-v2"
+    schema_version: str = "window-characterization-v3"
     trace_id: str
     trace_complete: bool
     event_count: int
+    raw_event_count: int | None = None
     thread_count: int
     candidate_page_count: int
     candidate_event_count: int
@@ -198,6 +199,7 @@ def characterize_window(window: AnalysisWindow) -> WindowDiagnostics:
 def characterize_windows(
     manifest: TraceManifest,
     validation: object,
+    stored_event_count: int,
     scan_stats: CommunicationScanStats,
     edges: CompactCommunicationEdges | tuple[CommunicationEdge, ...],
     windows: tuple[AnalysisWindow, ...],
@@ -207,12 +209,13 @@ def characterize_windows(
     """把同一条 pipeline 的窗口阶段输出保存为诊断快照。"""
 
     edge_count = edges.edge_count if isinstance(edges, CompactCommunicationEdges) else len(edges)
-    event_count = int(getattr(validation, "event_count", 0))
+    raw_event_count = int(getattr(validation, "event_count", 0))
     thread_ids = tuple(getattr(validation, "thread_ids", ()))
     return WindowCharacterizationReport(
         trace_id=manifest.trace_id,
         trace_complete=bool(getattr(validation, "structurally_complete", False)),
-        event_count=event_count,
+        event_count=stored_event_count,
+        raw_event_count=raw_event_count,
         thread_count=len(thread_ids),
         candidate_page_count=scan_stats.candidate_page_count,
         candidate_event_count=scan_stats.candidate_event_count,

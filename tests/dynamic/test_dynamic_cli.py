@@ -95,8 +95,10 @@ def test_characterize_scans_windows_without_running_proof(
 
     assert result == 0
     payload = json.loads(output.read_text(encoding="utf-8"))
-    assert payload["schema_version"] == "window-characterization-v2"
+    assert payload["schema_version"] == "window-characterization-v3"
     assert payload["analysis_reached_windows"] is True
+    assert payload["event_count"] == 2
+    assert payload["raw_event_count"] == 2
     assert payload["communication_edge_count"] == 1
     assert len(payload["windows"]) == 1
     assert {

@@ -414,6 +414,7 @@ def analyze_trace(
                 _window_observer(
                     manifest,
                     validation,
+                    store.event_count(),
                     scan_stats,
                     edge_sample,
                     windows,
@@ -530,6 +531,7 @@ def characterize_trace(
     def inspect(
         manifest: TraceManifest,
         validation: object,
+        stored_event_count: int,
         scan_stats: CommunicationScanStats,
         edges: CompactCommunicationEdges | tuple[CommunicationEdge, ...],
         windows: tuple[object, ...],
@@ -538,6 +540,7 @@ def characterize_trace(
         report = characterize_windows(
             manifest,
             validation,
+            stored_event_count,
             scan_stats,
             edges,
             windows,
@@ -562,6 +565,7 @@ def characterize_trace(
         trace_id=certificate.scope.trace_ids[0],
         trace_complete=certificate.trace_complete,
         event_count=certificate.event_count,
+        raw_event_count=None,
         thread_count=certificate.thread_count,
         candidate_page_count=0,
         candidate_event_count=0,
