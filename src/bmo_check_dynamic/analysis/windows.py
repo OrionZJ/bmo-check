@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from bisect import bisect_left
 from collections import defaultdict
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
+from enum import StrEnum
 
 from bmo_check_dynamic.model import EventKind, TraceEvent
 from bmo_check_dynamic.storage import TraceStore
@@ -15,11 +16,28 @@ from .communication import (
 )
 
 
+class WindowInclusionReason(StrEnum):
+    """窗口诊断使用的事件纳入原因。"""
+
+    COMMUNICATION_ENDPOINT = "communication_endpoint"
+    ORDERING_BOUNDARY = "ordering_boundary"
+    UNCLASSIFIED = "unclassified"
+
+
+@dataclass(frozen=True, slots=True)
+class WindowEventInclusion:
+    """记录窗口保留一个事件的原因；不参与 proof。"""
+
+    event_id: str
+    reasons: tuple[WindowInclusionReason, ...]
+
+
 @dataclass(frozen=True, slots=True)
 class AnalysisWindow:
     window_id: str
     events: tuple[TraceEvent, ...]
     communication_edges: tuple[CommunicationEdge, ...]
+    event_inclusions: tuple[WindowEventInclusion, ...] = ()
 
 
 def build_windows(
@@ -156,6 +174,14 @@ def build_windows(
             boundaries = store.boundaries_between(thread_id, first, last)
             for event in _minimal_boundaries(thread_endpoints, boundaries):
                 selected[event.event_id] = event
+        inclusions = _event_inclusions(
+            sorted(
+                selected.values(),
+                key=lambda event: (event.thread_id, event.sequence, event.event_id),
+            ),
+            endpoint_ids=endpoint_ids,
+            boundary_ids=set(selected) - endpoint_ids,
+        )
         # 没有通信边的普通访存不可能成为关系环节点。Fence/atomic 必须保留，
         # 因为它们会让两个端点在 source 和 target 中同时恢复顺序。
         events = tuple(
@@ -167,7 +193,12 @@ def build_windows(
             )
             continue
         windows.append(
-            AnalysisWindow(window_id, events, tuple(component_edges))
+            AnalysisWindow(
+                window_id,
+                events,
+                tuple(component_edges),
+                inclusions,
+            )
         )
     return tuple(windows), tuple(unknowns)
 
@@ -299,14 +330,45 @@ def _build_compact_windows(
             boundaries = store.boundaries_between(thread_id, thread_first, thread_last)
             for event in _minimal_boundaries(thread_endpoints, boundaries):
                 selected[event.event_id] = event
+        inclusions = _event_inclusions(
+            sorted(
+                selected.values(),
+                key=lambda event: (event.thread_id, event.sequence, event.event_id),
+            ),
+            endpoint_ids=endpoint_ids,
+            boundary_ids=set(selected) - endpoint_ids,
+        )
         events = tuple(
             sorted(selected.values(), key=lambda event: (event.thread_id, event.sequence))
         )
         if len(events) > max_events:
             unknowns.append(f"{window_id} contains {len(events)} events, limit is {max_events}")
             continue
-        windows.append(AnalysisWindow(window_id, events, communication_edges))
+        windows.append(
+            AnalysisWindow(window_id, events, communication_edges, inclusions)
+        )
     return tuple(windows), tuple(dict.fromkeys(unknowns))
+
+
+def _event_inclusions(
+    events: Iterable[TraceEvent],
+    *,
+    endpoint_ids: set[str],
+    boundary_ids: set[str],
+) -> tuple[WindowEventInclusion, ...]:
+    """在窗口构造点记录事件来源，避免事后用启发式猜测。"""
+
+    records: list[WindowEventInclusion] = []
+    for event in events:
+        reasons: list[WindowInclusionReason] = []
+        if event.event_id in endpoint_ids:
+            reasons.append(WindowInclusionReason.COMMUNICATION_ENDPOINT)
+        if event.event_id in boundary_ids:
+            reasons.append(WindowInclusionReason.ORDERING_BOUNDARY)
+        if not reasons:
+            reasons.append(WindowInclusionReason.UNCLASSIFIED)
+        records.append(WindowEventInclusion(event.event_id, tuple(reasons)))
+    return tuple(records)
 
 
 def _edge_endpoint_facts(

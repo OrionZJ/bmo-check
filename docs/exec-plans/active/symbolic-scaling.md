@@ -56,6 +56,12 @@ On the frozen SB trace, the report recorded:
 - 3,764 RF candidates, with a maximum of seven candidates for one read;
 - no scan incompleteness or window unknown.
 
+Each retained event now carries a diagnostic-only inclusion record. The
+current builder distinguishes communication endpoints from ordering-boundary
+events (and exposes an explicit `unclassified` value if a future builder path
+cannot classify one). These records are provenance for the report only; they
+do not authorize removing an event or changing a proof obligation.
+
 The report explains why this input is expensive but does not claim that the
 window is safe to split or that the proof has a verdict. The saved JSON is a
 local experiment artifact under `.experiments/`.
@@ -91,7 +97,7 @@ not versioned by this plan.
 1. `chore: preserve large-window solver baseline` (complete)
 2. `feat: add window structure diagnostics` (complete)
 3. `feat: expose window characterization service` (complete)
-4. `feat: record event inclusion provenance`
+4. `feat: record event inclusion provenance` (complete)
 5. `feat: add symbolic encoding statistics`
 6. `test: characterize 3709-event SB window`
 

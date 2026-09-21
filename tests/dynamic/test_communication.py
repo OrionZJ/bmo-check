@@ -16,6 +16,7 @@ from bmo_check_dynamic.analysis.windows import (
     _group_edges_by_component,
     _minimal_boundaries,
     build_windows,
+    WindowInclusionReason,
 )
 from bmo_check_dynamic.analysis.communication import CommunicationEdge
 from bmo_check_dynamic.model import EventFlags, EventKind, TraceEvent
@@ -288,6 +289,19 @@ def test_window_omits_noncommunicating_memory_but_keeps_boundary(tmp_path: Path)
         "t1:e4",
         "t2:e1",
         "t2:e2",
+    }
+    inclusion_reasons = {
+        record.event_id: set(record.reasons)
+        for record in windows[0].event_inclusions
+    }
+    assert inclusion_reasons["t1:e1"] == {
+        WindowInclusionReason.COMMUNICATION_ENDPOINT
+    }
+    assert inclusion_reasons["t2:e2"] == {
+        WindowInclusionReason.COMMUNICATION_ENDPOINT
+    }
+    assert inclusion_reasons["t1:e3"] == {
+        WindowInclusionReason.ORDERING_BOUNDARY
     }
 
 

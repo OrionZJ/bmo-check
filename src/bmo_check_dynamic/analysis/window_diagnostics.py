@@ -14,10 +14,20 @@ from bmo_check_dynamic.proof.relations import (
 )
 
 
+class WindowEventInclusion(StrictModel):
+    """窗口诊断中一个事件的稳定身份和纳入原因。"""
+
+    event_id: str
+    thread_id: int
+    sequence: int
+    kind: str
+    reasons: tuple[str, ...]
+
+
 class WindowDiagnostics(StrictModel):
     """只读记录一个窗口为什么昂贵；它不参与任何 verdict。"""
 
-    schema_version: str = "window-diagnostics-v1"
+    schema_version: str = "window-diagnostics-v2"
     window_id: str
     event_count: int
     memory_event_count: int
@@ -43,6 +53,7 @@ class WindowDiagnostics(StrictModel):
     max_rf_candidates: int
     p95_rf_candidates: int
     coherence_candidate_pair_count: int
+    event_inclusions: tuple[WindowEventInclusion, ...] = ()
 
 
 class WindowCharacterizationReport(StrictModel):
@@ -137,6 +148,18 @@ def characterize_window(window: AnalysisWindow) -> WindowDiagnostics:
         rf_counts.append(count)
     rf_counts.sort()
     p95_index = max(0, (95 * len(rf_counts) + 99) // 100 - 1)
+    events_by_id = {event.event_id: event for event in events}
+    event_inclusions = tuple(
+        WindowEventInclusion(
+            event_id=inclusion.event_id,
+            thread_id=events_by_id[inclusion.event_id].thread_id,
+            sequence=events_by_id[inclusion.event_id].sequence,
+            kind=events_by_id[inclusion.event_id].kind.name,
+            reasons=tuple(str(reason.value) for reason in inclusion.reasons),
+        )
+        for inclusion in window.event_inclusions
+        if inclusion.event_id in events_by_id
+    )
 
     return WindowDiagnostics(
         window_id=window.window_id,
@@ -167,6 +190,7 @@ def characterize_window(window: AnalysisWindow) -> WindowDiagnostics:
         max_rf_candidates=max(rf_counts, default=0),
         p95_rf_candidates=rf_counts[p95_index] if rf_counts else 0,
         coherence_candidate_pair_count=overlap_write_pair_count,
+        event_inclusions=event_inclusions,
     )
 
 
@@ -205,6 +229,7 @@ def characterize_windows(
 __all__ = [
     "WindowCharacterizationReport",
     "WindowDiagnostics",
+    "WindowEventInclusion",
     "characterize_window",
     "characterize_windows",
 ]

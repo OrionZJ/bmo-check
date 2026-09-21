@@ -17,16 +17,24 @@ from .lifecycle_schema_adapter import (
     lifecycle_metadata_to_ledger,
 )
 from .site import locate_instruction_site
-from .windows import AnalysisWindow, build_windows
+from .windows import (
+    AnalysisWindow,
+    WindowEventInclusion,
+    WindowInclusionReason,
+    build_windows,
+)
 from .window_diagnostics import (
     WindowCharacterizationReport,
     WindowDiagnostics,
+    WindowEventInclusion as WindowEventInclusionDiagnostic,
     characterize_window,
     characterize_windows,
 )
 
 __all__ = [
     "AnalysisWindow",
+    "WindowEventInclusion",
+    "WindowInclusionReason",
     "CommunicationEdge",
     "CommunicationEdgeSink",
     "CompactCommunicationEdges",
@@ -35,6 +43,7 @@ __all__ = [
     "build_windows",
     "WindowDiagnostics",
     "WindowCharacterizationReport",
+    "WindowEventInclusionDiagnostic",
     "characterize_window",
     "characterize_windows",
     "find_communication_edges",

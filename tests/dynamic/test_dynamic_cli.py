@@ -99,6 +99,13 @@ def test_characterize_scans_windows_without_running_proof(
     assert payload["analysis_reached_windows"] is True
     assert payload["communication_edge_count"] == 1
     assert len(payload["windows"]) == 1
+    assert {
+        item["event_id"] for item in payload["windows"][0]["event_inclusions"]
+    } == {"t1:e1", "t2:e1"}
+    assert all(
+        item["reasons"] == ["communication_endpoint"]
+        for item in payload["windows"][0]["event_inclusions"]
+    )
 
 
 def test_packages_do_not_import_each_other() -> None:
