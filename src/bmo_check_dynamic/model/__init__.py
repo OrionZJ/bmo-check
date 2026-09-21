@@ -24,7 +24,12 @@ from .coverage import (
     WindowCoverage,
 )
 from .campaign import CampaignMember, CampaignSummary
-from .diagnostics import SymbolicEncodingStats
+from .diagnostics import (
+    SymbolicEncodingStats,
+    WindowGraphAddress,
+    WindowGraphDiagnostics,
+    WindowGraphNode,
+)
 
 __all__ = [
     "BinaryFingerprint",
@@ -52,4 +57,7 @@ __all__ = [
     "CampaignMember",
     "CampaignSummary",
     "SymbolicEncodingStats",
+    "WindowGraphAddress",
+    "WindowGraphDiagnostics",
+    "WindowGraphNode",
 ]

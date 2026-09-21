@@ -29,3 +29,48 @@ class SymbolicEncodingStats(StrictModel):
     cycle_edge_count: int
     cycle_node_count: int
     estimated_formula_terms: int
+
+
+class WindowGraphNode(StrictModel):
+    """窗口图中度数最高的节点；只用于解释图膨胀来源。"""
+
+    event_id: str
+    thread_id: int
+    sequence: int
+    kind: str
+    degree: int
+    communication_degree: int
+    program_order_degree: int
+    boundary_degree: int
+
+
+class WindowGraphAddress(StrictModel):
+    """通信图中最热地址类的有界摘要。"""
+
+    address: int
+    size: int
+    event_count: int
+    communication_edge_count: int
+    load_count: int
+    store_count: int
+
+
+class WindowGraphDiagnostics(StrictModel):
+    """窗口构造图的只读表征，不表示任何可证明的删除。"""
+
+    schema_version: str = "window-graph-diagnostics-v1"
+    node_count: int
+    communication_edge_count: int
+    program_order_edge_count: int
+    boundary_edge_count: int
+    graph_edge_count: int
+    connected_component_count: int
+    biconnected_component_count: int
+    articulation_node_count: int
+    max_degree: int
+    p95_degree: int
+    max_biconnected_component_nodes: int
+    max_biconnected_component_edges: int
+    top_degree_nodes: tuple[WindowGraphNode, ...] = ()
+    top_address_classes: tuple[WindowGraphAddress, ...] = ()
+

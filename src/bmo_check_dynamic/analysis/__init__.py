@@ -30,6 +30,7 @@ from .window_diagnostics import (
     characterize_window,
     characterize_windows,
 )
+from .window_graph_diagnostics import characterize_window_graph
 
 __all__ = [
     "AnalysisWindow",
@@ -46,6 +47,7 @@ __all__ = [
     "WindowEventInclusionDiagnostic",
     "characterize_window",
     "characterize_windows",
+    "characterize_window_graph",
     "find_communication_edges",
     "max_communication_page_events",
     "prepare_communication_scan_stats",

@@ -91,6 +91,22 @@ The report explains why this input is expensive but does not claim that the
 window is safe to split or that the proof has a verdict. The saved JSON is a
 local experiment artifact under `.experiments/`.
 
+## P1 graph diagnostics
+
+`WindowDiagnostics.graph` now records the relation graph that was reconstructed
+from the existing window contract. Communication, endpoint program-order and
+ordering-boundary edges are counted separately; connected components,
+biconnected components, articulation nodes, degree percentiles and bounded
+top-node/top-address summaries identify hubs without removing any event. The
+graph is diagnostic only. It is not passed to `check_window` and an absent
+edge in a diagnostic summary is not proof that the relation is absent.
+
+The schema versions are `window-graph-diagnostics-v1`,
+`window-diagnostics-v3`, and `window-characterization-v4`. The reconstruction
+uses the same endpoint and boundary inclusion records produced by
+`build_windows`; hand-built windows without inclusion records are treated
+conservatively as having only their explicit communication endpoints.
+
 Large traces and temporary outputs remain local experiment artifacts and are
 not versioned by this plan.
 

@@ -34,6 +34,12 @@ def test_window_diagnostics_counts_memory_and_relation_candidates() -> None:
     assert diagnostics.rf_candidate_count == 1
     assert diagnostics.max_rf_candidates == 1
     assert diagnostics.coherence_candidate_pair_count == 1
+    assert diagnostics.graph.node_count == 4
+    assert diagnostics.graph.communication_edge_count == 1
+    assert diagnostics.graph.program_order_edge_count == 0
+    assert diagnostics.graph.graph_edge_count == 1
+    assert diagnostics.graph.connected_component_count == 3
+    assert diagnostics.graph.top_address_classes[0].event_count == 2
 
 
 def test_window_diagnostics_does_not_treat_unwritten_reads_as_rf_candidates() -> None:

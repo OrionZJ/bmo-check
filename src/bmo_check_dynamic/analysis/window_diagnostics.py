@@ -2,12 +2,18 @@ from __future__ import annotations
 
 from collections import Counter
 
-from bmo_check_dynamic.model import EventKind, SymbolicEncodingStats, TraceEvent
+from bmo_check_dynamic.model import (
+    EventKind,
+    SymbolicEncodingStats,
+    TraceEvent,
+    WindowGraphDiagnostics,
+)
 from bmo_check_dynamic.model.manifest import StrictModel
 from bmo_check_dynamic.model import TraceManifest
 
 from .communication import CompactCommunicationEdges, CommunicationEdge, CommunicationScanStats
 from .windows import AnalysisWindow
+from .window_graph_diagnostics import characterize_window_graph
 from bmo_check_dynamic.proof.relations import (
     source_preserved_order,
     target_preserved_order,
@@ -27,7 +33,7 @@ class WindowEventInclusion(StrictModel):
 class WindowDiagnostics(StrictModel):
     """只读记录一个窗口为什么昂贵；它不参与任何 verdict。"""
 
-    schema_version: str = "window-diagnostics-v2"
+    schema_version: str = "window-diagnostics-v3"
     window_id: str
     event_count: int
     memory_event_count: int
@@ -53,13 +59,14 @@ class WindowDiagnostics(StrictModel):
     max_rf_candidates: int
     p95_rf_candidates: int
     coherence_candidate_pair_count: int
+    graph: WindowGraphDiagnostics
     event_inclusions: tuple[WindowEventInclusion, ...] = ()
 
 
 class WindowCharacterizationReport(StrictModel):
     """窗口构造阶段的机器可读快照，不包含任何 proof/verdict。"""
 
-    schema_version: str = "window-characterization-v3"
+    schema_version: str = "window-characterization-v4"
     trace_id: str
     trace_complete: bool
     event_count: int
@@ -192,6 +199,7 @@ def characterize_window(window: AnalysisWindow) -> WindowDiagnostics:
         max_rf_candidates=max(rf_counts, default=0),
         p95_rf_candidates=rf_counts[p95_index] if rf_counts else 0,
         coherence_candidate_pair_count=overlap_write_pair_count,
+        graph=characterize_window_graph(window),
         event_inclusions=event_inclusions,
     )
 
