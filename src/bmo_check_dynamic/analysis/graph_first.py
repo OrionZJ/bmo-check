@@ -108,6 +108,11 @@ def _shallow_size(value: object) -> int:
 def _structured_memory_sample(
     frontier: deque[_LazyStructuredState] | deque[tuple[object, ...]],
     oracle: "_ReachabilityOracle",
+    *,
+    pending_seed_indices: deque[int] | None = None,
+    seen: set[object] | None = None,
+    candidates: list[object] | None = None,
+    skeleton_edges: dict[object, object] | None = None,
 ) -> dict[str, object]:
     sample = list(islice(frontier, 64))
     state_bytes = sum(_shallow_size(item) for item in sample)
@@ -118,6 +123,21 @@ def _structured_memory_sample(
         for item in sample
     )
     cache_bytes = _shallow_size(oracle.source_cache) + _shallow_size(oracle.path_cache)
+    # 只对容器和少量元素做浅层估计。这里的目的是解释 RSS 曲线，
+    # 不是递归遍历整个 frontier；后者本身会制造额外内存压力。
+    components = {
+        "frontier_states": estimated_frontier,
+        "frontier_path_sample": path_bytes,
+        "reachability_cache": cache_bytes,
+        "dedup_seen": _shallow_size(seen) if seen is not None else 0,
+        "candidate_store": _shallow_size(candidates) if candidates is not None else 0,
+        "skeleton_edge_index": _shallow_size(skeleton_edges)
+        if skeleton_edges is not None
+        else 0,
+        "pending_seed_queue": _shallow_size(pending_seed_indices)
+        if pending_seed_indices is not None
+        else 0,
+    }
     return {
         "expanded_states": None,
         "frontier_states": len(frontier),
@@ -126,6 +146,12 @@ def _structured_memory_sample(
         "estimated_state_bytes": int(average_state),
         "estimated_path_bytes": path_bytes,
         "estimated_reachability_cache_bytes": cache_bytes,
+        "memory_components": components,
+        "dedup_count": len(seen) if seen is not None else 0,
+        "candidate_count": len(candidates) if candidates is not None else 0,
+        "pending_seed_count": len(pending_seed_indices)
+        if pending_seed_indices is not None
+        else 0,
         "sample_state_count": len(sample),
     }
 
@@ -989,7 +1015,13 @@ def _enumerate_structured_skeleton_cycles(
     def sample_memory() -> None:
         nonlocal frontier_peak
         frontier_peak = max(frontier_peak, len(frontier))
-        item = _structured_memory_sample(frontier, oracle)
+        item = _structured_memory_sample(
+            frontier,
+            oracle,
+            seen=seen,
+            candidates=candidates,
+            skeleton_edges=skeleton_edges,
+        )
         item["expanded_states"] = explored
         memory_samples.append(item)
 
@@ -1133,6 +1165,11 @@ def _enumerate_structured_skeleton_cycles(
                     memory_samples[-1].get("estimated_reachability_cache_bytes")
                     if memory_samples
                     else None
+                ),
+                "memory_components": (
+                    memory_samples[-1].get("memory_components", {})
+                    if memory_samples
+                    else {}
                 ),
             }
         )
@@ -1495,7 +1532,14 @@ def _enumerate_bounded_lazy_skeleton_cycles(
     def sample() -> None:
         nonlocal frontier_peak
         frontier_peak = max(frontier_peak, len(frontier))
-        item = _structured_memory_sample(frontier, oracle)
+        item = _structured_memory_sample(
+            frontier,
+            oracle,
+            pending_seed_indices=pending_seed_indices,
+            seen=seen,
+            candidates=candidates,
+            skeleton_edges=skeleton_edges,
+        )
         item["expanded_states"] = explored
         item["pending_seed_indices"] = len(pending_seed_indices)
         item["successors_generated"] = successors_generated
@@ -1511,6 +1555,7 @@ def _enumerate_bounded_lazy_skeleton_cycles(
                 "candidate_count": len(candidates),
                 "canonical_count": len(seen),
                 "successors_generated": successors_generated,
+                "memory_components": item.get("memory_components", {}),
                 "current_rss_mb": item["rss_mb"],
                 "peak_rss_mb": item["rss_mb"],
                 "elapsed_ms": int((time.perf_counter() - started) * 1000),
@@ -1700,6 +1745,11 @@ def _enumerate_bounded_lazy_skeleton_cycles(
                     if memory_samples
                     else None
                 ),
+                "memory_components": (
+                    memory_samples[-1].get("memory_components", {})
+                    if memory_samples
+                    else {}
+                ),
                 "resource_limit_reached": termination_reason in {
                     "max_in_memory_frontier",
                     "max_rss_mb",
@@ -1723,6 +1773,11 @@ def _enumerate_bounded_lazy_skeleton_cycles(
             "candidate_count": len(candidates),
             "canonical_count": len(seen),
             "successors_generated": successors_generated,
+            "memory_components": (
+                memory_samples[-1].get("memory_components", {})
+                if memory_samples
+                else {}
+            ),
             "current_rss_mb": _rss_mb(),
             "peak_rss_mb": _rss_mb(),
             "elapsed_ms": int((time.perf_counter() - started) * 1000),

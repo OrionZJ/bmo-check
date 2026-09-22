@@ -238,6 +238,9 @@ class CandidateDiscoveryProfile(StrictModel):
     estimated_state_bytes: int | None = None
     estimated_path_bytes: int | None = None
     estimated_reachability_cache_bytes: int | None = None
+    # 这些是浅层估计，用来区分 frontier、缓存和索引各自的增长，
+    # 不能被当作精确的进程内存账本或资源安全证明。
+    memory_components: dict[str, int] = Field(default_factory=dict)
     memory_samples: tuple[dict[str, object], ...] = ()
     resource_limit_reached: bool = False
     termination_reason: str | None = None

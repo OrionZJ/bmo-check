@@ -1148,3 +1148,21 @@ query 样本单独测量。
 没有所需顺序。这里的 `FEASIBLE` 只是局部 solver 可满足，replay 未接受前
 不能称为 replay-valid candidate，更不能生成正式 COUNTEREXAMPLE。这暴露出
 下一步应单独改进 local witness/materialization，而不是放松 replay。
+
+P15 的长跑 discovery-only 也在同一绑定下完成了 50,000-state 预算实验。
+实际因为 `max_cycles=1000` 先到达终止条件，扩展了 5,058 个状态，产生
+1,000 个 canonical candidates；frontier 为 11,757，峰值 RSS 约 463 MiB，
+总墙钟时间约 4 分 22 秒，没有触发 3.5 GiB RSS 或 15 分钟 wall-time guard。
+这不是完整 candidate-space 结果，而是说明 lazy cursor 可以在较长搜索中保持
+有界内存并留下可恢复 frontier。
+
+P15.1 的画像现在还会分别记录 `frontier_states`、共享 path 的浅层样本、
+reachability cache、`seen` 去重集合、candidate store、skeleton-edge index
+以及 pending-seed queue 的估计大小。它们是诊断估计，不是精确 RSS 分解；
+独立子进程的 `/usr/bin/time -v` 峰值仍是资源验收依据。
+
+这组结果把当前主瓶颈从 frontier 内存转移到局部模型编码与 witness replay：
+10 个 bounded local-SMT query 在约 3 分钟内得到 6 个局部 `FEASIBLE`，但
+独立 replay 全部拒绝；因此没有产生正式 COUNTEREXAMPLE。下一阶段应先修复
+local witness/materialization 与 replay 的闭合关系，不能放松 replay 条件或把
+局部 `FEASIBLE` 当作正式 verdict。
