@@ -31,6 +31,7 @@ from bmo_check_dynamic.application import (
     ppo_solver_side as ppo_solver_side_request,
     graph_first as graph_first_request,
     cegar_prototype as cegar_request,
+    cegar_ab as cegar_ab_request,
     capture as capture_request,
 )
 from bmo_check_dynamic.capture import CaptureError
@@ -305,6 +306,33 @@ def _cegar_prototype(args: argparse.Namespace) -> int:
     print(report.model_dump_json(indent=2))
     # CEGAR 仍是 bounded diagnostic：即使找到 replay-valid candidate，
     # 也不能把结果映射为正式 COUNTEREXAMPLE 或 SAFE。
+    return 0
+
+
+def _cegar_ab(args: argparse.Namespace) -> int:
+    reduction = None
+    if args.reduction_certificate is not None:
+        reduction = TracePpoReductionCertificate.model_validate_json(
+            args.reduction_certificate.read_text(encoding="utf-8")
+        )
+    report = cegar_ab_request(
+        AnalyzeRequest(
+            trace_dir=args.trace,
+            dbt_contract=args.dbt_contract,
+            config=_analysis_config(args),
+        ),
+        reduction,
+        fixture=args.fixture,
+        max_cycle_length=args.max_cycle_length,
+        max_search_states=args.max_search_states,
+        max_local_queries=args.max_local_queries,
+        local_timeout_ms=args.local_timeout_ms,
+        local_max_symbolic_terms=args.local_max_symbolic_terms,
+        execute_local_solver=not args.encoding_only,
+    )
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(report.model_dump_json(indent=2), encoding="utf-8")
+    print(report.model_dump_json(indent=2))
     return 0
 
 
@@ -1029,6 +1057,23 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_analysis_options(cegar)
     cegar.set_defaults(handler=_cegar_prototype)
+
+    cegar_ab = subparsers.add_parser(
+        "cegar-ab",
+        help="compare P11/P12 candidate search modes (diagnostic only)",
+    )
+    cegar_ab.add_argument("trace", type=Path)
+    cegar_ab.add_argument("--reduction-certificate", type=Path)
+    cegar_ab.add_argument("--output", type=Path, required=True)
+    cegar_ab.add_argument("--fixture", default=None)
+    cegar_ab.add_argument("--max-cycle-length", type=int, default=12)
+    cegar_ab.add_argument("--max-search-states", type=int, default=10_000)
+    cegar_ab.add_argument("--max-local-queries", type=int, default=1_000)
+    cegar_ab.add_argument("--local-timeout-ms", type=int, default=1_000)
+    cegar_ab.add_argument("--local-max-symbolic-terms", type=int, default=100_000)
+    cegar_ab.add_argument("--encoding-only", action="store_true")
+    _add_analysis_options(cegar_ab)
+    cegar_ab.set_defaults(handler=_cegar_ab)
 
     ppo_replay = subparsers.add_parser(
         "ppo-replay",

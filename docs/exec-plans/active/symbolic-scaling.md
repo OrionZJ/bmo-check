@@ -957,3 +957,77 @@ bmo-check cegar-prototype TRACE \
 P12 stops at this diagnostic boundary.  A future completeness/CEGAR phase
 must first establish candidate-space coverage and replay all blocking facts
 before any formal checker integration is considered.
+
+## P13 candidate canonicalization and blocking A/B (diagnostic-only)
+
+P13 compares three bounded routes with one replayed PPO certificate and the
+same cycle-length, search-state, local-query, and local-timeout budgets:
+
+```text
+P11_RAW                 original graph-first search
+P12_CANONICAL           canonical skeleton deduplication only
+P12_CANONICAL_BLOCKING  canonicalization plus replayed UNSAT blocking
+```
+
+The comparison is implemented by `analysis/cegar_experiments.py` and exposed
+for a real trace as:
+
+```text
+bmo-check cegar-ab TRACE --reduction-certificate CERT --output REPORT.json \
+  --max-search-states 10000 --max-local-queries 100
+```
+
+The report separates certificate preparation/replay from search time and
+records generated/unique/duplicate candidates, RF/PPO-witness variants,
+local-query outcomes, blocking counts, truncation, and diagnostic RSS.  The
+in-process API explicitly marks its RSS as non-isolated; production resource
+comparisons must use independent workers.  The existing isolated worker
+harness now has a regression test that treats an external timeout as
+`process_timeout`, never as a completed result.
+
+Every blocking record is bound to the candidate digest, local obligation
+digest, semantic-context digest, source query digest, and a fixed proof scope.
+`replay_blocking_constraint_detail` reconstructs these fields independently.
+Only an explicit `unsat` result can create a block; timeout, `unknown`, and
+encoding-only queries never create pruning information.
+
+Small-fixture reports are local artifacts:
+
+```text
+.experiments/p13-synthetic-lb.json
+.experiments/p13-small-sb.json
+```
+
+The synthetic LB run (100 DFS states, 8 local queries) produced 2 raw
+candidates.  Canonicalization reduced them to 1 and therefore reduced local
+queries from 2 to 1; the candidate is feasible and remains diagnostic-only.
+The independent bounded enumerator found the same one canonical candidate,
+with no unresolved query or invalid block.  The small SB fixture has no source
+PPO under the current DBT contract, so all three modes correctly produced an
+empty candidate set; this is an observed model boundary, not a SAFE result.
+
+The large-SB reports are generated with the frozen 3,720-event trace and the
+P11.5 certificate.  A 1,000-state encoding-only run is stored at
+`.experiments/p13-large-1000-encoding.json`; all three modes reached the same
+state bound before producing a candidate, so no canonicalization or blocking
+benefit can be inferred at that bound.  The 10,000-state run is kept separate
+and remains bounded.  Its measured search rows were:
+
+| mode | states | generated | unique | local queries | blocked | status | search ms |
+| --- | ---: | ---: | ---: | ---: | ---: | --- | ---: |
+| P11 raw | 10,000 | 0 | 0 | 0 | 0 | truncated | 15,713 |
+| P12 canonical | 10,000 | 0 | 0 | 0 | 0 | truncated | 13,790 |
+| P12 canonical+blocking | 10,000 | 0 | 0 | 0 | 0 | truncated | 13,954 |
+
+The rows all stop before a candidate is emitted, so the zero duplicate/block
+counts are not evidence that the mechanisms are ineffective.  Because these
+three rows were intentionally run in one process, the reported 2,314 MiB RSS
+is a shared high-water mark, not a per-mode comparison; an isolated-worker
+measurement is required before drawing a memory conclusion.  Neither bound
+produced a local SMT result or a verdict.
+
+P13 does not change the official full-PPO checker, reduced-PPO shadow
+semantics, or any verdict.  Candidate coverage is marked complete only when
+the independent bounded enumeration agrees with the normalized set, no local
+query is unresolved, and every block replays.  Search truncation, missing
+candidates, or any `UNKNOWN` leaves the coverage result incomplete.

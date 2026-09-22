@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import shutil
 import sys
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -37,6 +38,7 @@ from bmo_check_dynamic.model import (
 from bmo_check_dynamic.cli import main
 from bmo_check_dynamic.proof import run_symbolic_shadow
 from bmo_check_dynamic.trace import TraceWriter
+import bmo_check_dynamic.analysis.solver_benchmark as solver_benchmark_module
 
 
 def _events(*kinds: EventKind) -> tuple[TraceEvent, ...]:
@@ -645,6 +647,37 @@ def test_isolated_solver_benchmark_records_child_resources(trace_manifest, tmp_p
     assert all(aggregate.completed == 1 for aggregate in report.aggregates)
     assert all(aggregate.median_analysis_overhead_ms is not None for aggregate in report.aggregates)
     assert any(aggregate.constraint_breakdown for aggregate in report.aggregates)
+
+
+def test_isolated_solver_worker_timeout_is_not_a_completed_result(
+    trace_manifest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """外部 worker 超时只能记为 process_timeout，不能伪装成 UNKNOWN/完成。"""
+
+    trace_dir = tmp_path / "timeout-trace"
+    trace_manifest(trace_dir, control_closed=True)
+
+    def timeout(*args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd=args[0], timeout=kwargs.get("timeout", 0))
+
+    monkeypatch.setattr(solver_benchmark_module.subprocess, "run", timeout)
+    report = run_isolated_solver_benchmark(
+        (trace_dir,),
+        dbt_contract=Path(__file__).resolve().parents[2] / "specs" / "dynamic" / "dbt6-mo-off.yaml",
+        reduction_certificates=(),
+        phase=ShadowSolverPhase.ENCODING,
+        sides=(BenchmarkSide.FULL,),
+        repetitions=1,
+        budgets_ms=(5,),
+        config=DynamicConfig(),
+        process_grace_ms=1,
+        worker_output_dir=tmp_path / "timeout-workers",
+        python_executable=sys.executable,
+    )
+    assert len(report.runs) == 1
+    assert report.runs[0].status == "process_timeout"
+    assert report.runs[0].child is None
+    assert report.runs[0].error is not None
 
 
 def test_fixed_rf_profile_records_observed_assignment() -> None:

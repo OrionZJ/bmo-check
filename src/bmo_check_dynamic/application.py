@@ -33,6 +33,7 @@ from bmo_check_dynamic.model import (
     SolverDiagnosticProfile,
     TraceGraphFirstReport,
     TraceCegarReport,
+    CegarExperimentReport,
 )
 from bmo_check_dynamic.pipeline import (
     analyze_trace,
@@ -48,6 +49,7 @@ from bmo_check_dynamic.pipeline import (
     ppo_solver_side_trace,
     graph_first_trace,
     cegar_trace,
+    cegar_mode_comparison_trace,
     slice_plan_trace,
 )
 
@@ -332,6 +334,35 @@ def cegar_prototype(
     )
 
 
+def cegar_ab(
+    request: AnalyzeRequest,
+    reduction_certificate: TracePpoReductionCertificate | None = None,
+    *,
+    fixture: str | None = None,
+    max_cycle_length: int = 12,
+    max_search_states: int = 10_000,
+    max_local_queries: int = 1_000,
+    local_timeout_ms: int = 1_000,
+    local_max_symbolic_terms: int = 100_000,
+    execute_local_solver: bool = True,
+) -> CegarExperimentReport:
+    """运行 P13 三模式 shadow A/B；不进入正式 verdict。"""
+
+    return cegar_mode_comparison_trace(
+        request.trace_dir,
+        dbt_contract=request.dbt_contract,
+        config=request.config,
+        reduction_certificate=reduction_certificate,
+        fixture=fixture,
+        max_cycle_length=max_cycle_length,
+        max_search_states=max_search_states,
+        max_local_queries=max_local_queries,
+        local_timeout_ms=local_timeout_ms,
+        local_max_symbolic_terms=local_max_symbolic_terms,
+        execute_local_solver=execute_local_solver,
+    )
+
+
 __all__ = [
     "AnalyzeRequest",
     "CaptureRequest",
@@ -349,6 +380,7 @@ __all__ = [
     "ppo_solver_side",
     "graph_first",
     "cegar_prototype",
+    "cegar_ab",
     "characterize",
     "capture",
 ]

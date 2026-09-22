@@ -2,18 +2,26 @@ from __future__ import annotations
 
 from bmo_check_dynamic.analysis import (
     canonicalize_cycle_skeleton,
+    compare_candidate_coverage,
+    compare_cegar_modes,
     characterize_cegar_window,
 )
 from bmo_check_dynamic.analysis.cegar import (
     blocking_constraint_applies,
     build_blocking_constraint,
     replay_blocking_constraint,
+    replay_blocking_constraint_detail,
 )
 from bmo_check_dynamic.model import (
     CandidateViolationCycle,
     CandidateViolationEdge,
     LocalCycleObligationSet,
     LocalCycleStatus,
+)
+from bmo_check_dynamic.model import CegarExperimentMode
+from bmo_check_dynamic.analysis.ppo_reduction import (
+    build_ppo_graph_input,
+    build_ppo_reduction_certificate,
 )
 
 from bmo_check_dynamic.analysis import AnalysisWindow
@@ -123,11 +131,18 @@ def test_semantic_block_preserves_rf_identity() -> None:
     assert block is not None
     assert block.verified_unsat is True
     assert replay_blocking_constraint(block, candidate, skeleton, obligations)
+    assert replay_blocking_constraint_detail(
+        block, candidate, skeleton, obligations
+    ).accepted
     assert blocking_constraint_applies(block, skeleton, obligations)
     different = obligations.model_copy(update={"selected_rf_relation_ids": ("rf:other",)})
     assert not blocking_constraint_applies(block, skeleton, different)
     tampered = block.model_copy(update={"assumptions": ("rf:other",)})
     assert not replay_blocking_constraint(tampered, candidate, skeleton, obligations)
+    tampered_digest = block.model_copy(update={"candidate_digest": "wrong"})
+    assert not replay_blocking_constraint_detail(
+        tampered_digest, candidate, skeleton, obligations
+    ).accepted
 
 
 def test_cegar_shadow_is_bounded_and_never_a_verdict() -> None:
@@ -183,3 +198,75 @@ def test_cegar_finds_replay_valid_candidate_without_formal_verdict() -> None:
         for item in feasible
     )
     assert report.diagnostic_only is True
+
+
+def test_p13_same_budget_modes_record_canonical_and_blocking_effects() -> None:
+    report = compare_cegar_modes(
+        _lb_window(),
+        fixture="synthetic-lb",
+        max_cycle_length=6,
+        max_search_states=100,
+        max_local_queries=4,
+        local_timeout_ms=500,
+        local_max_symbolic_terms=10_000,
+        execute_local_solver=True,
+    )
+    assert report.diagnostic_only is True
+    assert report.isolated_process is False
+    assert tuple(item.mode for item in report.modes) == (
+        CegarExperimentMode.RAW_P11,
+        CegarExperimentMode.CANONICAL,
+        CegarExperimentMode.CANONICAL_BLOCKING,
+    )
+    raw, canonical, blocking = report.modes
+    assert raw.raw_search_states == canonical.raw_search_states == blocking.raw_search_states
+    assert canonical.duplicate_candidates >= 1
+    assert blocking.local_queries <= canonical.local_queries
+    assert all(item.same_budget for item in report.modes)
+
+
+def test_p13_independent_coverage_is_complete_on_small_fixture() -> None:
+    window = _lb_window()
+    graph = build_ppo_graph_input(window)
+    certificate, replay = build_ppo_reduction_certificate(graph)
+    assert replay.accepted
+    report = characterize_cegar_window(
+        window,
+        reduction_certificate=certificate,
+        max_cycle_length=6,
+        max_search_states=10_000,
+        max_local_queries=32,
+        max_generated_candidates=32,
+        local_timeout_ms=500,
+        local_max_symbolic_terms=10_000,
+        execute_local_solver=True,
+    )
+    coverage = compare_candidate_coverage(
+        window,
+        report,
+        certificate=certificate,
+        max_cycle_length=6,
+        max_search_states=10_000,
+        max_candidates=32,
+    )
+    assert coverage.complete is True
+    assert coverage.missing_candidate_ids == ()
+    assert coverage.unresolved_query_count == 0
+
+
+def test_p13_unknown_never_creates_block() -> None:
+    candidate = _candidate(cycle_id="unknown", ppo_path=("r0", "p0", "w0"))
+    skeleton = canonicalize_cycle_skeleton(candidate)
+    obligations = LocalCycleObligationSet(
+        cycle_id="unknown",
+        selected_rf_relation_ids=candidate.rf_dependencies,
+        rf_candidate_domain_ids=candidate.rf_dependencies,
+        rf_exclusivity_preserved=True,
+    )
+    assert build_blocking_constraint(
+        candidate,
+        skeleton,
+        obligations,
+        solver_result="unknown",
+        query_digest="unknown-query",
+    ) is None

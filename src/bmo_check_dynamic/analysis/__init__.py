@@ -69,7 +69,9 @@ from .cegar import (
     canonicalize_cycle_skeleton,
     characterize_cegar_window,
     replay_blocking_constraint,
+    replay_blocking_constraint_detail,
 )
+from .cegar_experiments import compare_candidate_coverage, compare_cegar_modes
 from .solver_benchmark import run_isolated_solver_benchmark
 from .window_diagnostics import (
     WindowCharacterizationReport,
@@ -139,6 +141,9 @@ __all__ = [
     "blocking_constraint_applies",
     "characterize_cegar_window",
     "replay_blocking_constraint",
+    "replay_blocking_constraint_detail",
+    "compare_cegar_modes",
+    "compare_candidate_coverage",
     "build_trace_coverage",
     "coverage_state",
     "digest_edges",

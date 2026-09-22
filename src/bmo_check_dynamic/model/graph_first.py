@@ -226,6 +226,12 @@ class CandidateBlockingConstraint(StrictModel):
     canonical_structure_id: str | None = None
     source_candidate_id: str
     source_query_digest: str
+    # 以下字段把 block 绑定到生成它的候选与局部 obligation；缺失时
+    # 独立 replay 必须拒绝，而不是把旧结果当成更宽的剪枝规则。
+    candidate_digest: str | None = None
+    obligation_digest: str | None = None
+    semantic_context_digest: str | None = None
+    proof_scope: str = "local-cycle-obligations-v1"
     solver_result: str
     verified_unsat: bool
     replayable: bool
@@ -282,6 +288,8 @@ class CegarWindowReport(StrictModel):
     schema_version: str = "cegar-window-v1"
     window_id: str
     event_count: int
+    # P11/P12 搜索路径标签，仅用于实验比较。
+    mode: str = "P12_CANONICAL_BLOCKING"
     diagnostic_only: bool = True
     reduction_replay_accepted: bool = False
     reduction_certificate_digest: str | None = None

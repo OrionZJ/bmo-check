@@ -4,6 +4,7 @@ import hashlib
 import json
 import tempfile
 import time
+from datetime import datetime, timezone
 from dataclasses import fields
 from collections.abc import Callable
 from itertools import chain
@@ -43,6 +44,7 @@ from bmo_check_dynamic.analysis import (
     replay_solver_certificate,
     characterize_graph_first_window,
     characterize_cegar_window,
+    compare_cegar_modes,
     window_digest,
 )
 from bmo_check_dynamic.analysis.coverage import build_trace_coverage
@@ -78,6 +80,7 @@ from bmo_check_dynamic.model import (
     SolverDiagnosticProfile,
     TraceGraphFirstReport,
     TraceCegarReport,
+    CegarExperimentReport,
 )
 from bmo_check_dynamic.proof import (
     characterize_symbolic_encoding,
@@ -196,6 +199,14 @@ class _CegarInspectionComplete(Exception):
 
     def __init__(self, report: TraceCegarReport) -> None:
         super().__init__("CEGAR shadow inspection completed")
+        self.report = report
+
+
+class _CegarExperimentInspectionComplete(Exception):
+    """P13 A/B 完成后跳过正式 proof。"""
+
+    def __init__(self, report: CegarExperimentReport) -> None:
+        super().__init__("P13 CEGAR comparison completed")
         self.report = report
 
 
@@ -1524,6 +1535,98 @@ def cegar_trace(
     except _CegarInspectionComplete as complete:
         return complete.report
     return TraceCegarReport(
+        trace_id=analyzed.scope.trace_ids[0],
+        trace_complete=analyzed.trace_complete,
+        analysis_reached_windows=False,
+        reasons=analyzed.unknown_reasons,
+    )
+
+
+def cegar_mode_comparison_trace(
+    trace_dir: Path,
+    *,
+    dbt_contract: Path,
+    config: DynamicConfig | None = None,
+    reduction_certificate: TracePpoReductionCertificate | None = None,
+    fixture: str | None = None,
+    max_cycle_length: int = 12,
+    max_search_states: int = 10_000,
+    max_local_queries: int = 1_000,
+    local_timeout_ms: int = 1_000,
+    local_max_symbolic_terms: int = 100_000,
+    execute_local_solver: bool = True,
+) -> CegarExperimentReport:
+    """对真实 trace 的每个窗口执行 P13 三模式 shadow A/B。"""
+
+    config = config or DynamicConfig()
+
+    def inspect(
+        manifest: TraceManifest,
+        validation: object,
+        stored_event_count: int,
+        scan_stats: CommunicationScanStats,
+        edges: CompactCommunicationEdges | tuple[CommunicationEdge, ...],
+        windows: tuple[object, ...],
+        window_unknowns: tuple[str, ...],
+    ) -> None:
+        del stored_event_count, scan_stats, edges
+        supplied = (
+            {item.window_id: item for item in reduction_certificate.windows}
+            if reduction_certificate is not None
+            else {}
+        )
+        reasons = list(window_unknowns)
+        if reduction_certificate is not None and reduction_certificate.trace_id != manifest.trace_id:
+            reasons.append("PPO reduction certificate trace_id does not match trace")
+        reports = tuple(
+            compare_cegar_modes(
+                window,
+                fixture=fixture or manifest.trace_id,
+                reduction_certificate=supplied.get(window.window_id),
+                control_flow_closed=manifest.control_flow_closed,
+                max_cycle_length=max_cycle_length,
+                max_search_states=max_search_states,
+                max_local_queries=max_local_queries,
+                local_timeout_ms=local_timeout_ms,
+                local_max_symbolic_terms=local_max_symbolic_terms,
+                execute_local_solver=execute_local_solver,
+            )
+            for window in windows
+        )
+        if reduction_certificate is not None:
+            observed = {window.window_id for window in windows}
+            extra = sorted(
+                item.window_id
+                for item in reduction_certificate.windows
+                if item.window_id not in observed
+            )
+            if extra:
+                reasons.append(
+                    "reduction certificate contains windows absent from trace: "
+                    + ",".join(extra)
+                )
+        raise _CegarExperimentInspectionComplete(
+            CegarExperimentReport(
+                generated_at=datetime.now(timezone.utc).isoformat(),
+                trace_id=manifest.trace_id,
+                trace_complete=bool(getattr(validation, "structurally_complete", False)),
+                analysis_reached_windows=True,
+                reports=reports,
+                reasons=tuple(dict.fromkeys(reasons)),
+            )
+        )
+
+    try:
+        analyzed = analyze_trace(
+            trace_dir,
+            dbt_contract=dbt_contract,
+            config=config,
+            _window_observer=inspect,
+        )
+    except _CegarExperimentInspectionComplete as complete:
+        return complete.report
+    return CegarExperimentReport(
+        generated_at=datetime.now(timezone.utc).isoformat(),
         trace_id=analyzed.scope.trace_ids[0],
         trace_complete=analyzed.trace_complete,
         analysis_reached_windows=False,

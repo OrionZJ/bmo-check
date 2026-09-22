@@ -28,6 +28,7 @@ from bmo_check_dynamic.model import (
     MayViolationGraphSummary,
     TraceCegarReport,
     TraceEvent,
+    BlockingReplayReport,
 )
 from bmo_check_dynamic.proof import run_symbolic_shadow
 
@@ -152,6 +153,35 @@ def _obligation_assumptions(
     return rf, fr, co, tuple(sorted(rf + fr + co))
 
 
+def _candidate_digest(candidate: CandidateViolationCycle) -> str:
+    return _digest(candidate.model_dump(mode="json"))
+
+
+def _obligation_digest(obligations: LocalCycleObligationSet) -> str:
+    return _digest(obligations.model_dump(mode="json"))
+
+
+def _semantic_context_digest(
+    skeleton: CanonicalCycleSkeleton,
+    obligations: LocalCycleObligationSet,
+) -> str:
+    """把 block 绑定到候选结构和局部 obligation，而不是只绑定 event 数。"""
+
+    return _digest(
+        {
+            "canonical_id": skeleton.canonical_id,
+            "edges": skeleton.edge_signatures,
+            "source_side": skeleton.source_side,
+            "target": skeleton.target_side_condition,
+            "rf_domain": obligations.rf_candidate_domain_ids,
+            "rf_exclusivity": obligations.rf_exclusivity_preserved,
+            "fr": obligations.required_fr_relation_ids,
+            "co": obligations.required_co_relation_ids,
+            "boundary": obligations.boundary_event_ids,
+        }
+    )
+
+
 def _replay_blocking_assumptions(
     candidate: CandidateViolationCycle,
     obligations: LocalCycleObligationSet,
@@ -210,6 +240,10 @@ def build_blocking_constraint(
         canonical_structure_id=structure_id,
         source_candidate_id=candidate.cycle_id,
         source_query_digest=query_digest,
+        candidate_digest=_candidate_digest(candidate),
+        obligation_digest=_obligation_digest(obligations),
+        semantic_context_digest=_semantic_context_digest(skeleton, obligations),
+        proof_scope="local-cycle-obligations-v1",
         solver_result=solver_result,
         verified_unsat=True,
         replayable=True,
@@ -260,6 +294,30 @@ def replay_blocking_constraint(
     query digest 重新构造期望 block；字段或 provenance 被篡改时拒绝。
     """
 
+    return replay_blocking_constraint_detail(
+        block, candidate, skeleton, obligations
+    ).accepted
+
+
+def replay_blocking_constraint_detail(
+    block: CandidateBlockingConstraint,
+    candidate: CandidateViolationCycle,
+    skeleton: CanonicalCycleSkeleton,
+    obligations: LocalCycleObligationSet,
+) -> BlockingReplayReport:
+    """独立返回 block 的绑定/范围检查，供 P13 统计无效剪枝。"""
+
+    reasons: list[str] = []
+    query_binding_valid = bool(block.source_query_digest)
+    assumption_scope_valid = _replay_blocking_assumptions(candidate, obligations)
+    semantic_context_valid = True
+    solver_status_valid = block.solver_result == "unsat" and block.verified_unsat
+    if not query_binding_valid:
+        reasons.append("missing source query digest")
+    if not assumption_scope_valid:
+        reasons.append("blocking assumptions are outside the local RF/FR/CO domain")
+    if not solver_status_valid:
+        reasons.append("block is not backed by an UNSAT solver result")
     expected = build_blocking_constraint(
         candidate,
         skeleton,
@@ -268,10 +326,9 @@ def replay_blocking_constraint(
         query_digest=block.source_query_digest,
     )
     if expected is None:
-        return False
-    return all(
-        getattr(expected, field) == getattr(block, field)
-        for field in (
+        reasons.append("producer block cannot be reconstructed from the bound query")
+    else:
+        fields = (
             "block_id",
             "kind",
             "assumptions",
@@ -281,10 +338,26 @@ def replay_blocking_constraint(
             "canonical_structure_id",
             "source_candidate_id",
             "source_query_digest",
+            "candidate_digest",
+            "obligation_digest",
+            "semantic_context_digest",
+            "proof_scope",
             "solver_result",
             "verified_unsat",
             "replayable",
         )
+        if any(getattr(expected, field) != getattr(block, field) for field in fields):
+            semantic_context_valid = False
+            reasons.append("block fields do not match the reconstructed query context")
+    accepted = not reasons and semantic_context_valid
+    return BlockingReplayReport(
+        block_id=block.block_id,
+        accepted=accepted,
+        query_binding_valid=query_binding_valid,
+        assumption_scope_valid=assumption_scope_valid,
+        semantic_context_valid=semantic_context_valid,
+        solver_status_valid=solver_status_valid,
+        reasons=tuple(reasons),
     )
 
 
@@ -301,6 +374,7 @@ def _local_query_for_candidate(
     local_timeout_ms: int,
     local_max_symbolic_terms: int,
     execute_local_solver: bool,
+    enable_blocking: bool = True,
 ) -> tuple[CegarCandidateRecord, str]:
     event_by_id = {event.event_id: event for event in window.events}
     cycle_event_ids = tuple(cycle[0])
@@ -387,17 +461,19 @@ def _local_query_for_candidate(
             "solver_result": observation.result,
         }
     )
-    block = build_blocking_constraint(
-        candidate,
-        skeleton,
-        obligations,
-        solver_result=observation.result,
-        query_digest=query_digest,
-    )
-    if block is not None and not replay_blocking_constraint(
-        block, candidate, skeleton, obligations
-    ):
-        block = None
+    block = None
+    if enable_blocking:
+        block = build_blocking_constraint(
+            candidate,
+            skeleton,
+            obligations,
+            solver_result=observation.result,
+            query_digest=query_digest,
+        )
+        if block is not None and not replay_blocking_constraint(
+            block, candidate, skeleton, obligations
+        ):
+            block = None
     return (
         CegarCandidateRecord(
             candidate_id=candidate_id,
@@ -453,8 +529,15 @@ def characterize_cegar_window(
     local_timeout_ms: int = 1_000,
     local_max_symbolic_terms: int = 100_000,
     execute_local_solver: bool = True,
+    canonicalize: bool = True,
+    enable_blocking: bool = True,
+    mode: str = "P12_CANONICAL_BLOCKING",
 ) -> CegarWindowReport:
-    """执行 bounded CEGAR candidate search；结果始终为 diagnostic-only。"""
+    """执行 bounded CEGAR candidate search；结果始终为 diagnostic-only。
+
+    ``canonicalize`` 和 ``enable_blocking`` 只控制 P13 shadow 对比路径，
+    不改变正式 checker 的输入或 verdict。
+    """
 
     limits = (
         max_cycle_length,
@@ -482,6 +565,7 @@ def characterize_cegar_window(
         return CegarWindowReport(
             window_id=window.window_id,
             event_count=len(window.events),
+            mode=mode,
             reduction_certificate_digest=ppo_certificate_digest(certificate),
             source_original_ppo_edges=len(source_original),
             source_reduced_ppo_edges=len(source_reduced),
@@ -550,7 +634,7 @@ def characterize_cegar_window(
         elif old_rf is not None:
             ppo_variants += 1
         structure_seen.setdefault(structure_key, skeleton.rf_candidate_ids)
-        if skeleton.canonical_id in canonical_ids:
+        if canonicalize and skeleton.canonical_id in canonical_ids:
             duplicate_count += 1
             # Keep a compact audit record: duplicate candidates are not silently
             # re-submitted, but their identity remains visible in the report.
@@ -571,14 +655,16 @@ def characterize_cegar_window(
             events=window.events,
             witness=None,
         )
-        applicable = next(
-            (
-                block
-                for block in blocks
-                if blocking_constraint_applies(block, skeleton, obligations)
-            ),
-            None,
-        )
+        applicable = None
+        if enable_blocking:
+            applicable = next(
+                (
+                    block
+                    for block in blocks
+                    if blocking_constraint_applies(block, skeleton, obligations)
+                ),
+                None,
+            )
         if applicable is not None:
             blocked_count += 1
             updated = applicable.model_copy(
@@ -611,6 +697,7 @@ def characterize_cegar_window(
             local_timeout_ms=local_timeout_ms,
             local_max_symbolic_terms=local_max_symbolic_terms,
             execute_local_solver=execute_local_solver,
+            enable_blocking=enable_blocking,
         )
         local_query_count += 1
         if record.local_query is not None:
@@ -652,12 +739,14 @@ def characterize_cegar_window(
     profile = CandidateSpaceProfile(
         raw_search_states=explored,
         generated_skeletons=len(raw_candidates),
-        unique_skeletons=len(canonical_ids),
-        duplicate_skeletons=duplicate_count,
+        unique_skeletons=len(canonical_ids) if canonicalize else len(raw_candidates),
+        duplicate_skeletons=duplicate_count if canonicalize else 0,
         same_rf_assignment_variants=rf_variants,
         same_structural_cycle_different_ppo_witness=ppo_variants,
         local_smt_submitted=local_query_count,
-        exact_blocked_candidates=sum(block.kind == "exact" for block in blocks),
+        exact_blocked_candidates=sum(block.kind == "exact" for block in blocks)
+        if enable_blocking
+        else 0,
         repeated_infeasible_cores=repeated_cores,
         branching_factor=(explored / max(1, len(raw_candidates))),
         depth_histogram=dict(sorted(depth_histogram.items())),
@@ -691,6 +780,7 @@ def characterize_cegar_window(
     return CegarWindowReport(
         window_id=window.window_id,
         event_count=len(window.events),
+        mode=mode,
         reduction_replay_accepted=True,
         reduction_certificate_digest=ppo_certificate_digest(certificate),
         source_original_ppo_edges=len(source_original),
@@ -725,5 +815,6 @@ __all__ = [
     "build_blocking_constraint",
     "blocking_constraint_applies",
     "replay_blocking_constraint",
+    "replay_blocking_constraint_detail",
     "characterize_cegar_window",
 ]

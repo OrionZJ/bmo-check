@@ -134,6 +134,14 @@ from .graph_first import (
     TraceGraphFirstReport,
     TraceCegarReport,
 )
+from .cegar_experiment import (
+    BlockingReplayReport,
+    CandidateCoverageReport,
+    CegarExperimentMode,
+    CegarExperimentReport,
+    CegarModeComparisonReport,
+    CegarModeMetrics,
+)
 
 __all__ = [
     "BinaryFingerprint",
@@ -259,4 +267,10 @@ __all__ = [
     "CegarWindowReport",
     "CanonicalCycleSkeleton",
     "TraceCegarReport",
+    "CegarExperimentMode",
+    "BlockingReplayReport",
+    "CandidateCoverageReport",
+    "CegarModeMetrics",
+    "CegarModeComparisonReport",
+    "CegarExperimentReport",
 ]
