@@ -1140,3 +1140,11 @@ candidates，未触发 3.5 GiB RSS 或 wall-time guard。对这 100 个候选做
 查询均为 `not_run`，不能当作 INFEASIBLE。这个结果把后续瓶颈定位为局部
 window/SMT encoding 成本，而不是 frontier 内存；真实求解仍需更小的 bounded
 query 样本单独测量。
+
+在同一绑定下对前 10 个候选开启真正的 bounded local-SMT（每 query 1 秒）
+得到：`FEASIBLE=6`、`INFEASIBLE=4`、`UNKNOWN=0`，峰值约 491 MiB，
+总耗时约 3 分钟。独立 replay 计数为 `accepted=0`、`rejected=6`；前两个
+候选的拒绝原因显示为缺失 RF witness、FR 源与后继写不重叠或 CO witness
+没有所需顺序。这里的 `FEASIBLE` 只是局部 solver 可满足，replay 未接受前
+不能称为 replay-valid candidate，更不能生成正式 COUNTEREXAMPLE。这暴露出
+下一步应单独改进 local witness/materialization，而不是放松 replay。
