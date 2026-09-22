@@ -1700,7 +1700,11 @@ def _enumerate_bounded_lazy_skeleton_cycles(
                     if memory_samples
                     else None
                 ),
-                "resource_limit_reached": truncated and termination_reason != "max_search_states",
+                "resource_limit_reached": termination_reason in {
+                    "max_in_memory_frontier",
+                    "max_rss_mb",
+                    "max_wall_time",
+                },
                 "termination_reason": termination_reason,
                 "resumable": bool(truncated and policy.checkpoint_path),
                 "checkpoint_path": policy.checkpoint_path if checkpoint_size else None,

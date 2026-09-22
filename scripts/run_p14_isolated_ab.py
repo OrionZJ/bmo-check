@@ -56,10 +56,11 @@ def _run_one(args: argparse.Namespace, mode: str, output: Path) -> dict[str, obj
         str(args.local_timeout_ms),
         "--local-max-symbolic-terms",
         str(args.local_max_symbolic_terms),
-        "--encoding-only",
         "--only-mode",
         mode,
     ]
+    if not args.execute_local_solver:
+        command.append("--encoding-only")
     if args.discovery_only:
         command.append("--discovery-only")
     if args.max_in_memory_frontier is not None:
@@ -136,6 +137,11 @@ def main() -> int:
     parser.add_argument("--local-timeout-ms", type=int, default=1_000)
     parser.add_argument("--local-max-symbolic-terms", type=int, default=100_000)
     parser.add_argument("--discovery-only", action="store_true")
+    parser.add_argument(
+        "--execute-local-solver",
+        action="store_true",
+        help="run bounded local SMT; otherwise only build local encodings",
+    )
     parser.add_argument("--max-in-memory-frontier", type=int, default=None)
     parser.add_argument("--max-rss-mb", type=float, default=None)
     parser.add_argument("--max-wall-time-ms", type=int, default=None)
