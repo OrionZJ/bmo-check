@@ -1,8 +1,15 @@
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from itertools import islice, permutations, product
 from time import monotonic
+import sys
+
+try:
+    import resource
+except ImportError:  # pragma: no cover - native shadow runs on Linux/WSL.
+    resource = None
 
 import z3
 
@@ -29,6 +36,137 @@ class _ReadPart:
     @property
     def end_address(self) -> int:
         return self.address + self.size
+
+
+class _CountingSolver:
+    """只在 shadow run 中统计 add 进来的 Z3 AST，避免末尾复制全集。"""
+
+    def __init__(self) -> None:
+        self._solver = z3.Solver()
+        self.assertion_count = 0
+        self.ast_count = 0
+
+    def set(self, *args: object, **kwargs: object) -> None:
+        self._solver.set(*args, **kwargs)
+
+    def add(self, *expressions: z3.AstRef) -> None:
+        for expression in expressions:
+            self.assertion_count += 1
+            self.ast_count += _ast_size(expression)
+        self._solver.add(*expressions)
+
+    def assertions(self):
+        return self._solver.assertions()
+
+    def check(self):
+        return self._solver.check()
+
+    def reason_unknown(self) -> str:
+        return self._solver.reason_unknown()
+
+    def model(self):
+        return self._solver.model()
+
+
+@dataclass(frozen=True, slots=True)
+class SymbolicSolverObservation:
+    """一次 symbolic shadow run 的实际构造/求解计量。
+
+    该对象只描述 shadow encoder 的资源和 Z3 返回值，不会被正式
+    ``check_window`` 用来改变 verdict。``result`` 使用 solver 层状态，
+    因而可以区分 ``not_run``、``resource_limited`` 和 ``unknown``。
+    """
+
+    result: str
+    reason: str
+    source_ppo_edge_count: int
+    target_ppo_edge_count: int
+    formula_terms: int
+    assertion_count: int
+    z3_ast_count: int
+    build_time_ms: int
+    solver_time_ms: int | None
+    peak_rss_mb: float | None
+
+
+@dataclass(slots=True)
+class _MutableSymbolicObservation:
+    started_at: float
+    source_ppo_edge_count: int
+    target_ppo_edge_count: int
+    formula_terms: int = 0
+    result: str = "not_run"
+    reason: str = ""
+    assertion_count: int = 0
+    z3_ast_count: int = 0
+    build_time_ms: int = 0
+    solver_time_ms: int | None = None
+    peak_rss_mb: float | None = None
+
+    def finish(
+        self,
+        *,
+        result: str,
+        reason: str,
+        solver_time_ms: int | None = None,
+        solver: z3.Solver | _CountingSolver | None = None,
+        formula_terms: int = 0,
+        build_time_ms: int | None = None,
+    ) -> None:
+        self.result = result
+        self.reason = reason
+        self.formula_terms = formula_terms
+        self.build_time_ms = (
+            max(0, int((monotonic() - self.started_at) * 1000))
+            if build_time_ms is None
+            else build_time_ms
+        )
+        self.solver_time_ms = solver_time_ms
+        if isinstance(solver, _CountingSolver):
+            self.assertion_count = solver.assertion_count
+            self.z3_ast_count = solver.ast_count
+        elif solver is not None:
+            assertions = tuple(solver.assertions())
+            self.assertion_count = len(assertions)
+            self.z3_ast_count = sum(_ast_size(assertion) for assertion in assertions)
+        self.peak_rss_mb = _peak_rss_mb()
+
+    def freeze(self) -> SymbolicSolverObservation:
+        return SymbolicSolverObservation(
+            result=self.result,
+            reason=self.reason,
+            source_ppo_edge_count=self.source_ppo_edge_count,
+            target_ppo_edge_count=self.target_ppo_edge_count,
+            formula_terms=self.formula_terms,
+            assertion_count=self.assertion_count,
+            z3_ast_count=self.z3_ast_count,
+            build_time_ms=self.build_time_ms,
+            solver_time_ms=self.solver_time_ms,
+            peak_rss_mb=self.peak_rss_mb,
+        )
+
+
+def _peak_rss_mb() -> float | None:
+    if resource is None:
+        return None
+    try:
+        value = float(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+    except (AttributeError, OSError):
+        return None
+    # Linux reports KiB; macOS reports bytes. WSL follows Linux here.
+    return value / (1024.0 * 1024.0) if sys.platform == "darwin" else value / 1024.0
+
+
+def _ast_size(expression: z3.AstRef) -> int:
+    """统计 assertions 中的 Z3 AST 节点，不调用 solver 或简化公式。"""
+
+    count = 0
+    pending = [expression]
+    while pending:
+        current = pending.pop()
+        count += 1
+        pending.extend(current.children())
+    return count
 
 
 def check_window(
@@ -302,6 +440,57 @@ def characterize_symbolic_encoding(
     )
 
 
+def symbolic_candidate_digest(window: AnalysisWindow) -> str:
+    """绑定 full/reduced 共用的 RF/FR/CO 候选域。
+
+    PPO reduction 不能借机改变候选来源。该 digest 复用 symbolic encoder
+    的地址覆盖规则，只把候选身份写入 solver-level certificate。
+    """
+
+    memory = tuple(event for event in window.events if event.kind.is_memory)
+    reads = tuple(event for event in memory if event.kind.is_read)
+    writes = tuple(event for event in memory if event.kind.is_write)
+    material: list[str] = []
+    for read in reads:
+        for part_index, part in enumerate(_read_parts(read, writes)):
+            candidates = tuple(
+                write
+                for write in writes
+                if write.address <= part.address
+                and write.end_address >= part.end_address
+                and not (
+                    write.thread_id == read.thread_id
+                    and write.sequence >= read.sequence
+                )
+            )
+            material.append(
+                "rf|{}|{}|{}|{}".format(
+                    read.event_id,
+                    part_index,
+                    part.address,
+                    ",".join(write.event_id for write in candidates),
+                )
+            )
+            for later in writes:
+                if (
+                    later.address >= part.end_address
+                    or later.end_address <= part.address
+                    or later.event_id == read.event_id
+                ):
+                    continue
+                material.append(f"fr|{read.event_id}|{part_index}|{later.event_id}")
+    for left in writes:
+        for right in writes:
+            if left is right or not left.overlaps(right):
+                continue
+            material.append(f"co|{left.event_id}|{right.event_id}")
+    digest = hashlib.sha256()
+    for item in sorted(material):
+        digest.update(item.encode("utf-8"))
+        digest.update(b"\n")
+    return digest.hexdigest()
+
+
 def _valid_coherence_orders(writes: tuple[TraceEvent, ...]):
     for order in permutations(writes):
         position = {event.event_id: index for index, event in enumerate(order)}
@@ -410,8 +599,35 @@ def _check_symbolic(
     control_flow_closed: bool,
     timeout_ms: int,
     max_symbolic_terms: int,
+    runtime_observation: _MutableSymbolicObservation | None = None,
+    execute_solver: bool = True,
 ) -> WindowResult:
     deadline = monotonic() + timeout_ms / 1000
+    build_started_at = (
+        runtime_observation.started_at
+        if runtime_observation is not None
+        else monotonic()
+    )
+    formula_terms = 0
+
+    def finish(
+        result: WindowResult,
+        *,
+        solver_result: str,
+        solver_time_ms: int | None = None,
+        solver: z3.Solver | _CountingSolver | None = None,
+        build_time_ms: int | None = None,
+    ) -> WindowResult:
+        if runtime_observation is not None:
+            runtime_observation.finish(
+                result=solver_result,
+                reason=result.reason,
+                solver_time_ms=solver_time_ms,
+                solver=solver,
+                formula_terms=formula_terms,
+                build_time_ms=build_time_ms,
+            )
+        return result
 
     def timed_out() -> WindowResult:
         return WindowResult(
@@ -429,7 +645,7 @@ def _check_symbolic(
             reason=f"symbolic formula exceeds {max_symbolic_terms} terms",
         )
 
-    solver = z3.Solver()
+    solver = _CountingSolver() if runtime_observation is not None else z3.Solver()
     solver.set(timeout=timeout_ms)
     event_by_id = {event.event_id: event for event in window.events}
     nodes = tuple(sorted(event_by_id))
@@ -437,7 +653,7 @@ def _check_symbolic(
     # 用保守权重在创建 Z3 AST 前拒绝巨窗，避免“项数不多但重复引用很多”的低估。
     formula_terms = len(nodes) * 3 + len(source_ppo) * 4 + len(target_ppo)
     if formula_terms > max_symbolic_terms:
-        return formula_limited()
+        return finish(formula_limited(), solver_result="resource_limited", solver=solver)
     topological = {node: z3.Int(f"target_rank_{index}") for index, node in enumerate(nodes)}
     # 有向图无环只要求每条边的 rank 严格递增。无关节点可以共享 rank；强迫
     # 数千个节点全异会制造一个与 memory model 无关的排列问题。
@@ -446,7 +662,7 @@ def _check_symbolic(
     co_rank: dict[str, z3.ArithRef] = {}
     for location_index, location_writes in enumerate(coherence_groups):
         if monotonic() >= deadline:
-            return timed_out()
+            return finish(timed_out(), solver_result="timeout", solver=solver)
         ranks = []
         for write_index, write in enumerate(location_writes):
             rank = z3.Int(f"co_{location_index}_{write_index}")
@@ -476,7 +692,7 @@ def _check_symbolic(
 
     for location_writes in coherence_groups:
         if monotonic() >= deadline:
-            return timed_out()
+            return finish(timed_out(), solver_result="timeout", solver=solver)
         for left in location_writes:
             for right in location_writes:
                 if left is not right and left.overlaps(right):
@@ -484,12 +700,16 @@ def _check_symbolic(
                         (left.event_id, right.event_id),
                         co_rank[left.event_id] < co_rank[right.event_id],
                     ):
-                        return formula_limited()
+                        return finish(
+                            formula_limited(),
+                            solver_result="resource_limited",
+                            solver=solver,
+                        )
 
     choice_index = 0
     for read in reads:
         if monotonic() >= deadline:
-            return timed_out()
+            return finish(timed_out(), solver_result="timeout", solver=solver)
         for part_index, part in enumerate(_read_parts(read, writes)):
             candidates = tuple(
                 write
@@ -514,7 +734,11 @@ def _check_symbolic(
             for index, write in enumerate(candidates):
                 if (write.thread_id != read.thread_id and
                         not add_edge((write.event_id, read.event_id), choice == index)):
-                    return formula_limited()
+                    return finish(
+                        formula_limited(),
+                        solver_result="resource_limited",
+                        solver=solver,
+                    )
             for later in writes:
                 if (later.address >= part.end_address or
                         later.end_address <= part.address or
@@ -535,7 +759,11 @@ def _check_symbolic(
                     z3.Or(*conditions),
                     weight=3 + len(conditions),
                 ):
-                    return formula_limited()
+                    return finish(
+                        formula_limited(),
+                        solver_result="resource_limited",
+                        solver=solver,
+                    )
 
     for left, right in target_ppo:
         solver.add(topological[left] < topological[right])
@@ -566,29 +794,58 @@ def _check_symbolic(
         incoming_by_node[edge[1]].append(selected)
     for node in nodes:
         if monotonic() >= deadline:
-            return timed_out()
+            return finish(timed_out(), solver_result="timeout", solver=solver)
         incoming = incoming_by_node[node]
         outgoing = outgoing_by_node[node]
         solver.add(z3.Sum(*[z3.If(item, 1, 0) for item in incoming]) == z3.If(selected_nodes[node], 1, 0))
         solver.add(z3.Sum(*[z3.If(item, 1, 0) for item in outgoing]) == z3.If(selected_nodes[node], 1, 0))
 
+    if not execute_solver:
+        build_time_ms = max(0, int((monotonic() - build_started_at) * 1000))
+        return finish(
+            WindowResult(
+                window_id=window.window_id,
+                event_ids=nodes,
+                status="unknown",
+                reason="shadow encoding completed without solver execution",
+            ),
+            solver_result="not_run",
+            solver=solver,
+            build_time_ms=build_time_ms,
+        )
+
     remaining_ms = max(1, int((deadline - monotonic()) * 1000))
     solver.set(timeout=remaining_ms)
+    build_time_ms = max(0, int((monotonic() - build_started_at) * 1000))
+    solver_started = monotonic()
     status = solver.check()
+    solver_time_ms = max(0, int((monotonic() - solver_started) * 1000))
     if status == z3.unknown:
-        return WindowResult(
-            window_id=window.window_id,
-            event_ids=nodes,
-            status="unknown",
-            reason=f"symbolic checker returned unknown: {solver.reason_unknown()}",
+        return finish(
+            WindowResult(
+                window_id=window.window_id,
+                event_ids=nodes,
+                status="unknown",
+                reason=f"symbolic checker returned unknown: {solver.reason_unknown()}",
+            ),
+            solver_result="unknown",
+            solver_time_ms=solver_time_ms,
+            solver=solver,
+            build_time_ms=build_time_ms,
         )
     if status == z3.unsat:
-        return WindowResult(
-            window_id=window.window_id,
-            event_ids=nodes,
-            examined_executions=1,
-            status="safe",
-            reason="symbolic target/source inclusion query is unsatisfiable",
+        return finish(
+            WindowResult(
+                window_id=window.window_id,
+                event_ids=nodes,
+                examined_executions=1,
+                status="safe",
+                reason="symbolic target/source inclusion query is unsatisfiable",
+            ),
+            solver_result="unsat",
+            solver_time_ms=solver_time_ms,
+            solver=solver,
+            build_time_ms=build_time_ms,
         )
 
     model = solver.model()
@@ -637,14 +894,67 @@ def _check_symbolic(
             else "symbolic target-only candidate needs value/control-flow validation"
         ),
     )
-    return WindowResult(
-        window_id=window.window_id,
-        event_ids=nodes,
-        examined_executions=1,
-        status="counterexample" if validated else "unknown",
-        reason=witness.reason,
-        witness=witness,
+    return finish(
+        WindowResult(
+            window_id=window.window_id,
+            event_ids=nodes,
+            examined_executions=1,
+            status="counterexample" if validated else "unknown",
+            reason=witness.reason,
+            witness=witness,
+        ),
+        solver_result="sat",
+        solver_time_ms=solver_time_ms,
+        solver=solver,
+        build_time_ms=build_time_ms,
     )
+
+
+def run_symbolic_shadow(
+    window: AnalysisWindow,
+    *,
+    source_ppo: set[Edge],
+    target_ppo: set[Edge],
+    control_flow_closed: bool,
+    timeout_ms: int,
+    max_symbolic_terms: int,
+    execute_solver: bool = True,
+) -> tuple[WindowResult, SymbolicSolverObservation]:
+    """用正式 symbolic encoder 跑一侧 shadow，不进入 ``check_window``。
+
+    full/reduced 的唯一输入差异是 PPO 集合。RF、FR、CO、Fence、RMW 和
+    solver 预算仍由同一段 encoder 产生；``execute_solver=False`` 只完成
+    Phase A 的 AST/assertion 计量。
+    """
+
+    memory = tuple(event for event in window.events if event.kind.is_memory)
+    reads = tuple(event for event in memory if event.kind.is_read)
+    writes = tuple(event for event in memory if event.kind.is_write)
+    writes_by_location = {
+        location: tuple(
+            event for event in writes if _location(event) == location
+        )
+        for location in {_location(event) for event in writes}
+    }
+    observation = _MutableSymbolicObservation(
+        started_at=monotonic(),
+        source_ppo_edge_count=len(source_ppo),
+        target_ppo_edge_count=len(target_ppo),
+    )
+    result = _check_symbolic(
+        window,
+        reads,
+        writes,
+        writes_by_location,
+        set(source_ppo),
+        set(target_ppo),
+        control_flow_closed=control_flow_closed,
+        timeout_ms=timeout_ms,
+        max_symbolic_terms=max_symbolic_terms,
+        runtime_observation=observation,
+        execute_solver=execute_solver,
+    )
+    return result, observation.freeze()
 
 
 def _overlap_components(

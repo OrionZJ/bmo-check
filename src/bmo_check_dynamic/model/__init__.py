@@ -81,6 +81,16 @@ from .ppo import (
     TracePpoReductionReplayReport,
     ViolationCycleDependency,
 )
+from .shadow_solver import (
+    ReducedSolverRunCertificate,
+    ShadowSolverComparison,
+    ShadowSolverPhase,
+    ShadowSolverRun,
+    SolverRunReplay,
+    TraceReducedSolverRunCertificate,
+    TraceShadowSolverReport,
+    TraceSolverReplayReport,
+)
 
 __all__ = [
     "BinaryFingerprint",
@@ -158,4 +168,12 @@ __all__ = [
     "TracePpoReductionReport",
     "TracePpoReductionCertificate",
     "TracePpoReductionReplayReport",
+    "ShadowSolverPhase",
+    "ShadowSolverRun",
+    "ShadowSolverComparison",
+    "ReducedSolverRunCertificate",
+    "SolverRunReplay",
+    "TraceShadowSolverReport",
+    "TraceReducedSolverRunCertificate",
+    "TraceSolverReplayReport",
 ]

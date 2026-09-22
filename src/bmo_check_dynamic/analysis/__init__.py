@@ -39,6 +39,15 @@ from .ppo_reduction import (
     ppo_certificate_digest,
     replay_ppo_reduction,
 )
+from .shadow_solver import (
+    build_shadow_solver_comparison,
+    build_solver_certificate,
+    memory_model_contract_digest,
+    ppo_edges_digest,
+    replay_solver_certificate,
+    solver_config_digest,
+    window_digest,
+)
 from .window_diagnostics import (
     WindowCharacterizationReport,
     WindowDiagnostics,
@@ -83,6 +92,13 @@ __all__ = [
     "ppo_semantic_contract",
     "ppo_certificate_digest",
     "replay_ppo_reduction",
+    "build_shadow_solver_comparison",
+    "build_solver_certificate",
+    "memory_model_contract_digest",
+    "ppo_edges_digest",
+    "replay_solver_certificate",
+    "solver_config_digest",
+    "window_digest",
     "build_trace_coverage",
     "coverage_state",
     "digest_edges",

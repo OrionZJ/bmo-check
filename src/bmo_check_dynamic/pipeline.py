@@ -33,7 +33,11 @@ from bmo_check_dynamic.analysis import (
     characterize_cycle_relevance,
     build_ppo_graph_input,
     build_ppo_reduction,
+    build_ppo_reduction_certificate,
     replay_ppo_reduction,
+    build_shadow_solver_comparison,
+    build_solver_certificate,
+    replay_solver_certificate,
 )
 from bmo_check_dynamic.analysis.coverage import build_trace_coverage
 from bmo_check_dynamic.config import DynamicConfig
@@ -54,6 +58,12 @@ from bmo_check_dynamic.model import (
     PpoReductionReplay,
     TracePpoReductionReport,
     TracePpoReductionReplayReport,
+    ReducedSolverRunCertificate,
+    ShadowSolverComparison,
+    TraceReducedSolverRunCertificate,
+    TraceShadowSolverReport,
+    TraceSolverReplayReport,
+    SolverRunReplay,
 )
 from bmo_check_dynamic.proof import (
     characterize_symbolic_encoding,
@@ -119,6 +129,27 @@ class _PpoReplayInspectionComplete(Exception):
 
     def __init__(self, report: TracePpoReductionReplayReport) -> None:
         super().__init__("PPO reduction replay completed")
+        self.report = report
+
+
+class _PpoSolverInspectionComplete(Exception):
+    """P9 shadow solver 完成后跳过正式 proof。"""
+
+    def __init__(
+        self,
+        report: TraceShadowSolverReport,
+        certificate: TraceReducedSolverRunCertificate,
+    ) -> None:
+        super().__init__("PPO shadow solver inspection completed")
+        self.report = report
+        self.certificate = certificate
+
+
+class _PpoSolverReplayInspectionComplete(Exception):
+    """P9 solver-level certificate replay 完成后跳过正式 proof。"""
+
+    def __init__(self, report: TraceSolverReplayReport) -> None:
+        super().__init__("PPO shadow solver replay completed")
         self.report = report
 
 
@@ -955,6 +986,194 @@ def ppo_replay_trace(
         return complete.report
 
     return TracePpoReductionReplayReport(
+        trace_id=analyzed.scope.trace_ids[0],
+        trace_complete=analyzed.trace_complete,
+        analysis_reached_windows=False,
+        reasons=analyzed.unknown_reasons,
+    )
+
+
+def ppo_solver_trace(
+    trace_dir: Path,
+    *,
+    dbt_contract: Path,
+    config: DynamicConfig | None = None,
+    reduction_certificate: TracePpoReductionCertificate | None = None,
+    execute_solver: bool = True,
+) -> tuple[TraceShadowSolverReport, TraceReducedSolverRunCertificate]:
+    """运行 full/reduced PPO shadow A/B，不把 reduced 图交给正式 checker。"""
+
+    config = config or DynamicConfig()
+    trace_sha256 = trace_digest(trace_dir)
+    contract_sha256 = _file_digest(dbt_contract)
+
+    def inspect(
+        manifest: TraceManifest,
+        validation: object,
+        stored_event_count: int,
+        scan_stats: CommunicationScanStats,
+        edges: CompactCommunicationEdges | tuple[CommunicationEdge, ...],
+        windows: tuple[object, ...],
+        window_unknowns: tuple[str, ...],
+    ) -> None:
+        del stored_event_count, scan_stats, edges
+        supplied = (
+            {item.window_id: item for item in reduction_certificate.windows}
+            if reduction_certificate is not None
+            else {}
+        )
+        comparisons: list[ShadowSolverComparison] = []
+        certificates: list[ReducedSolverRunCertificate] = []
+        reasons = list(window_unknowns)
+        if reduction_certificate is not None and reduction_certificate.trace_id != manifest.trace_id:
+            reasons.append("PPO reduction certificate trace_id does not match trace")
+        for window in windows:
+            graph = build_ppo_graph_input(window)
+            reduction = supplied.get(window.window_id)
+            if reduction is None:
+                reduction, _ = build_ppo_reduction_certificate(graph)
+            comparison = build_shadow_solver_comparison(
+                window,
+                graph,
+                reduction,
+                control_flow_closed=manifest.control_flow_closed,
+                timeout_ms=config.solver_timeout_ms,
+                max_symbolic_terms=config.max_symbolic_terms,
+                execute_solver=execute_solver,
+            )
+            comparisons.append(comparison)
+            certificates.append(
+                build_solver_certificate(
+                    trace_sha256=trace_sha256,
+                    window=window,
+                    graph=graph,
+                    reduction=reduction,
+                    comparison=comparison,
+                    dbt_contract_sha256=contract_sha256,
+                    timeout_ms=config.solver_timeout_ms,
+                    max_symbolic_terms=config.max_symbolic_terms,
+                    execute_solver=execute_solver,
+                    control_flow_closed=manifest.control_flow_closed,
+                )
+            )
+        report = TraceShadowSolverReport(
+            trace_id=manifest.trace_id,
+            trace_complete=bool(getattr(validation, "structurally_complete", False)),
+            analysis_reached_windows=True,
+            windows=tuple(comparisons),
+            reasons=tuple(reasons),
+        )
+        certificate = TraceReducedSolverRunCertificate(
+            trace_id=manifest.trace_id,
+            windows=tuple(certificates),
+        )
+        raise _PpoSolverInspectionComplete(report, certificate)
+
+    try:
+        analyzed = analyze_trace(
+            trace_dir,
+            dbt_contract=dbt_contract,
+            config=config,
+            _window_observer=inspect,
+        )
+    except _PpoSolverInspectionComplete as complete:
+        return complete.report, complete.certificate
+    empty = TraceShadowSolverReport(
+        trace_id=analyzed.scope.trace_ids[0],
+        trace_complete=analyzed.trace_complete,
+        analysis_reached_windows=False,
+        reasons=analyzed.unknown_reasons,
+    )
+    return empty, TraceReducedSolverRunCertificate(trace_id=empty.trace_id)
+
+
+def ppo_solver_replay_trace(
+    trace_dir: Path,
+    *,
+    dbt_contract: Path,
+    reduction_certificate: TracePpoReductionCertificate,
+    solver_certificate: TraceReducedSolverRunCertificate,
+    config: DynamicConfig | None = None,
+    execute_solver: bool = True,
+) -> TraceSolverReplayReport:
+    """重建窗口、PPO reduction 和 solver 结果，独立 replay certificate。"""
+
+    config = config or DynamicConfig()
+    trace_sha256 = trace_digest(trace_dir)
+    contract_sha256 = _file_digest(dbt_contract)
+
+    def inspect(
+        manifest: TraceManifest,
+        validation: object,
+        stored_event_count: int,
+        scan_stats: CommunicationScanStats,
+        edges: CompactCommunicationEdges | tuple[CommunicationEdge, ...],
+        windows: tuple[object, ...],
+        window_unknowns: tuple[str, ...],
+    ) -> None:
+        del stored_event_count, scan_stats, edges
+        reductions = {item.window_id: item for item in reduction_certificate.windows}
+        solver_runs = {item.window_id: item for item in solver_certificate.windows}
+        reports: list[SolverRunReplay] = []
+        reasons = list(window_unknowns)
+        if reduction_certificate.trace_id != manifest.trace_id:
+            reasons.append("PPO reduction certificate trace_id does not match trace")
+        if solver_certificate.trace_id != manifest.trace_id:
+            reasons.append("solver certificate trace_id does not match trace")
+        for window in windows:
+            reduction = reductions.get(window.window_id)
+            solver_run = solver_runs.get(window.window_id)
+            if reduction is None or solver_run is None:
+                reports.append(
+                    SolverRunReplay(
+                        window_id=window.window_id,
+                        binding_matches=False,
+                        candidate_domain_matches=False,
+                        solver_config_matches=False,
+                        result_matches=False,
+                        accepted=False,
+                        reasons=("missing reduction or solver certificate window",),
+                    )
+                )
+                continue
+            graph = build_ppo_graph_input(window)
+            reports.append(
+                replay_solver_certificate(
+                    window,
+                    graph,
+                    reduction,
+                    solver_run,
+                    trace_sha256=trace_sha256,
+                    dbt_contract_sha256=contract_sha256,
+                    timeout_ms=config.solver_timeout_ms,
+                    max_symbolic_terms=config.max_symbolic_terms,
+                    execute_solver=execute_solver,
+                    control_flow_closed=manifest.control_flow_closed,
+                )
+            )
+        observed_ids = {window.window_id for window in windows}
+        extra = sorted((set(reductions) | set(solver_runs)) - observed_ids)
+        if extra:
+            reasons.append("certificates contain windows absent from trace: " + ",".join(extra))
+        report = TraceSolverReplayReport(
+            trace_id=manifest.trace_id,
+            trace_complete=bool(getattr(validation, "structurally_complete", False)),
+            analysis_reached_windows=True,
+            windows=tuple(reports),
+            reasons=tuple(reasons),
+        )
+        raise _PpoSolverReplayInspectionComplete(report)
+
+    try:
+        analyzed = analyze_trace(
+            trace_dir,
+            dbt_contract=dbt_contract,
+            config=config,
+            _window_observer=inspect,
+        )
+    except _PpoSolverReplayInspectionComplete as complete:
+        return complete.report
+    return TraceSolverReplayReport(
         trace_id=analyzed.scope.trace_ids[0],
         trace_complete=analyzed.trace_complete,
         analysis_reached_windows=False,

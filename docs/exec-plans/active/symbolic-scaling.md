@@ -375,3 +375,68 @@ Large certificates use a digest-bound witness descriptor per removed edge
 replay reconstructs the deterministic path from the original/reduced graph
 and checks the descriptor, so the producer does not retain tens of thousands
 of duplicated long Python tuples.
+
+## P9 shadow solver A/B comparison
+
+P9 adds a diagnostic-only comparison between the existing full-PPO symbolic
+encoder and the same encoder supplied with the independently replayed reduced
+PPO sets. The two runs share the event window, RF/FR/CO candidate domains,
+Fence/RMW/FUTEX relations, source/target queries, solver options and resource
+limits. PPO representation is the only semantic input that differs. The
+official checker still uses full PPO; no P9 result can produce `SAFE`,
+`TRACE_SAFE` or `COUNTEREXAMPLE`.
+
+The route is:
+
+```text
+window
+  -> PpoReductionCertificate
+  -> independent graph replay
+  -> full and reduced shadow encoders
+  -> optional bounded solver calls
+  -> SolverComparisonReport + solver-level certificate
+```
+
+`bmo-check ppo-solver-compare` records, for each side, PPO counts, formula
+terms, assertion count, asserted AST-node count, build time, solver time, peak
+RSS, result and reason. `--encoding-only` builds both assertion sets without
+calling Z3. A reduction replay failure leaves both sides `not_run`. A timeout,
+`UNKNOWN` or resource limit is recorded as incomplete; it is not reported as a
+semantic mismatch. `ppo-solver-replay` recomputes trace/window/contract,
+candidate-domain and solver-configuration digests, independently replays the
+PPO certificate, reruns both sides and checks the recorded result relation.
+
+The first P9 correctness corpus contains the existing PPO fixtures plus fence,
+RMW, FUTEX, mixed-width and RF/FR cases. All 16 targeted tests pass, including
+solver-level certificate replay. The full repository regression remains the
+required gate before commit.
+
+On the frozen 3,720-event SB trace, the completed encoding-only run measured:
+
+- full PPO: 59,060 source and 55,418 target edges, 334,159 formula terms,
+  144,668 assertions, 1,069,733 asserted AST nodes and 19,202 ms build time;
+- certified reduced PPO: 3,728 source and 7,361 target edges, 64,774 formula
+  terms, 41,308 assertions, 317,171 asserted AST nodes and 5,465 ms build
+  time;
+- edge reduction was 90.31%, formula-term reduction 80.62%, and measured
+  encoding build speedup 3.51x.
+
+`ru_maxrss` is a process high-water mark. Because full and reduced encodings
+run sequentially in one process, the two Phase-A RSS fields are not an
+independent peak-memory comparison and commonly report the same high-water
+value. Future resource experiments must use isolated child processes if peak
+RSS reduction is required.
+
+The bounded SB run used identical 30-second and 300,000-term limits. Full PPO
+stopped at the explicit resource boundary (302,818 terms); reduced PPO built
+the 64,774-term model but Z3 returned `UNKNOWN` for timeout. The comparison is
+therefore incomplete (`result_match = null`), not a model mismatch. A separate
+30-second reduced-only run had the same timeout. An earlier 1,000,000-term
+full run was externally stopped near 1.6 GB RSS before a report could be
+produced; it is not a verdict. P9 consequently demonstrates a real reduction
+in encoder construction and matching bounded results on the small corpus, but
+does not yet demonstrate that the reduced SB model is solver-complete.
+
+P9 stops at this review gate. Formal integration requires a later isolated
+solver runner and further bounded A/B evidence; the full-PPO official path and
+all verdict semantics remain unchanged.

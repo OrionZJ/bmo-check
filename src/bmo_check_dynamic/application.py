@@ -24,6 +24,9 @@ from bmo_check_dynamic.model import (
     TracePpoReductionCertificate,
     TracePpoReductionReport,
     TracePpoReductionReplayReport,
+    TraceReducedSolverRunCertificate,
+    TraceShadowSolverReport,
+    TraceSolverReplayReport,
 )
 from bmo_check_dynamic.pipeline import (
     analyze_trace,
@@ -33,6 +36,8 @@ from bmo_check_dynamic.pipeline import (
     cycle_relevance_trace,
     ppo_reduction_trace,
     ppo_replay_trace,
+    ppo_solver_trace,
+    ppo_solver_replay_trace,
     slice_plan_trace,
 )
 
@@ -185,6 +190,42 @@ def ppo_replay(
     )
 
 
+def ppo_solver(
+    request: AnalyzeRequest,
+    reduction_certificate: TracePpoReductionCertificate | None = None,
+    *,
+    execute_solver: bool = True,
+) -> tuple[TraceShadowSolverReport, TraceReducedSolverRunCertificate]:
+    """比较 full/reduced PPO 的实际 Z3 构造和有界求解结果。"""
+
+    return ppo_solver_trace(
+        request.trace_dir,
+        dbt_contract=request.dbt_contract,
+        config=request.config,
+        reduction_certificate=reduction_certificate,
+        execute_solver=execute_solver,
+    )
+
+
+def ppo_solver_replay(
+    request: AnalyzeRequest,
+    reduction_certificate: TracePpoReductionCertificate,
+    solver_certificate: TraceReducedSolverRunCertificate,
+    *,
+    execute_solver: bool = True,
+) -> TraceSolverReplayReport:
+    """独立重建输入并重放 solver-level certificate。"""
+
+    return ppo_solver_replay_trace(
+        request.trace_dir,
+        dbt_contract=request.dbt_contract,
+        reduction_certificate=reduction_certificate,
+        solver_certificate=solver_certificate,
+        config=request.config,
+        execute_solver=execute_solver,
+    )
+
+
 __all__ = [
     "AnalyzeRequest",
     "CaptureRequest",
@@ -196,6 +237,8 @@ __all__ = [
     "cycle_relevance",
     "ppo_reduction",
     "ppo_replay",
+    "ppo_solver",
+    "ppo_solver_replay",
     "characterize",
     "capture",
 ]

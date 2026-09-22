@@ -21,6 +21,8 @@ from bmo_check_dynamic.application import (
     cycle_relevance as cycle_relevance_request,
     ppo_reduction as ppo_reduction_request,
     ppo_replay as ppo_replay_request,
+    ppo_solver as ppo_solver_request,
+    ppo_solver_replay as ppo_solver_replay_request,
     capture as capture_request,
 )
 from bmo_check_dynamic.capture import CaptureError
@@ -35,6 +37,7 @@ from bmo_check_dynamic.model import (
     CampaignSummary,
     DynamicCertificate,
     TracePpoReductionCertificate,
+    TraceReducedSolverRunCertificate,
     TraceVerdict,
 )
 from bmo_check_dynamic.storage import TraceStoreError
@@ -231,6 +234,56 @@ def _ppo_replay(args: argparse.Namespace) -> int:
             config=_analysis_config(args),
         ),
         certificate,
+    )
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(report.model_dump_json(indent=2), encoding="utf-8")
+    print(report.model_dump_json(indent=2))
+    return 0 if all(item.accepted for item in report.windows) else 2
+
+
+def _ppo_solver(args: argparse.Namespace) -> int:
+    reduction = None
+    if args.reduction_certificate is not None:
+        reduction = TracePpoReductionCertificate.model_validate_json(
+            args.reduction_certificate.read_text(encoding="utf-8")
+        )
+    report, certificate = ppo_solver_request(
+        AnalyzeRequest(
+            trace_dir=args.trace,
+            dbt_contract=args.dbt_contract,
+            config=_analysis_config(args),
+        ),
+        reduction,
+        execute_solver=not args.encoding_only,
+    )
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(report.model_dump_json(indent=2), encoding="utf-8")
+    if args.certificate is not None:
+        args.certificate.parent.mkdir(parents=True, exist_ok=True)
+        args.certificate.write_text(
+            certificate.model_dump_json(indent=2),
+            encoding="utf-8",
+        )
+    print(report.model_dump_json(indent=2))
+    return 0
+
+
+def _ppo_solver_replay(args: argparse.Namespace) -> int:
+    reduction = TracePpoReductionCertificate.model_validate_json(
+        args.reduction_certificate.read_text(encoding="utf-8")
+    )
+    solver = TraceReducedSolverRunCertificate.model_validate_json(
+        args.certificate.read_text(encoding="utf-8")
+    )
+    report = ppo_solver_replay_request(
+        AnalyzeRequest(
+            trace_dir=args.trace,
+            dbt_contract=args.dbt_contract,
+            config=_analysis_config(args),
+        ),
+        reduction,
+        solver,
+        execute_solver=not args.encoding_only,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(report.model_dump_json(indent=2), encoding="utf-8")
@@ -706,6 +759,34 @@ def build_parser() -> argparse.ArgumentParser:
     ppo_replay.add_argument("--output", type=Path, required=True)
     _add_analysis_options(ppo_replay)
     ppo_replay.set_defaults(handler=_ppo_replay)
+
+    ppo_solver = subparsers.add_parser(
+        "ppo-solver-compare",
+        help="compare full and certified-reduced PPO shadow solver runs",
+    )
+    ppo_solver.add_argument("trace", type=Path)
+    ppo_solver.add_argument("--reduction-certificate", type=Path)
+    ppo_solver.add_argument("--output", type=Path, required=True)
+    ppo_solver.add_argument("--certificate", type=Path)
+    ppo_solver.add_argument(
+        "--encoding-only",
+        action="store_true",
+        help="build full/reduced Z3 assertions without calling the solver",
+    )
+    _add_analysis_options(ppo_solver)
+    ppo_solver.set_defaults(handler=_ppo_solver)
+
+    ppo_solver_replay = subparsers.add_parser(
+        "ppo-solver-replay",
+        help="replay a solver-level full/reduced binding certificate",
+    )
+    ppo_solver_replay.add_argument("trace", type=Path)
+    ppo_solver_replay.add_argument("--reduction-certificate", type=Path, required=True)
+    ppo_solver_replay.add_argument("--certificate", type=Path, required=True)
+    ppo_solver_replay.add_argument("--output", type=Path, required=True)
+    ppo_solver_replay.add_argument("--encoding-only", action="store_true")
+    _add_analysis_options(ppo_solver_replay)
+    ppo_solver_replay.set_defaults(handler=_ppo_solver_replay)
 
     run = subparsers.add_parser("run", help="capture and immediately analyze")
     run.add_argument("--trace", type=Path, required=True)

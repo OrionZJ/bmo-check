@@ -4,12 +4,18 @@ import json
 import shutil
 from pathlib import Path
 
+import pytest
+
 from bmo_check_dynamic.analysis import (
     AnalysisWindow,
     PpoGraphInput,
+    build_ppo_graph_input,
     build_ppo_reduction,
     build_ppo_reduction_certificate,
+    build_shadow_solver_comparison,
+    build_solver_certificate,
     ppo_certificate_digest,
+    replay_solver_certificate,
     replay_ppo_reduction,
 )
 from bmo_check_dynamic.analysis.communication import CommunicationEdge
@@ -276,3 +282,211 @@ def test_ppo_cli_writes_certificate_and_replays_without_check_window(
     replay_payload = json.loads(replay_output.read_text(encoding="utf-8"))
     assert replay_payload["schema_version"] == "trace-ppo-reduction-replay-v1"
     assert all(item["accepted"] for item in replay_payload["windows"])
+
+    solver_output = tmp_path / "solver-report.json"
+    solver_certificate = tmp_path / "solver-certificate.json"
+    assert main(
+        [
+            "ppo-solver-compare",
+            str(trace_dir),
+            "--reduction-certificate",
+            str(certificate),
+            "--dbt-contract",
+            str(contract),
+            "--output",
+            str(solver_output),
+            "--certificate",
+            str(solver_certificate),
+            "--solver-timeout-ms",
+            "1000",
+        ]
+    ) == 0
+    solver_payload = json.loads(solver_output.read_text(encoding="utf-8"))
+    assert solver_payload["schema_version"] == "trace-shadow-solver-v1"
+    assert solver_certificate.is_file()
+
+    solver_replay_output = tmp_path / "solver-replay.json"
+    assert main(
+        [
+            "ppo-solver-replay",
+            str(trace_dir),
+            "--reduction-certificate",
+            str(certificate),
+            "--certificate",
+            str(solver_certificate),
+            "--dbt-contract",
+            str(contract),
+            "--output",
+            str(solver_replay_output),
+            "--solver-timeout-ms",
+            "1000",
+        ]
+    ) == 0
+    solver_replay_payload = json.loads(solver_replay_output.read_text(encoding="utf-8"))
+    assert solver_replay_payload["schema_version"] == "trace-solver-replay-v1"
+    assert all(item["accepted"] for item in solver_replay_payload["windows"])
+
+
+def _solver_fixture() -> tuple[AnalysisWindow, PpoGraphInput, object]:
+    events = _events(
+        EventKind.LOAD,
+        EventKind.LOAD,
+        EventKind.LOAD,
+        EventKind.LOAD,
+    )
+    edges = {
+        ("t1:e1", "t1:e2"),
+        ("t1:e2", "t1:e3"),
+        ("t1:e3", "t1:e4"),
+        ("t1:e1", "t1:e3"),
+        ("t1:e2", "t1:e4"),
+        ("t1:e1", "t1:e4"),
+    }
+    window = AnalysisWindow("p9-window", events, ())
+    graph = _graph(events, edges, edges, {"t1:e1", "t1:e4"})
+    certificate, replay = build_ppo_reduction_certificate(graph)
+    assert replay.accepted is True
+    return window, graph, certificate
+
+
+def test_shadow_solver_full_and_reduced_have_same_bounded_result() -> None:
+    window, graph, certificate = _solver_fixture()
+
+    comparison = build_shadow_solver_comparison(
+        window,
+        graph,
+        certificate,
+        control_flow_closed=True,
+        timeout_ms=1_000,
+        max_symbolic_terms=100_000,
+        execute_solver=True,
+    )
+
+    assert comparison.replay_accepted is True
+    assert comparison.result_match is True
+    assert comparison.full.result == comparison.reduced.result == "unsat"
+    assert comparison.full.assertion_count > 0
+    assert comparison.full.z3_ast_count > 0
+    assert comparison.reduced.source_ppo_edges < comparison.full.source_ppo_edges
+
+
+def test_shadow_encoding_only_does_not_call_solver() -> None:
+    window, graph, certificate = _solver_fixture()
+
+    comparison = build_shadow_solver_comparison(
+        window,
+        graph,
+        certificate,
+        control_flow_closed=False,
+        timeout_ms=1_000,
+        max_symbolic_terms=100_000,
+        execute_solver=False,
+    )
+
+    assert comparison.replay_accepted is True
+    assert comparison.full.phase.value == "encoding"
+    assert comparison.full.result == comparison.reduced.result == "not_run"
+    assert comparison.result_match is True
+    assert comparison.full.assertion_count > 0
+
+
+def test_solver_certificate_replay_reconstructs_inputs_and_results() -> None:
+    window, graph, reduction = _solver_fixture()
+    comparison = build_shadow_solver_comparison(
+        window,
+        graph,
+        reduction,
+        control_flow_closed=True,
+        timeout_ms=1_000,
+        max_symbolic_terms=100_000,
+        execute_solver=True,
+    )
+    certificate = build_solver_certificate(
+        trace_sha256="trace-digest",
+        window=window,
+        graph=graph,
+        reduction=reduction,
+        comparison=comparison,
+        dbt_contract_sha256="dbt-contract-digest",
+        timeout_ms=1_000,
+        max_symbolic_terms=100_000,
+        execute_solver=True,
+        control_flow_closed=True,
+    )
+
+    replay = replay_solver_certificate(
+        window,
+        graph,
+        reduction,
+        certificate,
+        trace_sha256="trace-digest",
+        dbt_contract_sha256="dbt-contract-digest",
+        timeout_ms=1_000,
+        max_symbolic_terms=100_000,
+        execute_solver=True,
+        control_flow_closed=True,
+    )
+
+    assert replay.accepted is True
+    assert replay.binding_matches is True
+    assert replay.result_matches is True
+
+
+@pytest.mark.parametrize("case_name", ("fence", "rmw", "futex", "mixed_width", "rf_fr"))
+def test_shadow_solver_small_correctness_corpus(case_name: str) -> None:
+    cases = {
+        "fence": (
+            TraceEvent(1, 1, 0, 1, EventKind.LOAD, 0x1000, 4),
+            TraceEvent(1, 2, 0, 2, EventKind.MFENCE),
+            TraceEvent(1, 3, 0, 3, EventKind.STORE, 0x2000, 4),
+            TraceEvent(2, 1, 0, 4, EventKind.STORE, 0x1000, 4),
+            TraceEvent(2, 2, 0, 5, EventKind.LOAD, 0x2000, 4),
+        ),
+        "rmw": (
+            TraceEvent(1, 1, 0, 1, EventKind.ATOMIC_RMW, 0x1000, 4),
+            TraceEvent(2, 1, 0, 2, EventKind.STORE, 0x1000, 4),
+        ),
+        "futex": (
+            TraceEvent(1, 1, 1, 1, EventKind.FUTEX_WAIT, 0x1000, 4),
+            TraceEvent(1, 2, 2, 2, EventKind.LOAD, 0x2000, 4),
+            TraceEvent(2, 1, 3, 3, EventKind.STORE, 0x1000, 4),
+        ),
+        "mixed_width": (
+            TraceEvent(1, 1, 0, 1, EventKind.STORE, 0x1000, 8),
+            TraceEvent(2, 1, 0, 2, EventKind.LOAD, 0x1004, 4),
+        ),
+        "rf_fr": (
+            TraceEvent(1, 1, 0, 1, EventKind.STORE, 0x1000, 4),
+            TraceEvent(2, 1, 0, 2, EventKind.LOAD, 0x1000, 4),
+            TraceEvent(2, 2, 0, 3, EventKind.STORE, 0x1000, 4),
+        ),
+    }[case_name]
+    events = cases
+    communication = {
+        (left.event_id, right.event_id): CommunicationEdge(
+            left.event_id,
+            right.event_id,
+            left.address,
+            min(left.size, right.size),
+        )
+        for left in events
+        for right in events
+        if left.thread_id != right.thread_id
+        and left.overlaps(right)
+        and (left.kind.is_write or right.kind.is_write)
+    }
+    window = AnalysisWindow(case_name, events, tuple(communication.values()))
+    graph = build_ppo_graph_input(window)
+    certificate, replay = build_ppo_reduction_certificate(graph)
+    assert replay.accepted is True
+    comparison = build_shadow_solver_comparison(
+        window,
+        graph,
+        certificate,
+        control_flow_closed=True,
+        timeout_ms=1_000,
+        max_symbolic_terms=100_000,
+        execute_solver=True,
+    )
+    assert comparison.replay_accepted is True
+    assert comparison.result_match is not False
