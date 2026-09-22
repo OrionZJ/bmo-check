@@ -216,6 +216,11 @@ def characterize_graph_first_window(
         scheduler=discovery_scheduler,
         profile=discovery_data,
         resource_policy=discovery_resource_policy,
+        binding_scope=(
+            f"{window.window_id}:{ppo_certificate_digest(certificate)}"
+            if discovery_resource_policy is not None
+            else None
+        ),
     )
     if truncated:
         reasons.append("bounded graph search reached a configured limit")
@@ -710,6 +715,7 @@ def _enumerate_skeleton_cycles(
     scheduler: str = "depth_first",
     profile: dict[str, object] | None = None,
     resource_policy: CandidateDiscoveryResourcePolicy | None = None,
+    binding_scope: str | None = None,
 ) -> tuple[
     list[tuple[tuple[str, ...], tuple[_LabeledEdge, ...]]],
     int,
@@ -742,6 +748,7 @@ def _enumerate_skeleton_cycles(
             max_search_states=max_search_states,
             resource_policy=resource_policy,
             profile=profile,
+            binding_scope=binding_scope,
         )
     if scheduler != "depth_first":
         raise ValueError(f"unknown candidate discovery scheduler: {scheduler}")
@@ -1181,8 +1188,10 @@ def _discovery_binding_digest(
     events: tuple[TraceEvent, ...],
     may_edges: tuple[_LabeledEdge, ...],
     source_ppo: frozenset[Edge],
+    scope: str | None = None,
 ) -> str:
     payload = {
+        "scope": scope,
         "events": [event.event_id for event in events],
         "may_edges": [_edge_payload(edge) for edge in may_edges],
         "source_ppo": sorted([list(edge) for edge in source_ppo]),
@@ -1375,6 +1384,7 @@ def _enumerate_bounded_lazy_skeleton_cycles(
     max_cycles: int,
     max_search_states: int,
     resource_policy: CandidateDiscoveryResourcePolicy | None = None,
+    binding_scope: str | None = None,
     profile: dict[str, object] | None = None,
 ) -> tuple[list[tuple[tuple[str, ...], tuple[_LabeledEdge, ...]]], int, bool, tuple[_LabeledEdge, ...]]:
     """P15 lazy fair search。
@@ -1411,7 +1421,7 @@ def _enumerate_bounded_lazy_skeleton_cycles(
         cache_sources=False,
         cache_paths=False,
     )
-    binding_digest = _discovery_binding_digest(events, may_edges, source_ppo)
+    binding_digest = _discovery_binding_digest(events, may_edges, source_ppo, binding_scope)
     candidates: list[tuple[tuple[str, ...], tuple[_LabeledEdge, ...]]] = []
     skeleton_edges: dict[tuple[str, str, str], _LabeledEdge] = {}
     seen: set[tuple[tuple[str, ...], tuple[str, ...]]] = set()
