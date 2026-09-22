@@ -440,3 +440,131 @@ does not yet demonstrate that the reduced SB model is solver-complete.
 P9 stops at this review gate. Formal integration requires a later isolated
 solver runner and further bounded A/B evidence; the full-PPO official path and
 all verdict semantics remain unchanged.
+
+## P9.5 isolated resource and bounded-scaling measurements
+
+P9.5 remains diagnostic-only and does not enter the official checker. Each
+full/reduced point is executed in a fresh Python child process. The child
+records wall/user/system CPU, peak RSS, trace/window completion, PPO replay
+time, SMT build time, solver time, formula breakdown, constraint breakdown and
+variable counts. The parent records process failure separately from a solver
+`UNKNOWN`; an external process timeout is never converted into a verdict.
+
+The worker passes the requested budget to the child configuration itself. This
+is important because otherwise a 5-second experiment could silently run with
+the normal 10-second solver setting. Encoding-only points still use the same
+configuration but never call Z3. The new public diagnostic route is:
+
+```text
+bmo-check ppo-solver-benchmark TRACE [TRACE ...]
+  --phase {encoding,solver}
+  --side {full,reduced} ...
+```
+
+The report is `solver-benchmark-v1`. `median_*` fields summarize independent
+children; formula/constraint/variable maps are medians across repetitions, not
+the sum of repeated runs. The four timing regions are exposed as:
+
+```text
+trace/window/process preparation = analysis_overhead_ms
+PPO certificate replay            = ppo_replay_time_ms
+SMT formula construction          = build_time_ms
+Z3 solving                       = solver_time_ms
+```
+
+The first region includes Python startup and trace import/window analysis; it
+is intentionally named overhead rather than being presented as a precise
+import-only timer. PPO construction is not rerun in this benchmark: the P8
+certificate is replayed and its cost is measured separately.
+
+### Frozen SB encoding-only result
+
+The complete local trace
+`.experiments/live-litmus-sb-limits100x-20260920` was run three times per
+side in independent processes with the same 1,000,000-term and 60-second
+configuration. The valid report is the untracked local artifact
+`.experiments/p9.5-sb-20260922-fixed/encoding-report.json`.
+
+| side | median wall | median peak RSS | median SMT build | terms | AST nodes | assertions |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| full | 95.917 s | 651.1 MiB | 19.979 s | 334,159 | 1,069,733 | 144,668 |
+| certified reduced | 80.745 s | 537.9 MiB | 5.840 s | 64,774 | 317,171 | 41,308 |
+
+The reduced encoding therefore lowers formula terms by 80.62%, AST nodes by
+70.35%, assertions by 71.45%, and independent peak RSS by 17.38%. SMT build
+time is 3.42x faster in this three-repetition run. Total wall time falls by
+less because trace import, window construction and certificate replay remain
+outside the SMT build timer.
+
+The formula breakdown shows why the reduction is effective: RF (14,944
+terms), FR (15,789), coherence (608) and the base terms (11,160) are
+unchanged; source/target PPO terms fall from 236,240/55,418 to
+14,912/7,361. Constraint instrumentation shows that the remaining large
+family is cycle encoding (74,036 full versus 18,733 reduced), followed by the
+unchanged RF/FR ordering families. The reduced model still has 11,292 cycle
+edges, 3,690 RF choices and 3,720 cycle nodes. No all-pairs reachability
+encoder was added by P9.5.
+
+### Reduced-SB solver budget curve
+
+The reduced frozen SB window was run in separate children at 5, 15, 30, 60,
+120 and 300 seconds. The report is
+`.experiments/p9.5-sb-20260922-fixed/reduced-scaling-report.json`. The 5-second
+point stopped during formula construction; every longer point completed
+construction and Z3 returned `UNKNOWN` because its bounded solver timeout
+expired. No point produced SAT or UNSAT.
+
+| solver budget | result | build | solver | peak RSS |
+| ---: | --- | ---: | ---: | ---: |
+| 5 s | encoding timeout | 5.001 s | — | 544.6 MiB |
+| 15 s | `UNKNOWN` / timeout | 5.843 s | 9.256 s | 762.8 MiB |
+| 30 s | `UNKNOWN` / timeout | 6.093 s | 24.058 s | 805.0 MiB |
+| 60 s | `UNKNOWN` / timeout | 5.975 s | 54.183 s | 863.1 MiB |
+| 120 s | `UNKNOWN` / timeout | 5.863 s | 114.239 s | 1,134.1 MiB |
+| 300 s | `UNKNOWN` / timeout | 5.803 s | 294.332 s | 1,065.2 MiB |
+
+The wall time also includes trace import/window analysis and P8 replay. The
+curve is bounded; it is not evidence that the solver would eventually return
+UNSAT or SAT with unbounded time.
+
+### Natural workload-size comparison
+
+To avoid treating an arbitrary event-count cut as a proof boundary, the
+scaling sample uses two already captured complete SB traces: the small
+`.experiments/live-litmus-sb-20260920` trace and the frozen 3,720-event trace.
+Both went through the normal importer/window builder and independent P8
+certificate replay. The diagnostic report is
+`.experiments/p9.5-sb-20260922-fixed/workload-scaling-report-v2.json`.
+
+| trace | side | PPO edges | terms | AST | assertions | peak RSS | SMT build |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| small SB | full | 2,568 | 9,278 | 37,428 | 3,885 | 243.1 MiB | 0.709 s |
+| small SB | reduced | 257 | 3,427 | 21,316 | 1,603 | 242.8 MiB | 0.352 s |
+| frozen SB | full | 114,478 | 334,159 | 1,069,733 | 144,668 | 645.0 MiB | 20.751 s |
+| frozen SB | reduced | 11,089 | 64,774 | 317,171 | 41,308 | 520.4 MiB | 6.190 s |
+
+The PPO edge reduction is stable at about 90.0%/90.3%, while term reduction
+grows from 63.1% to 80.6% as repeated-load structure dominates the larger
+window. Small-SB RSS is nearly unchanged because process startup and the
+small trace dominate; the large trace shows a 19.3% independent-RSS decrease.
+The corresponding SMT build speedups are 2.01x and 3.35x. These are shadow
+encoding measurements, not formal verdicts.
+
+### P9.5 conclusions and boundary
+
+1. PPO reduction is a real encoding optimization, not only a graph-count
+   estimate: it lowers AST/assertion counts, build time and, on the large
+   window, peak RSS in isolated children.
+2. The remaining SB bottleneck is solver-side. After reduction, RF/FR domains
+   remain unchanged and cycle constraints are still the largest instrumented
+   family; a 300-second bounded run still returns `UNKNOWN`.
+3. No SAT/UNSAT mismatch was found in the P9 correctness corpus, and no
+   graph-replay/symbolic-result disagreement was observed. The bounded SB
+   runs are incomplete, not semantic results.
+4. P9.5 does not justify changing the official full-PPO path, adding heuristic
+   pruning, or assigning a verdict to SB. Solver algorithm work (P10) remains
+   a separate review-gated task.
+
+The experiments above are local artifacts only. They are not added to Git;
+the reproducible commands, report schema and this interpretation are the
+versioned research record.

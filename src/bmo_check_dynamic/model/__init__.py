@@ -91,6 +91,14 @@ from .shadow_solver import (
     TraceShadowSolverReport,
     TraceSolverReplayReport,
 )
+from .solver_benchmark import (
+    BenchmarkSide,
+    SolverBenchmarkAggregate,
+    SolverBenchmarkChildReport,
+    SolverBenchmarkProcessRun,
+    SolverBenchmarkReport,
+    TraceShadowSolverSideReport,
+)
 
 __all__ = [
     "BinaryFingerprint",
@@ -176,4 +184,10 @@ __all__ = [
     "TraceShadowSolverReport",
     "TraceReducedSolverRunCertificate",
     "TraceSolverReplayReport",
+    "BenchmarkSide",
+    "SolverBenchmarkAggregate",
+    "SolverBenchmarkChildReport",
+    "SolverBenchmarkProcessRun",
+    "SolverBenchmarkReport",
+    "TraceShadowSolverSideReport",
 ]

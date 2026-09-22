@@ -41,6 +41,7 @@ from .ppo_reduction import (
 )
 from .shadow_solver import (
     build_shadow_solver_comparison,
+    build_shadow_solver_run,
     build_solver_certificate,
     memory_model_contract_digest,
     ppo_edges_digest,
@@ -48,6 +49,7 @@ from .shadow_solver import (
     solver_config_digest,
     window_digest,
 )
+from .solver_benchmark import run_isolated_solver_benchmark
 from .window_diagnostics import (
     WindowCharacterizationReport,
     WindowDiagnostics,
@@ -93,12 +95,14 @@ __all__ = [
     "ppo_certificate_digest",
     "replay_ppo_reduction",
     "build_shadow_solver_comparison",
+    "build_shadow_solver_run",
     "build_solver_certificate",
     "memory_model_contract_digest",
     "ppo_edges_digest",
     "replay_solver_certificate",
     "solver_config_digest",
     "window_digest",
+    "run_isolated_solver_benchmark",
     "build_trace_coverage",
     "coverage_state",
     "digest_edges",

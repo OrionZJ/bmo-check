@@ -27,6 +27,8 @@ from bmo_check_dynamic.model import (
     TraceReducedSolverRunCertificate,
     TraceShadowSolverReport,
     TraceSolverReplayReport,
+    BenchmarkSide,
+    TraceShadowSolverSideReport,
 )
 from bmo_check_dynamic.pipeline import (
     analyze_trace,
@@ -38,6 +40,7 @@ from bmo_check_dynamic.pipeline import (
     ppo_replay_trace,
     ppo_solver_trace,
     ppo_solver_replay_trace,
+    ppo_solver_side_trace,
     slice_plan_trace,
 )
 
@@ -226,6 +229,29 @@ def ppo_solver_replay(
     )
 
 
+def ppo_solver_side(
+    request: AnalyzeRequest,
+    side: BenchmarkSide,
+    reduction_certificate: TracePpoReductionCertificate | None = None,
+    *,
+    execute_solver: bool = True,
+    repetition: int = 0,
+    budget_ms: int | None = None,
+) -> TraceShadowSolverSideReport:
+    """worker 应用服务：只运行 full 或 reduced 一侧。"""
+
+    return ppo_solver_side_trace(
+        request.trace_dir,
+        dbt_contract=request.dbt_contract,
+        side=side,
+        reduction_certificate=reduction_certificate,
+        config=request.config,
+        execute_solver=execute_solver,
+        repetition=repetition,
+        budget_ms=budget_ms,
+    )
+
+
 __all__ = [
     "AnalyzeRequest",
     "CaptureRequest",
@@ -239,6 +265,7 @@ __all__ = [
     "ppo_replay",
     "ppo_solver",
     "ppo_solver_replay",
+    "ppo_solver_side",
     "characterize",
     "capture",
 ]

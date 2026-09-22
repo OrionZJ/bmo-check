@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from typing import Iterable
 
 from bmo_check_dynamic.analysis.windows import AnalysisWindow
@@ -130,6 +131,9 @@ def _run_model(
         build_time_ms=observation.build_time_ms,
         solver_time_ms=observation.solver_time_ms,
         peak_rss_mb=observation.peak_rss_mb,
+        formula_breakdown=dict(observation.formula_breakdown),
+        constraint_breakdown=dict(observation.constraint_breakdown),
+        variable_counts=dict(observation.variable_counts),
     )
 
 
@@ -180,6 +184,56 @@ def _result_comparison(
     return False, "full and reduced solver statuses differ"
 
 
+def build_shadow_solver_run(
+    window: AnalysisWindow,
+    graph: PpoGraphInput,
+    reduction: PpoReductionCertificate,
+    *,
+    side: str,
+    control_flow_closed: bool,
+    timeout_ms: int,
+    max_symbolic_terms: int,
+    execute_solver: bool,
+) -> ShadowSolverRun:
+    """只运行 full 或 reduced 一侧，供隔离 benchmark worker 使用。"""
+
+    if side not in {"full", "reduced"}:
+        raise ValueError(f"unsupported PPO shadow side: {side}")
+    replay_started = time.perf_counter()
+    replay = replay_ppo_reduction(graph, reduction)
+    replay_time_ms = max(0, int((time.perf_counter() - replay_started) * 1000))
+    original_source = graph.source_edges
+    original_target = graph.target_edges
+    reduced_source = _reduced_edges(original_source, reduction.source.removed_edges)
+    reduced_target = _reduced_edges(original_target, reduction.target.removed_edges)
+    source = original_source if side == "full" else reduced_source
+    target = original_target if side == "full" else reduced_target
+    phase = ShadowSolverPhase.SOLVER if execute_solver else ShadowSolverPhase.ENCODING
+    if not replay.accepted:
+        return _not_run(
+            window.window_id,
+            len(source),
+            len(target),
+            "PPO replay failed; shadow solver not run",
+            phase,
+        ).model_copy(update={"ppo_replay_time_ms": replay_time_ms})
+
+    from bmo_check_dynamic.proof import run_symbolic_shadow
+
+    _, observation = run_symbolic_shadow(
+        window,
+        source_ppo=set(source),
+        target_ppo=set(target),
+        control_flow_closed=control_flow_closed,
+        timeout_ms=timeout_ms,
+        max_symbolic_terms=max_symbolic_terms,
+        execute_solver=execute_solver,
+    )
+    return _run_model(window.window_id, phase, observation).model_copy(
+        update={"ppo_replay_time_ms": replay_time_ms}
+    )
+
+
 def build_shadow_solver_comparison(
     window: AnalysisWindow,
     graph: PpoGraphInput,
@@ -193,50 +247,29 @@ def build_shadow_solver_comparison(
     """运行 full/reduced A/B；replay 失败时两侧都保持 NOT_RUN。"""
 
     replay = replay_ppo_reduction(graph, reduction)
-    phase = ShadowSolverPhase.SOLVER if execute_solver else ShadowSolverPhase.ENCODING
-    full_source = graph.source_edges
-    full_target = graph.target_edges
-    reduced_source = _reduced_edges(full_source, reduction.source.removed_edges)
-    reduced_target = _reduced_edges(full_target, reduction.target.removed_edges)
+    full = build_shadow_solver_run(
+        window,
+        graph,
+        reduction,
+        side="full",
+        control_flow_closed=control_flow_closed,
+        timeout_ms=timeout_ms,
+        max_symbolic_terms=max_symbolic_terms,
+        execute_solver=execute_solver,
+    )
+    reduced = build_shadow_solver_run(
+        window,
+        graph,
+        reduction,
+        side="reduced",
+        control_flow_closed=control_flow_closed,
+        timeout_ms=timeout_ms,
+        max_symbolic_terms=max_symbolic_terms,
+        execute_solver=execute_solver,
+    )
     if not replay.accepted:
-        full = _not_run(
-            window.window_id,
-            len(full_source),
-            len(full_target),
-            "PPO replay failed; full/reduced shadow solver not run",
-            phase,
-        )
-        reduced = _not_run(
-            window.window_id,
-            len(reduced_source),
-            len(reduced_target),
-            "PPO replay failed; reduced shadow solver not run",
-            phase,
-        )
         result_match, match_reason = None, "reduction replay rejected"
     else:
-        from bmo_check_dynamic.proof import run_symbolic_shadow
-
-        _, full_observation = run_symbolic_shadow(
-            window,
-            source_ppo=set(full_source),
-            target_ppo=set(full_target),
-            control_flow_closed=control_flow_closed,
-            timeout_ms=timeout_ms,
-            max_symbolic_terms=max_symbolic_terms,
-            execute_solver=execute_solver,
-        )
-        _, reduced_observation = run_symbolic_shadow(
-            window,
-            source_ppo=reduced_source,
-            target_ppo=reduced_target,
-            control_flow_closed=control_flow_closed,
-            timeout_ms=timeout_ms,
-            max_symbolic_terms=max_symbolic_terms,
-            execute_solver=execute_solver,
-        )
-        full = _run_model(window.window_id, phase, full_observation)
-        reduced = _run_model(window.window_id, phase, reduced_observation)
         result_match, match_reason = _result_comparison(
             full.result,
             reduced.result,
@@ -437,6 +470,7 @@ def replay_solver_certificate(
 
 __all__ = [
     "build_shadow_solver_comparison",
+    "build_shadow_solver_run",
     "build_solver_certificate",
     "memory_model_contract_digest",
     "ppo_edges_digest",

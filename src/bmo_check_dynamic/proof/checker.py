@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from itertools import islice, permutations, product
 from time import monotonic
 import sys
@@ -87,6 +87,9 @@ class SymbolicSolverObservation:
     build_time_ms: int
     solver_time_ms: int | None
     peak_rss_mb: float | None
+    formula_breakdown: dict[str, int]
+    constraint_breakdown: dict[str, int]
+    variable_counts: dict[str, int]
 
 
 @dataclass(slots=True)
@@ -102,6 +105,9 @@ class _MutableSymbolicObservation:
     build_time_ms: int = 0
     solver_time_ms: int | None = None
     peak_rss_mb: float | None = None
+    formula_breakdown: dict[str, int] = field(default_factory=dict)
+    constraint_breakdown: dict[str, int] = field(default_factory=dict)
+    variable_counts: dict[str, int] = field(default_factory=dict)
 
     def finish(
         self,
@@ -112,6 +118,9 @@ class _MutableSymbolicObservation:
         solver: z3.Solver | _CountingSolver | None = None,
         formula_terms: int = 0,
         build_time_ms: int | None = None,
+        formula_breakdown: dict[str, int] | None = None,
+        constraint_breakdown: dict[str, int] | None = None,
+        variable_counts: dict[str, int] | None = None,
     ) -> None:
         self.result = result
         self.reason = reason
@@ -130,6 +139,9 @@ class _MutableSymbolicObservation:
             self.assertion_count = len(assertions)
             self.z3_ast_count = sum(_ast_size(assertion) for assertion in assertions)
         self.peak_rss_mb = _peak_rss_mb()
+        self.formula_breakdown = dict(formula_breakdown or {})
+        self.constraint_breakdown = dict(constraint_breakdown or {})
+        self.variable_counts = dict(variable_counts or {})
 
     def freeze(self) -> SymbolicSolverObservation:
         return SymbolicSolverObservation(
@@ -143,6 +155,9 @@ class _MutableSymbolicObservation:
             build_time_ms=self.build_time_ms,
             solver_time_ms=self.solver_time_ms,
             peak_rss_mb=self.peak_rss_mb,
+            formula_breakdown=dict(self.formula_breakdown or {}),
+            constraint_breakdown=dict(self.constraint_breakdown or {}),
+            variable_counts=dict(self.variable_counts or {}),
         )
 
 
@@ -609,6 +624,9 @@ def _check_symbolic(
         else monotonic()
     )
     formula_terms = 0
+    formula_breakdown: dict[str, int] = {}
+    constraint_breakdown: dict[str, int] = {}
+    variable_counts: dict[str, int] = {}
 
     def finish(
         result: WindowResult,
@@ -626,6 +644,9 @@ def _check_symbolic(
                 solver=solver,
                 formula_terms=formula_terms,
                 build_time_ms=build_time_ms,
+                formula_breakdown=formula_breakdown,
+                constraint_breakdown=constraint_breakdown,
+                variable_counts=variable_counts,
             )
         return result
 
@@ -652,6 +673,13 @@ def _check_symbolic(
     # 一个 PPO edge 后续至少出现在 rank 约束、source 条件和 cycle 选择中。
     # 用保守权重在创建 Z3 AST 前拒绝巨窗，避免“项数不多但重复引用很多”的低估。
     formula_terms = len(nodes) * 3 + len(source_ppo) * 4 + len(target_ppo)
+    formula_breakdown.update(
+        {
+            "base": len(nodes) * 3,
+            "source_ppo": len(source_ppo) * 4,
+            "target_ppo": len(target_ppo),
+        }
+    )
     if formula_terms > max_symbolic_terms:
         return finish(formula_limited(), solver_result="resource_limited", solver=solver)
     topological = {node: z3.Int(f"target_rank_{index}") for index, node in enumerate(nodes)}
@@ -660,6 +688,13 @@ def _check_symbolic(
 
     coherence_groups = _overlap_components(writes)
     co_rank: dict[str, z3.ArithRef] = {}
+
+    def add_constraint(category: str, *expressions: z3.AstRef) -> None:
+        constraint_breakdown[category] = (
+            constraint_breakdown.get(category, 0) + len(expressions)
+        )
+        solver.add(*expressions)
+
     for location_index, location_writes in enumerate(coherence_groups):
         if monotonic() >= deadline:
             return finish(timed_out(), solver_result="timeout", solver=solver)
@@ -668,26 +703,38 @@ def _check_symbolic(
             rank = z3.Int(f"co_{location_index}_{write_index}")
             co_rank[write.event_id] = rank
             ranks.append(rank)
-            solver.add(rank >= 0, rank < len(location_writes))
+            add_constraint("coherence", rank >= 0, rank < len(location_writes))
         if len(ranks) > 1:
-            solver.add(z3.Distinct(*ranks))
+            add_constraint("coherence", z3.Distinct(*ranks))
         for left in location_writes:
             for right in location_writes:
                 if (left.overlaps(right) and left.thread_id == right.thread_id and
                         left.sequence < right.sequence):
-                    solver.add(co_rank[left.event_id] < co_rank[right.event_id])
+                    add_constraint(
+                        "coherence",
+                        co_rank[left.event_id] < co_rank[right.event_id],
+                    )
 
     rf_choice: dict[
         tuple[str, int], tuple[_ReadPart, z3.ArithRef, tuple[TraceEvent, ...]]
     ] = {}
     conditional_edges: dict[Edge, list[z3.BoolRef]] = {}
+    conditional_categories: dict[Edge, set[str]] = {}
 
-    def add_edge(edge: Edge, condition: z3.BoolRef, *, weight: int = 4) -> bool:
+    def add_edge(
+        edge: Edge,
+        condition: z3.BoolRef,
+        *,
+        category: str,
+        weight: int = 4,
+    ) -> bool:
         nonlocal formula_terms
         formula_terms += weight
+        formula_breakdown[category] = formula_breakdown.get(category, 0) + weight
         if formula_terms > max_symbolic_terms:
             return False
         conditional_edges.setdefault(edge, []).append(condition)
+        conditional_categories.setdefault(edge, set()).add(category)
         return True
 
     for location_writes in coherence_groups:
@@ -699,6 +746,7 @@ def _check_symbolic(
                     if not add_edge(
                         (left.event_id, right.event_id),
                         co_rank[left.event_id] < co_rank[right.event_id],
+                        category="coherence",
                     ):
                         return finish(
                             formula_limited(),
@@ -722,18 +770,28 @@ def _check_symbolic(
             )
             choice = z3.Int(f"rf_{choice_index}")
             choice_index += 1
-            solver.add(choice >= -1, choice < len(candidates))
+            add_constraint("rf", choice >= -1, choice < len(candidates))
             rf_choice[(read.event_id, part_index)] = (part, choice, candidates)
             if read.kind == EventKind.ATOMIC_RMW:
-                solver.add(z3.Implies(choice == -1, co_rank[read.event_id] == 0))
+                add_constraint(
+                    "rmw",
+                    z3.Implies(choice == -1, co_rank[read.event_id] == 0),
+                )
                 for index, write in enumerate(candidates):
-                    solver.add(z3.Implies(
-                        choice == index,
-                        co_rank[read.event_id] == co_rank[write.event_id] + 1,
-                    ))
+                    add_constraint(
+                        "rmw",
+                        z3.Implies(
+                            choice == index,
+                            co_rank[read.event_id] == co_rank[write.event_id] + 1,
+                        ),
+                    )
             for index, write in enumerate(candidates):
                 if (write.thread_id != read.thread_id and
-                        not add_edge((write.event_id, read.event_id), choice == index)):
+                        not add_edge(
+                            (write.event_id, read.event_id),
+                            choice == index,
+                            category="rf",
+                        )):
                     return finish(
                         formula_limited(),
                         solver_result="resource_limited",
@@ -757,6 +815,7 @@ def _check_symbolic(
                 if not add_edge(
                     (read.event_id, later.event_id),
                     z3.Or(*conditions),
+                    category="fr",
                     weight=3 + len(conditions),
                 ):
                     return finish(
@@ -766,9 +825,14 @@ def _check_symbolic(
                     )
 
     for left, right in target_ppo:
-        solver.add(topological[left] < topological[right])
+        add_constraint("ppo", topological[left] < topological[right])
     for (left, right), conditions in conditional_edges.items():
-        solver.add(z3.Implies(z3.Or(*conditions), topological[left] < topological[right]))
+        categories = conditional_categories.get((left, right), {"ordering"})
+        category = "ordering_" + "_".join(sorted(categories))
+        add_constraint(
+            category,
+            z3.Implies(z3.Or(*conditions), topological[left] < topological[right]),
+        )
 
     source_conditions: dict[Edge, z3.BoolRef] = {
         edge: z3.BoolVal(True) for edge in source_ppo
@@ -785,11 +849,20 @@ def _check_symbolic(
         edge: z3.Bool(f"cycle_edge_{index}")
         for index, edge in enumerate(sorted(source_conditions))
     }
-    solver.add(z3.Or(*selected_nodes.values()))
+    variable_counts.update(
+        {
+            "target_rank": len(topological),
+            "coherence_rank": len(co_rank),
+            "rf_choice": choice_index,
+            "cycle_node": len(selected_nodes),
+            "cycle_edge": len(selected_edges),
+        }
+    )
+    add_constraint("cycle", z3.Or(*selected_nodes.values()))
     incoming_by_node: dict[str, list[z3.BoolRef]] = {node: [] for node in nodes}
     outgoing_by_node: dict[str, list[z3.BoolRef]] = {node: [] for node in nodes}
     for edge, selected in selected_edges.items():
-        solver.add(z3.Implies(selected, source_conditions[edge]))
+        add_constraint("cycle", z3.Implies(selected, source_conditions[edge]))
         outgoing_by_node[edge[0]].append(selected)
         incoming_by_node[edge[1]].append(selected)
     for node in nodes:
@@ -797,8 +870,16 @@ def _check_symbolic(
             return finish(timed_out(), solver_result="timeout", solver=solver)
         incoming = incoming_by_node[node]
         outgoing = outgoing_by_node[node]
-        solver.add(z3.Sum(*[z3.If(item, 1, 0) for item in incoming]) == z3.If(selected_nodes[node], 1, 0))
-        solver.add(z3.Sum(*[z3.If(item, 1, 0) for item in outgoing]) == z3.If(selected_nodes[node], 1, 0))
+        add_constraint(
+            "cycle",
+            z3.Sum(*[z3.If(item, 1, 0) for item in incoming])
+            == z3.If(selected_nodes[node], 1, 0),
+        )
+        add_constraint(
+            "cycle",
+            z3.Sum(*[z3.If(item, 1, 0) for item in outgoing])
+            == z3.If(selected_nodes[node], 1, 0),
+        )
 
     if not execute_solver:
         build_time_ms = max(0, int((monotonic() - build_started_at) * 1000))

@@ -6,6 +6,10 @@ import json
 import os
 import time
 import sys
+try:
+    import resource
+except ImportError:  # pragma: no cover - benchmark workers run on Linux/WSL.
+    resource = None
 from pathlib import Path
 
 import yaml
@@ -23,6 +27,7 @@ from bmo_check_dynamic.application import (
     ppo_replay as ppo_replay_request,
     ppo_solver as ppo_solver_request,
     ppo_solver_replay as ppo_solver_replay_request,
+    ppo_solver_side as ppo_solver_side_request,
     capture as capture_request,
 )
 from bmo_check_dynamic.capture import CaptureError
@@ -31,6 +36,7 @@ from bmo_check_dynamic.adapters import (
     replay_dynamic_certificate,
 )
 from bmo_check_dynamic.analysis import locate_instruction_site
+from bmo_check_dynamic.analysis import run_isolated_solver_benchmark
 from bmo_check_dynamic.config import DynamicConfig
 from bmo_check_dynamic.model import (
     CampaignMember,
@@ -39,6 +45,9 @@ from bmo_check_dynamic.model import (
     TracePpoReductionCertificate,
     TraceReducedSolverRunCertificate,
     TraceVerdict,
+    BenchmarkSide,
+    SolverBenchmarkChildReport,
+    ShadowSolverPhase,
 )
 from bmo_check_dynamic.storage import TraceStoreError
 from bmo_check_dynamic.report import explain_certificate
@@ -289,6 +298,112 @@ def _ppo_solver_replay(args: argparse.Namespace) -> int:
     args.output.write_text(report.model_dump_json(indent=2), encoding="utf-8")
     print(report.model_dump_json(indent=2))
     return 0 if all(item.accepted for item in report.windows) else 2
+
+
+def _worker_rusage() -> tuple[float, float, float | None]:
+    if resource is None:
+        return 0.0, 0.0, None
+    usage = resource.getrusage(resource.RUSAGE_SELF)
+    rss = float(usage.ru_maxrss)
+    if sys.platform != "darwin":
+        rss /= 1024.0
+    else:
+        rss /= 1024.0 * 1024.0
+    return usage.ru_utime, usage.ru_stime, rss
+
+
+def _ppo_solver_worker(args: argparse.Namespace) -> int:
+    reduction = None
+    if args.reduction_certificate is not None:
+        reduction = TracePpoReductionCertificate.model_validate_json(
+            args.reduction_certificate.read_text(encoding="utf-8")
+        )
+    started = time.perf_counter()
+    before_user, before_system, _ = _worker_rusage()
+    report = ppo_solver_side_request(
+        AnalyzeRequest(
+            trace_dir=args.trace,
+            dbt_contract=args.dbt_contract,
+            config=_analysis_config(args),
+        ),
+        BenchmarkSide(args.side),
+        reduction,
+        execute_solver=args.phase == ShadowSolverPhase.SOLVER.value,
+        repetition=args.repetition,
+        budget_ms=args.budget_ms,
+    )
+    after_user, after_system, peak_rss = _worker_rusage()
+    wall_time_ms = max(0, int((time.perf_counter() - started) * 1000))
+    replay_time_ms = sum(window.ppo_replay_time_ms for window in report.windows)
+    build_time_ms = sum(window.build_time_ms for window in report.windows)
+    solver_time_ms = sum(
+        window.solver_time_ms
+        for window in report.windows
+        if window.solver_time_ms is not None
+    )
+    analysis_overhead_ms = max(
+        0,
+        wall_time_ms - replay_time_ms - build_time_ms - solver_time_ms,
+    )
+    child = SolverBenchmarkChildReport(
+        trace_id=report.trace_id,
+        side=report.side,
+        phase=report.phase,
+        repetition=args.repetition,
+        budget_ms=args.budget_ms,
+        trace_complete=report.trace_complete,
+        analysis_reached_windows=report.analysis_reached_windows,
+        windows=report.windows,
+        wall_time_ms=wall_time_ms,
+        user_cpu_ms=max(0, int((after_user - before_user) * 1000)),
+        system_cpu_ms=max(0, int((after_system - before_system) * 1000)),
+        analysis_overhead_ms=analysis_overhead_ms,
+        peak_rss_mb=peak_rss,
+        reasons=report.reasons,
+    )
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(child.model_dump_json(indent=2), encoding="utf-8")
+    return 0
+
+
+def _parse_budgets(value: str) -> tuple[int, ...]:
+    budgets = tuple(int(item.strip()) for item in value.split(",") if item.strip())
+    if not budgets or any(item <= 0 for item in budgets):
+        raise argparse.ArgumentTypeError("--budgets must contain positive milliseconds")
+    return budgets
+
+
+def _ppo_solver_benchmark(args: argparse.Namespace) -> int:
+    certificates = tuple(args.reduction_certificate or ())
+    if certificates and len(certificates) not in {1, len(args.trace)}:
+        raise ValueError("--reduction-certificate may be given once or once per trace")
+    if certificates:
+        cert_paths = certificates
+    else:
+        cert_paths = ()
+    sides = tuple(
+        BenchmarkSide(item)
+        for item in (args.side or [item.value for item in BenchmarkSide])
+    )
+    phase = ShadowSolverPhase(args.phase)
+    report = run_isolated_solver_benchmark(
+        tuple(args.trace),
+        dbt_contract=args.dbt_contract,
+        reduction_certificates=cert_paths,
+        phase=phase,
+        sides=sides,
+        repetitions=args.repetitions,
+        budgets_ms=args.budgets,
+        config=_analysis_config(args),
+        process_grace_ms=args.process_grace_ms,
+        worker_output_dir=args.worker_output_dir,
+        python_executable=args.python_executable,
+        keep_worker_outputs=args.keep_worker_outputs,
+    )
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(report.model_dump_json(indent=2), encoding="utf-8")
+    print(report.model_dump_json(indent=2))
+    return 0
 
 
 def _run(args: argparse.Namespace) -> int:
@@ -787,6 +902,67 @@ def build_parser() -> argparse.ArgumentParser:
     ppo_solver_replay.add_argument("--encoding-only", action="store_true")
     _add_analysis_options(ppo_solver_replay)
     ppo_solver_replay.set_defaults(handler=_ppo_solver_replay)
+
+    ppo_solver_worker = subparsers.add_parser(
+        "ppo-solver-worker",
+        help=argparse.SUPPRESS,
+    )
+    ppo_solver_worker.add_argument("trace", type=Path)
+    ppo_solver_worker.add_argument("--side", choices=[item.value for item in BenchmarkSide], required=True)
+    ppo_solver_worker.add_argument("--phase", choices=[item.value for item in ShadowSolverPhase], required=True)
+    ppo_solver_worker.add_argument("--repetition", type=int, required=True)
+    ppo_solver_worker.add_argument("--budget-ms", type=int, required=True)
+    ppo_solver_worker.add_argument("--reduction-certificate", type=Path)
+    ppo_solver_worker.add_argument("--output", type=Path, required=True)
+    ppo_solver_worker.add_argument("--encoding-only", action="store_true")
+    _add_analysis_options(ppo_solver_worker)
+    ppo_solver_worker.set_defaults(handler=_ppo_solver_worker)
+
+    ppo_solver_benchmark = subparsers.add_parser(
+        "ppo-solver-benchmark",
+        help="measure full/reduced shadow solver runs in isolated child processes",
+    )
+    ppo_solver_benchmark.add_argument("trace", type=Path, nargs="+")
+    ppo_solver_benchmark.add_argument("--reduction-certificate", type=Path, action="append")
+    ppo_solver_benchmark.add_argument("--output", type=Path, required=True)
+    ppo_solver_benchmark.add_argument(
+        "--phase",
+        choices=[item.value for item in ShadowSolverPhase],
+        default=ShadowSolverPhase.ENCODING.value,
+    )
+    ppo_solver_benchmark.add_argument(
+        "--side",
+        choices=[item.value for item in BenchmarkSide],
+        action="append",
+        default=None,
+        help="repeat for each side; defaults to full and reduced",
+    )
+    ppo_solver_benchmark.add_argument("--repetitions", type=int, default=3)
+    ppo_solver_benchmark.add_argument(
+        "--budgets",
+        type=_parse_budgets,
+        default=(60_000,),
+        help="comma-separated per-child solver/construction budgets in milliseconds",
+    )
+    ppo_solver_benchmark.add_argument(
+        "--process-grace-ms",
+        type=int,
+        default=120_000,
+        help="extra external grace after the in-process budget",
+    )
+    ppo_solver_benchmark.add_argument(
+        "--worker-output-dir",
+        type=Path,
+        default=Path(".experiments") / "solver-benchmark-workers",
+    )
+    ppo_solver_benchmark.add_argument("--keep-worker-outputs", action="store_true")
+    ppo_solver_benchmark.add_argument(
+        "--python-executable",
+        default=sys.executable,
+        help="Python executable used for isolated workers",
+    )
+    _add_analysis_options(ppo_solver_benchmark)
+    ppo_solver_benchmark.set_defaults(handler=_ppo_solver_benchmark)
 
     run = subparsers.add_parser("run", help="capture and immediately analyze")
     run.add_argument("--trace", type=Path, required=True)

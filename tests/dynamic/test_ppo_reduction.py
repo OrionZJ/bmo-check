@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import sys
 from pathlib import Path
 
 import pytest
@@ -13,13 +14,21 @@ from bmo_check_dynamic.analysis import (
     build_ppo_reduction,
     build_ppo_reduction_certificate,
     build_shadow_solver_comparison,
+    run_isolated_solver_benchmark,
     build_solver_certificate,
     ppo_certificate_digest,
     replay_solver_certificate,
     replay_ppo_reduction,
 )
 from bmo_check_dynamic.analysis.communication import CommunicationEdge
-from bmo_check_dynamic.model import EventKind, RemovedPpoEdge, TraceEvent
+from bmo_check_dynamic.config import DynamicConfig
+from bmo_check_dynamic.model import (
+    BenchmarkSide,
+    EventKind,
+    RemovedPpoEdge,
+    ShadowSolverPhase,
+    TraceEvent,
+)
 from bmo_check_dynamic.cli import main
 from bmo_check_dynamic.trace import TraceWriter
 
@@ -490,3 +499,44 @@ def test_shadow_solver_small_correctness_corpus(case_name: str) -> None:
     )
     assert comparison.replay_accepted is True
     assert comparison.result_match is not False
+
+
+def test_isolated_solver_benchmark_records_child_resources(trace_manifest, tmp_path: Path) -> None:
+    trace_dir = tmp_path / "isolated-trace"
+    trace_manifest(trace_dir, control_closed=True)
+    with TraceWriter(trace_dir / "events-1.bin") as writer:
+        writer.write(TraceEvent(1, 1, 0, 0x10, EventKind.STORE, 0x1000, 4))
+    with TraceWriter(trace_dir / "events-2.bin") as writer:
+        writer.write(TraceEvent(2, 1, 0, 0x20, EventKind.LOAD, 0x1000, 4))
+    contract = Path(__file__).resolve().parents[2] / "specs" / "dynamic" / "dbt6-mo-off.yaml"
+    output_dir = tmp_path / "workers"
+    report = run_isolated_solver_benchmark(
+        (trace_dir,),
+        dbt_contract=contract,
+        reduction_certificates=(),
+        phase=ShadowSolverPhase.ENCODING,
+        sides=(BenchmarkSide.FULL, BenchmarkSide.REDUCED),
+        repetitions=1,
+        budgets_ms=(5_000,),
+        config=DynamicConfig(
+            max_window_events=64,
+            max_communication_edges=100,
+            max_communication_active_events=100,
+            max_object_events=100,
+            solver_timeout_ms=5_000,
+            max_symbolic_terms=100_000,
+        ),
+        process_grace_ms=10_000,
+        worker_output_dir=output_dir,
+        python_executable=sys.executable,
+    )
+
+    assert report.diagnostic_only is True
+    assert len(report.runs) == 2
+    assert all(run.status == "completed" for run in report.runs)
+    assert all(run.child is not None for run in report.runs)
+    assert all(run.child.peak_rss_mb is not None for run in report.runs)
+    assert all(run.child.analysis_overhead_ms >= 0 for run in report.runs)
+    assert all(aggregate.completed == 1 for aggregate in report.aggregates)
+    assert all(aggregate.median_analysis_overhead_ms is not None for aggregate in report.aggregates)
+    assert any(aggregate.constraint_breakdown for aggregate in report.aggregates)

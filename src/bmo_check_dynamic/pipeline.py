@@ -36,6 +36,7 @@ from bmo_check_dynamic.analysis import (
     build_ppo_reduction_certificate,
     replay_ppo_reduction,
     build_shadow_solver_comparison,
+    build_shadow_solver_run,
     build_solver_certificate,
     replay_solver_certificate,
 )
@@ -64,6 +65,9 @@ from bmo_check_dynamic.model import (
     TraceShadowSolverReport,
     TraceSolverReplayReport,
     SolverRunReplay,
+    BenchmarkSide,
+    ShadowSolverPhase,
+    TraceShadowSolverSideReport,
 )
 from bmo_check_dynamic.proof import (
     characterize_symbolic_encoding,
@@ -150,6 +154,14 @@ class _PpoSolverReplayInspectionComplete(Exception):
 
     def __init__(self, report: TraceSolverReplayReport) -> None:
         super().__init__("PPO shadow solver replay completed")
+        self.report = report
+
+
+class _PpoSolverSideInspectionComplete(Exception):
+    """P9.5 worker 完成单侧 shadow run 后跳过正式 proof。"""
+
+    def __init__(self, report: TraceShadowSolverSideReport) -> None:
+        super().__init__("PPO shadow solver side inspection completed")
         self.report = report
 
 
@@ -1085,6 +1097,89 @@ def ppo_solver_trace(
         reasons=analyzed.unknown_reasons,
     )
     return empty, TraceReducedSolverRunCertificate(trace_id=empty.trace_id)
+
+
+def ppo_solver_side_trace(
+    trace_dir: Path,
+    *,
+    dbt_contract: Path,
+    side: BenchmarkSide,
+    config: DynamicConfig | None = None,
+    reduction_certificate: TracePpoReductionCertificate | None = None,
+    execute_solver: bool = True,
+    repetition: int = 0,
+    budget_ms: int | None = None,
+) -> TraceShadowSolverSideReport:
+    """只在当前进程构造一侧 PPO，供独立 benchmark worker 调用。"""
+
+    config = config or DynamicConfig()
+    phase = ShadowSolverPhase.SOLVER if execute_solver else ShadowSolverPhase.ENCODING
+
+    def inspect(
+        manifest: TraceManifest,
+        validation: object,
+        stored_event_count: int,
+        scan_stats: CommunicationScanStats,
+        edges: CompactCommunicationEdges | tuple[CommunicationEdge, ...],
+        windows: tuple[object, ...],
+        window_unknowns: tuple[str, ...],
+    ) -> None:
+        del stored_event_count, scan_stats, edges
+        supplied = (
+            {item.window_id: item for item in reduction_certificate.windows}
+            if reduction_certificate is not None
+            else {}
+        )
+        runs = []
+        reasons = list(window_unknowns)
+        if reduction_certificate is not None and reduction_certificate.trace_id != manifest.trace_id:
+            reasons.append("PPO reduction certificate trace_id does not match trace")
+        for window in windows:
+            graph = build_ppo_graph_input(window)
+            reduction = supplied.get(window.window_id)
+            if reduction is None:
+                reduction, _ = build_ppo_reduction_certificate(graph)
+            runs.append(
+                build_shadow_solver_run(
+                    window,
+                    graph,
+                    reduction,
+                    side=side.value,
+                    control_flow_closed=manifest.control_flow_closed,
+                    timeout_ms=config.solver_timeout_ms,
+                    max_symbolic_terms=config.max_symbolic_terms,
+                    execute_solver=execute_solver,
+                )
+            )
+        raise _PpoSolverSideInspectionComplete(
+            TraceShadowSolverSideReport(
+                trace_id=manifest.trace_id,
+                side=side,
+                phase=phase,
+                trace_complete=bool(getattr(validation, "structurally_complete", False)),
+                analysis_reached_windows=True,
+                windows=tuple(runs),
+                reasons=tuple(reasons),
+            )
+        )
+
+    try:
+        analyzed = analyze_trace(
+            trace_dir,
+            dbt_contract=dbt_contract,
+            config=config,
+            _window_observer=inspect,
+        )
+    except _PpoSolverSideInspectionComplete as complete:
+        return complete.report
+    return TraceShadowSolverSideReport(
+        trace_id=analyzed.scope.trace_ids[0],
+        side=side,
+        phase=phase,
+        trace_complete=analyzed.trace_complete,
+        analysis_reached_windows=False,
+        reasons=analyzed.unknown_reasons,
+    )
 
 
 def ppo_solver_replay_trace(

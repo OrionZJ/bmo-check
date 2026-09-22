@@ -23,9 +23,15 @@ class ShadowSolverRun(StrictModel):
     symbolic_terms: int
     z3_ast_count: int
     assertion_count: int
+    # 该时间只覆盖 reduction certificate 的独立重放。
+    # 它与 SMT 编码分开记录，避免把图证明成本误算成 Z3 成本。
+    ppo_replay_time_ms: int = 0
     build_time_ms: int
     solver_time_ms: int | None = None
     peak_rss_mb: float | None = None
+    formula_breakdown: dict[str, int] = {}
+    constraint_breakdown: dict[str, int] = {}
+    variable_counts: dict[str, int] = {}
 
 
 class ShadowSolverComparison(StrictModel):
