@@ -1102,3 +1102,33 @@ external resource guard before a report was written; the structured 10,000+
 state run was not repeated after that guard fired.  Those missing runs are
 recorded as resource-limited, not as empty candidate spaces.
 No P14 result changes SAFE, TRACE_SAFE, COUNTEREXAMPLE, or UNKNOWN.
+
+## P15 bounded-memory candidate discovery (shadow-only)
+
+P14 的公平 structured scheduler 在冻结 3,720-event SB 上一次扩展会把大量
+兄弟路径物化：状态携带复制的 path tuple/used-relation set，reachability
+oracle 又保留每个 source 的完整端点与路径缓存。1,000 个扩展状态因此留下
+108,458 个 frontier 状态并达到约 5.8 GiB RSS。这个现象不是候选空间为空，
+也不能通过丢弃 frontier 来“修复”。
+
+P15 增加 `P15_BOUNDED_STRUCTURED` shadow mode。它使用共享父链和
+`next_successor_index` cursor，每次只消费一个后继；未消费的兄弟仍由 cursor
+表示。reachability cache 在 P15 中关闭，避免把短期搜索结果变成长期驻留的
+大字典。达到 `max_in_memory_frontier`、RSS 或 wall-time 边界时，cursor 和
+pending seed 会保留在报告中，并可通过带 binding digest 的 checkpoint 恢复；
+不会把资源截断解释成完整候选集合或正式 verdict。
+
+新增 `CandidateDiscoveryResourcePolicy` 支持：
+
+* `max_in_memory_frontier`、`max_rss_mb`、`max_search_states`、
+  `max_wall_time_ms`；
+* 周期性 memory/progress 采样；
+* checkpoint/resume，绑定 event/may-edge/source-PPO digest；
+* `TRUNCATED` / `RESOURCE_LIMITED` 的显式 termination reason。
+
+截至本记录，冻结 SB 的 1,000-state P15 discovery-only worker 在独立进程中
+峰值约 460 MiB，发现 4 个 canonical candidates，frontier peak 8,700，
+checkpoint 约 4.4 MiB；报告为 `TRUNCATED(max_search_states)`，没有局部 SMT
+或正式 verdict。该数据只说明 bounded cursor 的资源行为，不能宣称候选空间已
+穷尽。10,000-state 与后续长时间实验必须使用相同 trace、certificate 和
+contract，并单独记录 RSS、frontier、candidate、checkpoint 和终止原因。

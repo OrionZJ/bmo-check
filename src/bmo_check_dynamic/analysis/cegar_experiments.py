@@ -20,6 +20,7 @@ except ImportError:  # pragma: no cover - Windows development environment.
 
 from bmo_check_dynamic.model import (
     CandidateCoverageReport,
+    CandidateDiscoveryResourcePolicy,
     CegarModeComparisonReport,
     CegarExperimentMode,
     CegarModeMetrics,
@@ -243,6 +244,8 @@ def compare_cegar_modes(
     include_structured: bool = False,
     only_mode: CegarExperimentMode | None = None,
     discovery_only: bool = False,
+    include_bounded: bool = False,
+    discovery_resource_policy: CandidateDiscoveryResourcePolicy | None = None,
 ) -> CegarModeComparisonReport:
     """用完全相同的边界比较 P11、P12 canonical 和 P12 blocking。"""
 
@@ -308,6 +311,33 @@ def compare_cegar_modes(
             evaluate_candidates=not discovery_only,
         )
         modes.append(_p14_metrics(structured, prepared, started))
+
+    if (include_bounded or only_mode is CegarExperimentMode.STRUCTURED_P15) and (
+        only_mode is None or only_mode is CegarExperimentMode.STRUCTURED_P15
+    ):
+        started = time.perf_counter()
+        bounded_policy = discovery_resource_policy or CandidateDiscoveryResourcePolicy(
+            max_in_memory_frontier=max(1_000, max_local_queries * 100),
+            max_search_states=max_search_states,
+        )
+        bounded = characterize_graph_first_window(
+            window,
+            reduction_certificate=prepared.certificate,
+            control_flow_closed=control_flow_closed,
+            max_cycle_length=max_cycle_length,
+            max_cycles=max_local_queries,
+            max_search_states=max_search_states,
+            local_timeout_ms=local_timeout_ms,
+            local_max_symbolic_terms=local_max_symbolic_terms,
+            execute_local_solver=execute_local_solver,
+            discovery_scheduler="bounded_lazy_p15",
+            discovery_resource_policy=bounded_policy,
+            evaluate_candidates=not discovery_only,
+        )
+        metrics = _p14_metrics(bounded, prepared, started).model_copy(
+            update={"mode": CegarExperimentMode.STRUCTURED_P15}
+        )
+        modes.append(metrics)
 
     candidate_sets = {
         item.mode.value: set(item.candidate_skeleton_ids)

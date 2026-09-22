@@ -48,6 +48,7 @@ from bmo_check_dynamic.model import (
     DynamicCertificate,
     TracePpoReductionCertificate,
     CegarExperimentMode,
+    CandidateDiscoveryResourcePolicy,
     TraceReducedSolverRunCertificate,
     TraceVerdict,
     BenchmarkSide,
@@ -337,6 +338,21 @@ def _cegar_ab(args: argparse.Namespace) -> int:
             else None
         ),
         discovery_only=args.discovery_only,
+        include_bounded=args.include_bounded,
+        discovery_resource_policy=(
+            CandidateDiscoveryResourcePolicy(
+                max_in_memory_frontier=args.max_in_memory_frontier,
+                max_rss_mb=args.max_rss_mb,
+                max_search_states=args.max_search_states,
+                max_wall_time_ms=args.max_wall_time_ms,
+                sample_every=args.memory_sample_every,
+                checkpoint_path=(str(args.checkpoint) if args.checkpoint else None),
+                resume_checkpoint=(str(args.resume_checkpoint) if args.resume_checkpoint else None),
+                progress_path=(str(args.progress) if args.progress else None),
+            )
+            if args.include_bounded or args.only_mode == CegarExperimentMode.STRUCTURED_P15.value
+            else None
+        ),
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(report.model_dump_json(indent=2), encoding="utf-8")
@@ -1086,6 +1102,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="include the fair P14 structured candidate-discovery shadow mode",
     )
     cegar_ab.add_argument(
+        "--include-bounded",
+        action="store_true",
+        help="include the P15 bounded-memory lazy discovery shadow mode",
+    )
+    cegar_ab.add_argument(
         "--only-mode",
         choices=[mode.value for mode in CegarExperimentMode],
         help="run one shadow mode in an isolated worker",
@@ -1095,6 +1116,13 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="record candidate discovery without constructing local SMT queries",
     )
+    cegar_ab.add_argument("--max-in-memory-frontier", type=int, default=None)
+    cegar_ab.add_argument("--max-rss-mb", type=float, default=None)
+    cegar_ab.add_argument("--max-wall-time-ms", type=int, default=None)
+    cegar_ab.add_argument("--memory-sample-every", type=int, default=100)
+    cegar_ab.add_argument("--checkpoint", type=Path, default=None)
+    cegar_ab.add_argument("--resume-checkpoint", type=Path, default=None)
+    cegar_ab.add_argument("--progress", type=Path, default=None)
     _add_analysis_options(cegar_ab)
     cegar_ab.set_defaults(handler=_cegar_ab)
 

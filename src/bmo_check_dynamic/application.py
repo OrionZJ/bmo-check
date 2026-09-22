@@ -349,6 +349,8 @@ def cegar_ab(
     include_structured: bool = False,
     only_mode: CegarExperimentMode | None = None,
     discovery_only: bool = False,
+    include_bounded: bool = False,
+    discovery_resource_policy=None,
 ) -> CegarExperimentReport:
     """运行 P13/P14 shadow A/B；不进入正式 verdict。"""
 
@@ -367,6 +369,8 @@ def cegar_ab(
         include_structured=include_structured,
         only_mode=only_mode,
         discovery_only=discovery_only,
+        include_bounded=include_bounded,
+        discovery_resource_policy=discovery_resource_policy,
     )
 
 

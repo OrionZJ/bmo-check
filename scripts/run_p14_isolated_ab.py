@@ -62,6 +62,21 @@ def _run_one(args: argparse.Namespace, mode: str, output: Path) -> dict[str, obj
     ]
     if args.discovery_only:
         command.append("--discovery-only")
+    if args.max_in_memory_frontier is not None:
+        command.extend(("--max-in-memory-frontier", str(args.max_in_memory_frontier)))
+    if args.max_rss_mb is not None:
+        command.extend(("--max-rss-mb", str(args.max_rss_mb)))
+    if args.max_wall_time_ms is not None:
+        command.extend(("--max-wall-time-ms", str(args.max_wall_time_ms)))
+    if args.checkpoint_dir is not None:
+        command.extend(
+            (
+                "--checkpoint",
+                str(args.checkpoint_dir / f"{mode}.checkpoint.json"),
+                "--progress",
+                str(args.checkpoint_dir / f"{mode}.progress.json"),
+            )
+        )
     started = time.perf_counter()
     try:
         completed = subprocess.run(
@@ -121,10 +136,14 @@ def main() -> int:
     parser.add_argument("--local-timeout-ms", type=int, default=1_000)
     parser.add_argument("--local-max-symbolic-terms", type=int, default=100_000)
     parser.add_argument("--discovery-only", action="store_true")
+    parser.add_argument("--max-in-memory-frontier", type=int, default=None)
+    parser.add_argument("--max-rss-mb", type=float, default=None)
+    parser.add_argument("--max-wall-time-ms", type=int, default=None)
+    parser.add_argument("--checkpoint-dir", type=Path, default=None)
     parser.add_argument(
         "--modes",
         nargs="+",
-        choices=("P11_RAW", "P12_CANONICAL", "P12_CANONICAL_BLOCKING", "P14_STRUCTURED"),
+        choices=("P11_RAW", "P12_CANONICAL", "P12_CANONICAL_BLOCKING", "P14_STRUCTURED", "P15_BOUNDED_STRUCTURED"),
     )
     args = parser.parse_args()
     args.output.parent.mkdir(parents=True, exist_ok=True)

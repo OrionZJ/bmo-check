@@ -231,6 +231,39 @@ class CandidateDiscoveryProfile(StrictModel):
     search_truncated: bool = False
     max_cycle_length: int = 0
     max_search_states: int = 0
+    # P15 只读画像：这些数字用于解释资源消耗，不能改变候选语义。
+    successors_generated: int = 0
+    frontier_peak: int = 0
+    estimated_frontier_bytes: int | None = None
+    estimated_state_bytes: int | None = None
+    estimated_path_bytes: int | None = None
+    estimated_reachability_cache_bytes: int | None = None
+    memory_samples: tuple[dict[str, object], ...] = ()
+    resource_limit_reached: bool = False
+    termination_reason: str | None = None
+    resumable: bool = False
+    checkpoint_path: str | None = None
+    checkpoint_binding_digest: str | None = None
+    spill_size_bytes: int = 0
+    diagnostic_only: bool = True
+
+
+class CandidateDiscoveryResourcePolicy(StrictModel):
+    """候选发现的资源边界；达到边界只能保留未探索状态并报告截断。
+
+    这些限制只作用于 shadow discovery。它们不能把未探索空间解释成空集，
+    也不能改变正式 checker 的 SAFE/UNKNOWN/COUNTEREXAMPLE 结论。
+    """
+
+    schema_version: str = "candidate-discovery-resource-policy-v1"
+    max_in_memory_frontier: int | None = None
+    max_rss_mb: float | None = None
+    max_search_states: int | None = None
+    max_wall_time_ms: int | None = None
+    sample_every: int = 100
+    checkpoint_path: str | None = None
+    resume_checkpoint: str | None = None
+    progress_path: str | None = None
     diagnostic_only: bool = True
 
 
@@ -545,6 +578,7 @@ __all__ = [
     "CanonicalCycleSkeleton",
     "CandidateSpaceProfile",
     "CandidateDiscoveryProfile",
+    "CandidateDiscoveryResourcePolicy",
     "CandidateBlockingConstraint",
     "CegarCandidateRecord",
     "CegarSearchLedger",

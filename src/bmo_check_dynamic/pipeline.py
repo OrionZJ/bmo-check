@@ -82,6 +82,7 @@ from bmo_check_dynamic.model import (
     TraceCegarReport,
     CegarExperimentReport,
     CegarExperimentMode,
+    CandidateDiscoveryResourcePolicy,
 )
 from bmo_check_dynamic.proof import (
     characterize_symbolic_encoding,
@@ -1559,6 +1560,8 @@ def cegar_mode_comparison_trace(
     include_structured: bool = False,
     only_mode: CegarExperimentMode | None = None,
     discovery_only: bool = False,
+    include_bounded: bool = False,
+    discovery_resource_policy: CandidateDiscoveryResourcePolicy | None = None,
 ) -> CegarExperimentReport:
     """对真实 trace 的每个窗口执行 P13/P14 shadow A/B。"""
 
@@ -1597,6 +1600,8 @@ def cegar_mode_comparison_trace(
                 include_structured=include_structured,
                 only_mode=only_mode,
                 discovery_only=discovery_only,
+                include_bounded=include_bounded,
+                discovery_resource_policy=discovery_resource_policy,
             )
             for window in windows
         )

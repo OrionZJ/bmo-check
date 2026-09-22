@@ -2,12 +2,24 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import sys
+import time
 from collections import Counter, defaultdict, deque
 from dataclasses import dataclass
+from itertools import islice
+from pathlib import Path
+from typing import Iterator
+
+try:  # pragma: no cover - Windows development uses None RSS samples.
+    import resource as _resource
+except ImportError:  # pragma: no cover
+    _resource = None
 
 from bmo_check_dynamic.model import (
     CandidateBlockingClause,
     CandidateDiscoveryProfile,
+    CandidateDiscoveryResourcePolicy,
     CandidateCycleReplay,
     CandidateCycleReplayStatus,
     CandidateSearchLedger,
@@ -48,6 +60,76 @@ class _LabeledEdge:
     witness_path: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True, slots=True)
+class _LazyPathNode:
+    """共享父链，避免每个兄弟状态复制整条 path tuple。"""
+
+    event_id: str
+    edge: _LabeledEdge | None
+    parent: "_LazyPathNode | None"
+    depth: int
+
+
+@dataclass(frozen=True, slots=True)
+class _LazyStructuredState:
+    seed_index: int
+    start: str
+    current: str
+    path: _LazyPathNode
+    used_relations: frozenset[str]
+    next_successor_index: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class _LazyTransition:
+    reach_edge: _LabeledEdge
+    next_edge: _LabeledEdge | None
+    candidate: bool
+
+
+def _rss_mb() -> float | None:
+    if _resource is None:
+        return None
+    value = float(_resource.getrusage(_resource.RUSAGE_SELF).ru_maxrss)
+    return value / 1024.0
+
+
+def _shallow_size(value: object) -> int:
+    """估算画像对象大小；不递归遍历整个图，避免画像本身制造压力。"""
+
+    size = sys.getsizeof(value)
+    if isinstance(value, dict):
+        size += sum(sys.getsizeof(key) + sys.getsizeof(item) for key, item in islice(value.items(), 64))
+    elif isinstance(value, (tuple, list, set, frozenset, deque)):
+        size += sum(sys.getsizeof(item) for item in islice(iter(value), 64))
+    return size
+
+
+def _structured_memory_sample(
+    frontier: deque[_LazyStructuredState] | deque[tuple[object, ...]],
+    oracle: "_ReachabilityOracle",
+) -> dict[str, object]:
+    sample = list(islice(frontier, 64))
+    state_bytes = sum(_shallow_size(item) for item in sample)
+    average_state = state_bytes / len(sample) if sample else 0.0
+    estimated_frontier = int(len(frontier) * average_state)
+    path_bytes = sum(
+        _shallow_size(item.path) if isinstance(item, _LazyStructuredState) else _shallow_size(item)
+        for item in sample
+    )
+    cache_bytes = _shallow_size(oracle.source_cache) + _shallow_size(oracle.path_cache)
+    return {
+        "expanded_states": None,
+        "frontier_states": len(frontier),
+        "rss_mb": _rss_mb(),
+        "estimated_frontier_bytes": estimated_frontier,
+        "estimated_state_bytes": int(average_state),
+        "estimated_path_bytes": path_bytes,
+        "estimated_reachability_cache_bytes": cache_bytes,
+        "sample_state_count": len(sample),
+    }
+
+
 def characterize_graph_first_window(
     window: AnalysisWindow,
     *,
@@ -61,6 +143,7 @@ def characterize_graph_first_window(
     execute_local_solver: bool = True,
     discovery_scheduler: str = "depth_first",
     evaluate_candidates: bool = True,
+    discovery_resource_policy: CandidateDiscoveryResourcePolicy | None = None,
 ) -> GraphFirstWindowReport:
     """寻找有界候选坏环，并对每个候选做局部 shadow SMT 查询。
 
@@ -132,6 +215,7 @@ def characterize_graph_first_window(
         max_search_states=max_search_states,
         scheduler=discovery_scheduler,
         profile=discovery_data,
+        resource_policy=discovery_resource_policy,
     )
     if truncated:
         reasons.append("bounded graph search reached a configured limit")
@@ -498,12 +582,19 @@ class _ReachabilityOracle:
     adjacency: dict[str, tuple[str, ...]]
     source_cache: dict[str, dict[str, tuple[str, ...]]]
     path_cache: dict[tuple[str, str], tuple[str, ...] | None]
+    cache_sources: bool = True
+    cache_paths: bool = True
+    query_count: int = 0
+    cache_hit_count: int = 0
 
     @classmethod
     def build(
         cls,
         events: tuple[TraceEvent, ...],
         edges: frozenset[Edge],
+        *,
+        cache_sources: bool = True,
+        cache_paths: bool = True,
     ) -> "_ReachabilityOracle":
         adjacency: dict[str, list[str]] = defaultdict(list)
         for left, right in edges:
@@ -516,18 +607,22 @@ class _ReachabilityOracle:
             },
             source_cache={},
             path_cache={},
+            cache_sources=cache_sources,
+            cache_paths=cache_paths,
         )
 
     def path(self, source: str, target: str) -> tuple[str, ...] | None:
         key = (source, target)
-        if key in self.path_cache:
+        if self.cache_paths and key in self.path_cache:
             return self.path_cache[key]
         if source == target:
-            self.path_cache[key] = ()
+            if self.cache_paths:
+                self.path_cache[key] = ()
             return ()
         first, last = self.events.get(source), self.events.get(target)
         if first is None or last is None or first.thread_id != last.thread_id:
-            self.path_cache[key] = None
+            if self.cache_paths:
+                self.path_cache[key] = None
             return None
         parent: dict[str, str | None] = {source: None}
         pending: deque[str] = deque([source])
@@ -542,15 +637,18 @@ class _ReachabilityOracle:
                     while path[-1] != source:
                         previous = parent[path[-1]]
                         if previous is None:
-                            self.path_cache[key] = None
+                            if self.cache_paths:
+                                self.path_cache[key] = None
                             return None
                         path.append(previous)
                     path.reverse()
                     value = tuple(path)
-                    self.path_cache[key] = value
+                    if self.cache_paths:
+                        self.path_cache[key] = value
                     return value
                 pending.append(neighbor)
-        self.path_cache[key] = None
+        if self.cache_paths:
+            self.path_cache[key] = None
         return None
 
     def reachable_sources(
@@ -558,12 +656,15 @@ class _ReachabilityOracle:
         source: str,
         targets_by_thread: dict[int, set[str]],
     ) -> dict[str, tuple[str, ...]]:
-        cached = self.source_cache.get(source)
+        self.query_count += 1
+        cached = self.source_cache.get(source) if self.cache_sources else None
         if cached is not None:
+            self.cache_hit_count += 1
             return cached
         event = self.events.get(source)
         if event is None:
-            self.source_cache[source] = {}
+            if self.cache_sources:
+                self.source_cache[source] = {}
             return {}
         targets = targets_by_thread.get(event.thread_id, set())
         found: dict[str, tuple[str, ...]] = {}
@@ -588,9 +689,11 @@ class _ReachabilityOracle:
                 if neighbor not in parent:
                     parent[neighbor] = current
                     pending.append(neighbor)
-        self.source_cache[source] = found
-        for target, path in found.items():
-            self.path_cache[(source, target)] = path
+        if self.cache_sources:
+            self.source_cache[source] = found
+        if self.cache_paths:
+            for target, path in found.items():
+                self.path_cache[(source, target)] = path
         return found
 
 
@@ -606,6 +709,7 @@ def _enumerate_skeleton_cycles(
     max_search_states: int,
     scheduler: str = "depth_first",
     profile: dict[str, object] | None = None,
+    resource_policy: CandidateDiscoveryResourcePolicy | None = None,
 ) -> tuple[
     list[tuple[tuple[str, ...], tuple[_LabeledEdge, ...]]],
     int,
@@ -624,6 +728,19 @@ def _enumerate_skeleton_cycles(
             max_cycle_length=max_cycle_length,
             max_cycles=max_cycles,
             max_search_states=max_search_states,
+            profile=profile,
+        )
+    if scheduler == "bounded_lazy_p15":
+        return _enumerate_bounded_lazy_skeleton_cycles(
+            events,
+            may_edges,
+            source_ppo,
+            components,
+            cyclic_components,
+            max_cycle_length=max_cycle_length,
+            max_cycles=max_cycles,
+            max_search_states=max_search_states,
+            resource_policy=resource_policy,
             profile=profile,
         )
     if scheduler != "depth_first":
@@ -859,6 +976,15 @@ def _enumerate_structured_skeleton_cycles(
     explored = 0
     truncated = False
     seeds_visited: set[int] = set()
+    memory_samples: list[dict[str, object]] = []
+    frontier_peak = len(frontier)
+
+    def sample_memory() -> None:
+        nonlocal frontier_peak
+        frontier_peak = max(frontier_peak, len(frontier))
+        item = _structured_memory_sample(frontier, oracle)
+        item["expanded_states"] = explored
+        memory_samples.append(item)
 
     def add_candidate(
         nodes: tuple[str, ...], edges: tuple[_LabeledEdge, ...]
@@ -956,6 +1082,8 @@ def _enumerate_structured_skeleton_cycles(
                 # Count each fair frontier expansion, not an unbounded hidden
                 # recursive traversal.
                 rejection_reasons["frontier_expansion"] += 1
+        if explored and explored % 100 == 0:
+            sample_memory()
 
     if profile is not None:
         cached_queries = rejection_reasons.pop("cached_reachability", 0)
@@ -977,8 +1105,619 @@ def _enumerate_structured_skeleton_cycles(
                 "search_truncated": truncated,
                 "max_cycle_length": max_cycle_length,
                 "max_search_states": max_search_states,
+                "frontier_peak": frontier_peak,
+                "memory_samples": tuple(memory_samples),
+                "estimated_frontier_bytes": (
+                    memory_samples[-1].get("estimated_frontier_bytes")
+                    if memory_samples
+                    else None
+                ),
+                "estimated_state_bytes": (
+                    memory_samples[-1].get("estimated_state_bytes")
+                    if memory_samples
+                    else None
+                ),
+                "estimated_path_bytes": (
+                    memory_samples[-1].get("estimated_path_bytes")
+                    if memory_samples
+                    else None
+                ),
+                "estimated_reachability_cache_bytes": (
+                    memory_samples[-1].get("estimated_reachability_cache_bytes")
+                    if memory_samples
+                    else None
+                ),
             }
         )
+    return candidates, explored, truncated, tuple(skeleton_edges.values())
+
+
+def _path_materialize(path: _LazyPathNode) -> tuple[tuple[str, ...], tuple[_LabeledEdge, ...]]:
+    nodes: list[str] = []
+    edges: list[_LabeledEdge] = []
+    current: _LazyPathNode | None = path
+    while current is not None:
+        nodes.append(current.event_id)
+        if current.edge is not None:
+            edges.append(current.edge)
+        current = current.parent
+    nodes.reverse()
+    edges.reverse()
+    return tuple(nodes), tuple(edges)
+
+
+def _path_contains(path: _LazyPathNode, event_id: str) -> bool:
+    current: _LazyPathNode | None = path
+    while current is not None:
+        if current.event_id == event_id:
+            return True
+        current = current.parent
+    return False
+
+
+def _edge_payload(edge: _LabeledEdge) -> dict[str, object]:
+    return {
+        "source": edge.source,
+        "target": edge.target,
+        "kind": edge.kind,
+        "relation_id": edge.relation_id,
+        "relation_ids": list(edge.relation_ids),
+        "witness_path": list(edge.witness_path),
+    }
+
+
+def _edge_from_payload(payload: dict[str, object]) -> _LabeledEdge:
+    return _LabeledEdge(
+        source=str(payload["source"]),
+        target=str(payload["target"]),
+        kind=str(payload["kind"]),
+        relation_id=str(payload["relation_id"]),
+        relation_ids=tuple(str(item) for item in payload.get("relation_ids", ())),
+        witness_path=tuple(str(item) for item in payload.get("witness_path", ())),
+    )
+
+
+def _discovery_binding_digest(
+    events: tuple[TraceEvent, ...],
+    may_edges: tuple[_LabeledEdge, ...],
+    source_ppo: frozenset[Edge],
+) -> str:
+    payload = {
+        "events": [event.event_id for event in events],
+        "may_edges": [_edge_payload(edge) for edge in may_edges],
+        "source_ppo": sorted([list(edge) for edge in source_ppo]),
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def _write_discovery_checkpoint(
+    path: str,
+    *,
+    binding_digest: str,
+    explored: int,
+    candidates: list[tuple[tuple[str, ...], tuple[_LabeledEdge, ...]]],
+    seen: set[tuple[tuple[str, ...], tuple[str, ...]]],
+    skeleton_edges: dict[tuple[str, str, str], _LabeledEdge],
+    frontier: deque[_LazyStructuredState],
+    pending_seed_indices: deque[int],
+    rejection_reasons: Counter[str],
+    seeds_visited: set[int],
+) -> int:
+    payload = {
+        "schema_version": "candidate-discovery-checkpoint-v1",
+        "binding_digest": binding_digest,
+        "explored": explored,
+        "candidates": [
+            {"nodes": list(nodes), "edges": [_edge_payload(edge) for edge in edges]}
+            for nodes, edges in candidates
+        ],
+        "seen": [
+            {"nodes": list(nodes), "relations": list(relations)}
+            for nodes, relations in sorted(seen)
+        ],
+        "skeleton_edges": [_edge_payload(edge) for edge in skeleton_edges.values()],
+        "frontier": [
+            {
+                "seed_index": state.seed_index,
+                "start": state.start,
+                "current": state.current,
+                "next_successor_index": state.next_successor_index,
+                "path_nodes": list(_path_materialize(state.path)[0]),
+                "path_edges": [_edge_payload(edge) for edge in _path_materialize(state.path)[1]],
+                "used_relations": sorted(state.used_relations),
+            }
+            for state in frontier
+        ],
+        "pending_seed_indices": list(pending_seed_indices),
+        "rejection_reasons": dict(rejection_reasons),
+        "seeds_visited": sorted(seeds_visited),
+    }
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_suffix(destination.suffix + ".tmp")
+    temporary.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+    os.replace(temporary, destination)
+    return destination.stat().st_size
+
+
+def _restore_discovery_checkpoint(
+    path: str,
+    *,
+    binding_digest: str,
+) -> dict[str, object]:
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    if payload.get("schema_version") != "candidate-discovery-checkpoint-v1":
+        raise ValueError("unsupported candidate discovery checkpoint schema")
+    if payload.get("binding_digest") != binding_digest:
+        raise ValueError("candidate discovery checkpoint binding mismatch")
+    restored_frontier: deque[_LazyStructuredState] = deque()
+    for item in payload.get("frontier", ()):
+        parent: _LazyPathNode | None = None
+        path_nodes = tuple(str(value) for value in item.get("path_nodes", ()))
+        path_edges = tuple(_edge_from_payload(value) for value in item.get("path_edges", ()))
+        if len(path_nodes) != len(path_edges) + 1:
+            raise ValueError("invalid checkpoint path shape")
+        for index, event_id in enumerate(path_nodes):
+            parent = _LazyPathNode(
+                event_id,
+                path_edges[index - 1] if index else None,
+                parent,
+                index,
+            )
+        if parent is None:
+            raise ValueError("checkpoint contains an empty path")
+        restored_frontier.append(
+            _LazyStructuredState(
+                seed_index=int(item["seed_index"]),
+                start=str(item["start"]),
+                current=str(item["current"]),
+                path=parent,
+                used_relations=frozenset(str(value) for value in item.get("used_relations", ())),
+                next_successor_index=int(item.get("next_successor_index", 0)),
+            )
+        )
+    return {
+        "explored": int(payload.get("explored", 0)),
+        "candidates": [
+            (
+                tuple(str(value) for value in item.get("nodes", ())),
+                tuple(_edge_from_payload(value) for value in item.get("edges", ())),
+            )
+            for item in payload.get("candidates", ())
+        ],
+        "seen": {
+            (
+                tuple(str(value) for value in item.get("nodes", ())),
+                tuple(str(value) for value in item.get("relations", ())),
+            )
+            for item in payload.get("seen", ())
+        },
+        "skeleton_edges": {
+            (edge.source, edge.target, edge.kind): edge
+            for edge in (_edge_from_payload(value) for value in payload.get("skeleton_edges", ()))
+        },
+        "frontier": restored_frontier,
+        "pending_seed_indices": deque(int(value) for value in payload.get("pending_seed_indices", ())),
+        "rejection_reasons": Counter(payload.get("rejection_reasons", {})),
+        "seeds_visited": set(int(value) for value in payload.get("seeds_visited", ())),
+    }
+
+
+def _structured_successor_at(
+    state: _LazyStructuredState,
+    *,
+    oracle: _ReachabilityOracle,
+    targets_by_thread: dict[int, set[str]],
+    by_source: dict[str, list[_LabeledEdge]],
+    components: dict[str, int],
+    rejection_reasons: Counter[str],
+) -> _LazyTransition | None:
+    """生成第 N 个后继；不把同一状态的兄弟后继同时放入 frontier。"""
+
+    path_nodes, path_edges = _path_materialize(state.path)
+    reachable = oracle.reachable_sources(state.current, targets_by_thread)
+    ordinal = 0
+    for next_source, ppo_path in sorted(reachable.items()):
+        if components.get(next_source) != components.get(state.start):
+            rejection_reasons["reachability_outside_scc"] += 1
+            continue
+        if not ppo_path:
+            continue
+        relation_ids = tuple(
+            f"ppo:source:{left}:{right}"
+            for left, right in zip(ppo_path, ppo_path[1:])
+        )
+        reach_edge = _LabeledEdge(
+            state.current,
+            next_source,
+            "ppo_reachability",
+            f"ppo-reach:source:{state.current}:{next_source}",
+            relation_ids,
+            ppo_path,
+        )
+        if next_source == state.start:
+            if any(edge.kind not in {"source_ppo", "ppo_reachability"} for edge in path_edges):
+                if ordinal == state.next_successor_index:
+                    return _LazyTransition(reach_edge, None, True)
+                ordinal += 1
+            else:
+                rejection_reasons["ppo_only_cycle"] += 1
+            continue
+        if _path_contains(state.path, next_source):
+            rejection_reasons["repeated_endpoint"] += 1
+            continue
+        for next_edge in by_source.get(next_source, ()):
+            if next_edge.relation_id in state.used_relations:
+                rejection_reasons["repeated_relation"] += 1
+                continue
+            if components.get(next_edge.target) != components.get(state.start):
+                rejection_reasons["edge_outside_scc"] += 1
+                continue
+            if next_edge.target in path_nodes and next_edge.target != state.start:
+                rejection_reasons["repeated_endpoint"] += 1
+                continue
+            if ordinal == state.next_successor_index:
+                return _LazyTransition(reach_edge, next_edge, next_edge.target == state.start)
+            ordinal += 1
+    return None
+
+
+def _enumerate_bounded_lazy_skeleton_cycles(
+    events: tuple[TraceEvent, ...],
+    may_edges: tuple[_LabeledEdge, ...],
+    source_ppo: frozenset[Edge],
+    components: dict[str, int],
+    cyclic_components: set[int],
+    *,
+    max_cycle_length: int,
+    max_cycles: int,
+    max_search_states: int,
+    resource_policy: CandidateDiscoveryResourcePolicy | None = None,
+    profile: dict[str, object] | None = None,
+) -> tuple[list[tuple[tuple[str, ...], tuple[_LabeledEdge, ...]]], int, bool, tuple[_LabeledEdge, ...]]:
+    """P15 lazy fair search。
+
+    每次只取一个后继，并把 ``next_successor_index`` 保存进 cursor。兄弟
+    状态不会在一次扩展中全部物化；资源边界触发时 cursor 原样保留并可
+    写入 checkpoint，因此不会把未探索空间静默当成空集。
+    """
+
+    policy = resource_policy or CandidateDiscoveryResourcePolicy()
+    effective_states = max_search_states
+    if policy.max_search_states is not None:
+        effective_states = min(effective_states, policy.max_search_states)
+    sample_every = max(1, policy.sample_every)
+    conditional = tuple(
+        sorted(
+            (edge for edge in may_edges if edge.kind != "source_ppo"),
+            key=lambda edge: (edge.source, edge.target, edge.kind, edge.relation_id),
+        )
+    )
+    event_by_id = {event.event_id: event for event in events}
+    by_source: dict[str, list[_LabeledEdge]] = defaultdict(list)
+    targets_by_thread: dict[int, set[str]] = defaultdict(set)
+    for edge in conditional:
+        by_source[edge.source].append(edge)
+        source_event = event_by_id.get(edge.source)
+        if source_event is not None:
+            targets_by_thread[source_event.thread_id].add(edge.source)
+    for values in by_source.values():
+        values.sort(key=lambda edge: (edge.target, edge.kind, edge.relation_id))
+    oracle = _ReachabilityOracle.build(
+        events,
+        source_ppo,
+        cache_sources=False,
+        cache_paths=False,
+    )
+    binding_digest = _discovery_binding_digest(events, may_edges, source_ppo)
+    candidates: list[tuple[tuple[str, ...], tuple[_LabeledEdge, ...]]] = []
+    skeleton_edges: dict[tuple[str, str, str], _LabeledEdge] = {}
+    seen: set[tuple[tuple[str, ...], tuple[str, ...]]] = set()
+    rejection_reasons: Counter[str] = Counter()
+    frontier: deque[_LazyStructuredState] = deque()
+    pending_seed_indices: deque[int] = deque()
+    for index, seed in enumerate(conditional):
+        component = components.get(seed.source)
+        if component not in cyclic_components or components.get(seed.target) != component:
+            rejection_reasons["seed_outside_cyclic_scc"] += 1
+            continue
+        pending_seed_indices.append(index)
+
+    def admit_seed() -> bool:
+        if not pending_seed_indices:
+            return False
+        index = pending_seed_indices.popleft()
+        seed = conditional[index]
+        root = _LazyPathNode(
+            seed.target,
+            seed,
+            _LazyPathNode(seed.source, None, None, 0),
+            1,
+        )
+        frontier.append(
+            _LazyStructuredState(
+                seed_index=index,
+                start=seed.source,
+                current=seed.target,
+                path=root,
+                used_relations=frozenset((seed.relation_id,)),
+            )
+        )
+        return True
+
+    frontier_limit = policy.max_in_memory_frontier
+    explored = 0
+    if policy.resume_checkpoint:
+        restored = _restore_discovery_checkpoint(
+            policy.resume_checkpoint,
+            binding_digest=binding_digest,
+        )
+        frontier = restored["frontier"]
+        pending_seed_indices = restored["pending_seed_indices"]
+        candidates = restored["candidates"]
+        seen = restored["seen"]
+        skeleton_edges = restored["skeleton_edges"]
+        rejection_reasons = restored["rejection_reasons"]
+        seeds_visited = restored["seeds_visited"]
+        explored = restored["explored"]
+    else:
+        # 初始只装入有限数量的 seed。其余 seed 作为轻量索引保留，达到内存边界
+        # 时仍能在 checkpoint 中恢复，而不是被丢弃。
+        while pending_seed_indices and (frontier_limit is None or len(frontier) < frontier_limit):
+            admit_seed()
+
+    truncated = False
+    termination_reason: str | None = None
+    if policy.resume_checkpoint:
+        # restored above; this branch is kept explicit so a future schema
+        # cannot silently reset the progress ledger.
+        seeds_visited = set(seeds_visited)
+    else:
+        seeds_visited = set()
+    memory_samples: list[dict[str, object]] = []
+    frontier_peak = len(frontier)
+    successors_generated = 0
+    started = time.perf_counter()
+    checkpoint_size = 0
+
+    def sample() -> None:
+        nonlocal frontier_peak
+        frontier_peak = max(frontier_peak, len(frontier))
+        item = _structured_memory_sample(frontier, oracle)
+        item["expanded_states"] = explored
+        item["pending_seed_indices"] = len(pending_seed_indices)
+        item["successors_generated"] = successors_generated
+        memory_samples.append(item)
+        if policy.progress_path:
+            progress = {
+                "schema_version": "candidate-discovery-progress-v1",
+                "timestamp": time.time(),
+                "binding_digest": binding_digest,
+                "expanded_states": explored,
+                "frontier_size": len(frontier),
+                "pending_seed_count": len(pending_seed_indices),
+                "candidate_count": len(candidates),
+                "canonical_count": len(seen),
+                "successors_generated": successors_generated,
+                "current_rss_mb": item["rss_mb"],
+                "peak_rss_mb": item["rss_mb"],
+                "elapsed_ms": int((time.perf_counter() - started) * 1000),
+                "termination_reason": None,
+                "diagnostic_only": True,
+            }
+            progress_path = Path(policy.progress_path)
+            progress_path.parent.mkdir(parents=True, exist_ok=True)
+            progress_path.write_text(json.dumps(progress, sort_keys=True), encoding="utf-8")
+
+    def limit_hit() -> str | None:
+        if policy.max_wall_time_ms is not None and (time.perf_counter() - started) * 1000 >= policy.max_wall_time_ms:
+            return "max_wall_time"
+        rss = _rss_mb()
+        if policy.max_rss_mb is not None and rss is not None and rss >= policy.max_rss_mb:
+            return "max_rss_mb"
+        if frontier_limit is not None and len(frontier) >= frontier_limit and pending_seed_indices:
+            # The current queue can still be searched; this is only a hard
+            # stop when a successor needs another resident cursor.
+            return None
+        return None
+
+    while frontier and not truncated:
+        if explored >= effective_states:
+            truncated = True
+            termination_reason = "max_search_states"
+            break
+        state = frontier.popleft()
+        reason = limit_hit()
+        if reason is not None:
+            frontier.appendleft(state)
+            truncated = True
+            termination_reason = reason
+            break
+        transition = _structured_successor_at(
+            state,
+            oracle=oracle,
+            targets_by_thread=targets_by_thread,
+            by_source=by_source,
+            components=components,
+            rejection_reasons=rejection_reasons,
+        )
+        if transition is None or state.path.depth >= max_cycle_length:
+            if transition is None:
+                rejection_reasons["state_exhausted"] += 1
+            else:
+                rejection_reasons["max_cycle_length"] += 1
+            if pending_seed_indices and (frontier_limit is None or len(frontier) < frontier_limit):
+                admit_seed()
+            if explored and explored % sample_every == 0:
+                sample()
+            continue
+        explored += 1
+        successors_generated += 1
+        seeds_visited.add(state.seed_index)
+        next_index = state.next_successor_index + 1
+        # 保留当前 cursor，之后继续消费下一个后继。若同时加入 child 会
+        # 超过内存边界，则不消费 transition，原状态已在本轮前 pop，因而
+        # 可以原样恢复，不会丢候选。
+        child_needed = transition.next_edge is not None and not transition.candidate
+        additional = 1 + (1 if child_needed else 0)
+        if frontier_limit is not None and len(frontier) + additional > frontier_limit:
+            frontier.appendleft(state)
+            explored -= 1
+            successors_generated -= 1
+            truncated = True
+            termination_reason = "max_in_memory_frontier"
+            break
+        frontier.append(
+            _LazyStructuredState(
+                seed_index=state.seed_index,
+                start=state.start,
+                current=state.current,
+                path=state.path,
+                used_relations=state.used_relations,
+                next_successor_index=next_index,
+            )
+        )
+        reach_edge = transition.reach_edge
+        next_edge = transition.next_edge
+        if transition.candidate:
+            path_nodes, path_edges = _path_materialize(state.path)
+            completed = path_edges + (reach_edge,) + ((next_edge,) if next_edge is not None else ())
+            if any(edge.kind not in {"source_ppo", "ppo_reachability"} for edge in completed):
+                key = (path_nodes, tuple(edge.relation_id for edge in completed))
+                if key not in seen:
+                    seen.add(key)
+                    candidates.append((path_nodes, completed))
+                    for edge in completed:
+                        skeleton_edges[(edge.source, edge.target, edge.kind)] = edge
+                    if len(candidates) >= max_cycles:
+                        truncated = True
+                        termination_reason = "max_cycles"
+                        break
+            else:
+                rejection_reasons["ppo_only_cycle"] += 1
+        else:
+            if next_edge is None:
+                rejection_reasons["missing_child_edge"] += 1
+            else:
+                child_path = _LazyPathNode(
+                    next_edge.target,
+                    next_edge,
+                    _LazyPathNode(
+                        reach_edge.target,
+                        reach_edge,
+                        state.path,
+                        state.path.depth + 1,
+                    ),
+                    state.path.depth + 2,
+                )
+                # reach_edge.target is the endpoint already represented by the
+                # current state only when the summary skips a PPO segment. The
+                # child path therefore appends both summary and conditional edge.
+                frontier.append(
+                    _LazyStructuredState(
+                        seed_index=state.seed_index,
+                        start=state.start,
+                        current=next_edge.target,
+                        path=child_path,
+                        used_relations=state.used_relations | frozenset((next_edge.relation_id,)),
+                    )
+                )
+                skeleton_edges[(next_edge.source, next_edge.target, next_edge.kind)] = next_edge
+        if pending_seed_indices and (frontier_limit is None or len(frontier) < frontier_limit):
+            admit_seed()
+        if explored and explored % sample_every == 0:
+            sample()
+
+    if not truncated and not frontier and pending_seed_indices:
+        # This can only happen when a caller supplied a zero-sized frontier;
+        # retain the distinction from a complete empty search.
+        truncated = True
+        termination_reason = "max_in_memory_frontier"
+    if truncated and policy.checkpoint_path:
+        checkpoint_size = _write_discovery_checkpoint(
+            policy.checkpoint_path,
+            binding_digest=binding_digest,
+            explored=explored,
+            candidates=candidates,
+            seen=seen,
+            skeleton_edges=skeleton_edges,
+            frontier=frontier,
+            pending_seed_indices=pending_seed_indices,
+            rejection_reasons=rejection_reasons,
+            seeds_visited=seeds_visited,
+        )
+    if profile is not None:
+        cached_queries = oracle.query_count
+        profile.update(
+            {
+                "scheduler": "bounded_lazy_p15",
+                "fair_seed_scheduling": True,
+                "conditional_seed_count": len(conditional),
+                "seeds_visited": len(seeds_visited),
+                "ppo_reachability_queries": cached_queries,
+                "ppo_reachability_cache_hits": oracle.cache_hit_count,
+                "path_expansions": successors_generated,
+                "successors_generated": successors_generated,
+                "rejected_cycles": sum(rejection_reasons.values()),
+                "rejection_reasons": dict(sorted(rejection_reasons.items())),
+                "generated_skeletons": len(candidates),
+                "unique_skeletons": len(seen),
+                "remaining_frontier": len(frontier) + len(pending_seed_indices) if truncated else 0,
+                "search_truncated": truncated,
+                "max_cycle_length": max_cycle_length,
+                "max_search_states": effective_states,
+                "frontier_peak": frontier_peak,
+                "memory_samples": tuple(memory_samples),
+                "estimated_frontier_bytes": (
+                    memory_samples[-1].get("estimated_frontier_bytes")
+                    if memory_samples
+                    else None
+                ),
+                "estimated_state_bytes": (
+                    memory_samples[-1].get("estimated_state_bytes")
+                    if memory_samples
+                    else None
+                ),
+                "estimated_path_bytes": (
+                    memory_samples[-1].get("estimated_path_bytes")
+                    if memory_samples
+                    else None
+                ),
+                "estimated_reachability_cache_bytes": (
+                    memory_samples[-1].get("estimated_reachability_cache_bytes")
+                    if memory_samples
+                    else None
+                ),
+                "resource_limit_reached": truncated and termination_reason != "max_search_states",
+                "termination_reason": termination_reason,
+                "resumable": bool(truncated and policy.checkpoint_path),
+                "checkpoint_path": policy.checkpoint_path if checkpoint_size else None,
+                "checkpoint_binding_digest": binding_digest if checkpoint_size else None,
+                "spill_size_bytes": checkpoint_size,
+            }
+        )
+    if policy.progress_path:
+        final_progress = {
+            "schema_version": "candidate-discovery-progress-v1",
+            "timestamp": time.time(),
+            "binding_digest": binding_digest,
+            "expanded_states": explored,
+            "frontier_size": len(frontier),
+            "pending_seed_count": len(pending_seed_indices),
+            "candidate_count": len(candidates),
+            "canonical_count": len(seen),
+            "successors_generated": successors_generated,
+            "current_rss_mb": _rss_mb(),
+            "peak_rss_mb": _rss_mb(),
+            "elapsed_ms": int((time.perf_counter() - started) * 1000),
+            "termination_reason": termination_reason,
+            "diagnostic_only": True,
+        }
+        progress_path = Path(policy.progress_path)
+        progress_path.parent.mkdir(parents=True, exist_ok=True)
+        progress_path.write_text(json.dumps(final_progress, sort_keys=True), encoding="utf-8")
     return candidates, explored, truncated, tuple(skeleton_edges.values())
 
 

@@ -15,6 +15,7 @@ class CegarExperimentMode(StrEnum):
     CANONICAL = "P12_CANONICAL"
     CANONICAL_BLOCKING = "P12_CANONICAL_BLOCKING"
     STRUCTURED_P14 = "P14_STRUCTURED"
+    STRUCTURED_P15 = "P15_BOUNDED_STRUCTURED"
 
 
 class BlockingReplayReport(StrictModel):

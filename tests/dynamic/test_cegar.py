@@ -20,6 +20,7 @@ from bmo_check_dynamic.model import (
     LocalCycleStatus,
 )
 from bmo_check_dynamic.model import CegarExperimentMode
+from bmo_check_dynamic.model import CandidateDiscoveryResourcePolicy
 from bmo_check_dynamic.analysis.ppo_reduction import (
     build_ppo_graph_input,
     build_ppo_reduction_certificate,
@@ -290,6 +291,98 @@ def test_p14_discovery_only_does_not_construct_local_queries() -> None:
     )
     assert all(item.local_queries == 0 for item in report.modes)
     assert all("discovery-only profile" in " ".join(item.reasons) for item in report.modes)
+
+
+def test_p15_lazy_discovery_is_bounded_and_resumable(tmp_path) -> None:
+    window = _lb_window()
+    graph = build_ppo_graph_input(window)
+    certificate, replay = build_ppo_reduction_certificate(graph)
+    assert replay.accepted
+    checkpoint = tmp_path / "p15-frontier.json"
+    report = compare_cegar_modes(
+        window,
+        fixture="synthetic-lb-p15",
+        reduction_certificate=certificate,
+        max_cycle_length=6,
+        max_search_states=100,
+        max_local_queries=32,
+        execute_local_solver=False,
+        only_mode=CegarExperimentMode.STRUCTURED_P15,
+        discovery_only=True,
+        discovery_resource_policy=CandidateDiscoveryResourcePolicy(
+            max_in_memory_frontier=4,
+            max_search_states=1,
+            sample_every=1,
+            checkpoint_path=str(checkpoint),
+        ),
+    )
+    metrics = report.modes[0]
+    assert metrics.mode is CegarExperimentMode.STRUCTURED_P15
+    assert metrics.discovery_profile is not None
+    assert metrics.discovery_profile.scheduler == "bounded_lazy_p15"
+    assert metrics.discovery_profile.search_truncated is True
+    assert metrics.discovery_profile.resumable is True
+    assert checkpoint.is_file()
+
+    resumed = compare_cegar_modes(
+        window,
+        fixture="synthetic-lb-p15-resume",
+        reduction_certificate=certificate,
+        max_cycle_length=6,
+        max_search_states=100,
+        max_local_queries=32,
+        execute_local_solver=False,
+        only_mode=CegarExperimentMode.STRUCTURED_P15,
+        discovery_only=True,
+        discovery_resource_policy=CandidateDiscoveryResourcePolicy(
+            max_in_memory_frontier=16,
+            max_search_states=10_000,
+            sample_every=10,
+            resume_checkpoint=str(checkpoint),
+        ),
+    )
+    resumed_profile = resumed.modes[0].discovery_profile
+    assert resumed_profile is not None
+    assert resumed_profile.checkpoint_binding_digest is None
+
+
+def test_p15_complete_candidate_set_matches_p14_on_small_fixture() -> None:
+    window = _lb_window()
+    graph = build_ppo_graph_input(window)
+    certificate, replay = build_ppo_reduction_certificate(graph)
+    assert replay.accepted
+    p14 = characterize_graph_first_window(
+        window,
+        reduction_certificate=certificate,
+        max_cycle_length=6,
+        max_cycles=32,
+        max_search_states=10_000,
+        execute_local_solver=False,
+        discovery_scheduler="fair_structured",
+    )
+    p15 = characterize_graph_first_window(
+        window,
+        reduction_certificate=certificate,
+        max_cycle_length=6,
+        max_cycles=32,
+        max_search_states=10_000,
+        execute_local_solver=False,
+        discovery_scheduler="bounded_lazy_p15",
+        discovery_resource_policy=CandidateDiscoveryResourcePolicy(
+            max_in_memory_frontier=10_000,
+            max_search_states=10_000,
+        ),
+    )
+    p14_ids = {
+        canonicalize_cycle_skeleton(item.candidate_violation_cycle).canonical_id
+        for item in p14.candidates
+    }
+    p15_ids = {
+        canonicalize_cycle_skeleton(item.candidate_violation_cycle).canonical_id
+        for item in p15.candidates
+    }
+    assert p15.truncated is False
+    assert p15_ids == p14_ids
 
 
 def test_p13_independent_coverage_is_complete_on_small_fixture() -> None:
