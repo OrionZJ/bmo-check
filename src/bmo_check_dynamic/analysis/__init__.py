@@ -30,6 +30,15 @@ from .slice_contract import (
 from .slice_candidates import build_candidate_slice, build_candidate_slices
 from .obligation_bottleneck import characterize_obligation_bottleneck
 from .cycle_relevance import characterize_cycle_relevance
+from .ppo_reduction import (
+    PpoGraphInput,
+    build_ppo_graph_input,
+    build_ppo_reduction,
+    build_ppo_reduction_certificate,
+    ppo_semantic_contract,
+    ppo_certificate_digest,
+    replay_ppo_reduction,
+)
 from .window_diagnostics import (
     WindowCharacterizationReport,
     WindowDiagnostics,
@@ -67,6 +76,13 @@ __all__ = [
     "build_candidate_slices",
     "characterize_obligation_bottleneck",
     "characterize_cycle_relevance",
+    "PpoGraphInput",
+    "build_ppo_graph_input",
+    "build_ppo_reduction",
+    "build_ppo_reduction_certificate",
+    "ppo_semantic_contract",
+    "ppo_certificate_digest",
+    "replay_ppo_reduction",
     "build_trace_coverage",
     "coverage_state",
     "digest_edges",

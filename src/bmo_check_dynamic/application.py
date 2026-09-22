@@ -21,6 +21,9 @@ from bmo_check_dynamic.model import (
     TraceManifest,
     TraceObligationBottleneckReport,
     TraceCycleRelevanceReport,
+    TracePpoReductionCertificate,
+    TracePpoReductionReport,
+    TracePpoReductionReplayReport,
 )
 from bmo_check_dynamic.pipeline import (
     analyze_trace,
@@ -28,6 +31,8 @@ from bmo_check_dynamic.pipeline import (
     characterize_trace,
     obligation_bottleneck_trace,
     cycle_relevance_trace,
+    ppo_reduction_trace,
+    ppo_replay_trace,
     slice_plan_trace,
 )
 
@@ -156,6 +161,30 @@ def cycle_relevance(request: AnalyzeRequest) -> TraceCycleRelevanceReport:
     )
 
 
+def ppo_reduction(request: AnalyzeRequest) -> TracePpoReductionReport:
+    """生成可独立 replay 的 PPO reduction shadow 报告。"""
+
+    return ppo_reduction_trace(
+        request.trace_dir,
+        dbt_contract=request.dbt_contract,
+        config=request.config,
+    )
+
+
+def ppo_replay(
+    request: AnalyzeRequest,
+    certificate: TracePpoReductionCertificate,
+) -> TracePpoReductionReplayReport:
+    """用原始 trace 独立重放 PPO reduction certificate。"""
+
+    return ppo_replay_trace(
+        request.trace_dir,
+        dbt_contract=request.dbt_contract,
+        certificate=certificate,
+        config=request.config,
+    )
+
+
 __all__ = [
     "AnalyzeRequest",
     "CaptureRequest",
@@ -165,6 +194,8 @@ __all__ = [
     "slice_plan",
     "obligation_bottleneck",
     "cycle_relevance",
+    "ppo_reduction",
+    "ppo_replay",
     "characterize",
     "capture",
 ]

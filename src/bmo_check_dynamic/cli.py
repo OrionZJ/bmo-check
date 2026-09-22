@@ -19,6 +19,8 @@ from bmo_check_dynamic.application import (
     slice_plan as slice_plan_request,
     obligation_bottleneck as obligation_bottleneck_request,
     cycle_relevance as cycle_relevance_request,
+    ppo_reduction as ppo_reduction_request,
+    ppo_replay as ppo_replay_request,
     capture as capture_request,
 )
 from bmo_check_dynamic.capture import CaptureError
@@ -32,6 +34,7 @@ from bmo_check_dynamic.model import (
     CampaignMember,
     CampaignSummary,
     DynamicCertificate,
+    TracePpoReductionCertificate,
     TraceVerdict,
 )
 from bmo_check_dynamic.storage import TraceStoreError
@@ -191,6 +194,48 @@ def _cycle_relevance(args: argparse.Namespace) -> int:
     args.output.write_text(report.model_dump_json(indent=2), encoding="utf-8")
     print(report.model_dump_json(indent=2))
     return 0
+
+
+def _ppo_reduction(args: argparse.Namespace) -> int:
+    report = ppo_reduction_request(
+        AnalyzeRequest(
+            trace_dir=args.trace,
+            dbt_contract=args.dbt_contract,
+            config=_analysis_config(args),
+        )
+    )
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(report.model_dump_json(indent=2), encoding="utf-8")
+    if args.certificate is not None:
+        certificate = TracePpoReductionCertificate(
+            trace_id=report.trace_id,
+            windows=tuple(item.certificate for item in report.windows),
+        )
+        args.certificate.parent.mkdir(parents=True, exist_ok=True)
+        args.certificate.write_text(
+            certificate.model_dump_json(indent=2),
+            encoding="utf-8",
+        )
+    print(report.model_dump_json(indent=2))
+    return 0
+
+
+def _ppo_replay(args: argparse.Namespace) -> int:
+    certificate = TracePpoReductionCertificate.model_validate_json(
+        args.certificate.read_text(encoding="utf-8")
+    )
+    report = ppo_replay_request(
+        AnalyzeRequest(
+            trace_dir=args.trace,
+            dbt_contract=args.dbt_contract,
+            config=_analysis_config(args),
+        ),
+        certificate,
+    )
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(report.model_dump_json(indent=2), encoding="utf-8")
+    print(report.model_dump_json(indent=2))
+    return 0 if all(item.accepted for item in report.windows) else 2
 
 
 def _run(args: argparse.Namespace) -> int:
@@ -641,6 +686,26 @@ def build_parser() -> argparse.ArgumentParser:
     cycle_relevance.add_argument("--output", type=Path, required=True)
     _add_analysis_options(cycle_relevance)
     cycle_relevance.set_defaults(handler=_cycle_relevance)
+
+    ppo_reduction = subparsers.add_parser(
+        "ppo-reduction",
+        help="build and independently replay a PPO reachability shadow certificate",
+    )
+    ppo_reduction.add_argument("trace", type=Path)
+    ppo_reduction.add_argument("--output", type=Path, required=True)
+    ppo_reduction.add_argument("--certificate", type=Path)
+    _add_analysis_options(ppo_reduction)
+    ppo_reduction.set_defaults(handler=_ppo_reduction)
+
+    ppo_replay = subparsers.add_parser(
+        "ppo-replay",
+        help="independently replay a PPO reduction certificate",
+    )
+    ppo_replay.add_argument("trace", type=Path)
+    ppo_replay.add_argument("--certificate", type=Path, required=True)
+    ppo_replay.add_argument("--output", type=Path, required=True)
+    _add_analysis_options(ppo_replay)
+    ppo_replay.set_defaults(handler=_ppo_replay)
 
     run = subparsers.add_parser("run", help="capture and immediately analyze")
     run.add_argument("--trace", type=Path, required=True)

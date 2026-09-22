@@ -31,6 +31,9 @@ from bmo_check_dynamic.analysis import (
     plan_obligation_preserving_split,
     characterize_obligation_bottleneck,
     characterize_cycle_relevance,
+    build_ppo_graph_input,
+    build_ppo_reduction,
+    replay_ppo_reduction,
 )
 from bmo_check_dynamic.analysis.coverage import build_trace_coverage
 from bmo_check_dynamic.config import DynamicConfig
@@ -47,6 +50,10 @@ from bmo_check_dynamic.model import (
     SlicePlanReport,
     TraceObligationBottleneckReport,
     TraceCycleRelevanceReport,
+    TracePpoReductionCertificate,
+    PpoReductionReplay,
+    TracePpoReductionReport,
+    TracePpoReductionReplayReport,
 )
 from bmo_check_dynamic.proof import (
     characterize_symbolic_encoding,
@@ -96,6 +103,22 @@ class _CycleRelevanceInspectionComplete(Exception):
 
     def __init__(self, report: TraceCycleRelevanceReport) -> None:
         super().__init__("cycle relevance inspection completed")
+        self.report = report
+
+
+class _PpoReductionInspectionComplete(Exception):
+    """P8 reduction certificate 生成后跳过正式 proof。"""
+
+    def __init__(self, report: TracePpoReductionReport) -> None:
+        super().__init__("PPO reduction inspection completed")
+        self.report = report
+
+
+class _PpoReplayInspectionComplete(Exception):
+    """P8 replay 完成后跳过正式 proof。"""
+
+    def __init__(self, report: TracePpoReductionReplayReport) -> None:
+        super().__init__("PPO reduction replay completed")
         self.report = report
 
 
@@ -806,6 +829,136 @@ def cycle_relevance_trace(
         trace_complete=certificate.trace_complete,
         analysis_reached_windows=False,
         reasons=certificate.unknown_reasons,
+    )
+
+
+def ppo_reduction_trace(
+    trace_dir: Path,
+    *,
+    dbt_contract: Path,
+    config: DynamicConfig | None = None,
+) -> TracePpoReductionReport:
+    """生成 PPO reduction shadow 报告，不把 reduced 图交给 checker。"""
+
+    def inspect(
+        manifest: TraceManifest,
+        validation: object,
+        stored_event_count: int,
+        scan_stats: CommunicationScanStats,
+        edges: CompactCommunicationEdges | tuple[CommunicationEdge, ...],
+        windows: tuple[object, ...],
+        window_unknowns: tuple[str, ...],
+    ) -> None:
+        del stored_event_count, scan_stats, edges
+        report = TracePpoReductionReport(
+            trace_id=manifest.trace_id,
+            trace_complete=bool(getattr(validation, "structurally_complete", False)),
+            analysis_reached_windows=True,
+            windows=tuple(build_ppo_reduction(window) for window in windows),
+            reasons=tuple(window_unknowns),
+        )
+        raise _PpoReductionInspectionComplete(report)
+
+    try:
+        certificate = analyze_trace(
+            trace_dir,
+            dbt_contract=dbt_contract,
+            config=config,
+            _window_observer=inspect,
+        )
+    except _PpoReductionInspectionComplete as complete:
+        return complete.report
+
+    return TracePpoReductionReport(
+        trace_id=certificate.scope.trace_ids[0],
+        trace_complete=certificate.trace_complete,
+        analysis_reached_windows=False,
+        reasons=certificate.unknown_reasons,
+    )
+
+
+def ppo_replay_trace(
+    trace_dir: Path,
+    *,
+    dbt_contract: Path,
+    certificate: TracePpoReductionCertificate,
+    config: DynamicConfig | None = None,
+) -> TracePpoReductionReplayReport:
+    """从原始窗口重新构造 graph，独立重放磁盘 certificate。"""
+
+    def inspect(
+        manifest: TraceManifest,
+        validation: object,
+        stored_event_count: int,
+        scan_stats: CommunicationScanStats,
+        edges: CompactCommunicationEdges | tuple[CommunicationEdge, ...],
+        windows: tuple[object, ...],
+        window_unknowns: tuple[str, ...],
+    ) -> None:
+        del stored_event_count, scan_stats, edges
+        by_window = {item.window_id: item for item in certificate.windows}
+        reports = []
+        binding_reasons: list[str] = []
+        if certificate.trace_id != manifest.trace_id:
+            binding_reasons.append("certificate trace_id does not match trace manifest")
+        for window in windows:
+            item = by_window.get(window.window_id)
+            if item is None:
+                reports.append(
+                    PpoReductionReplay(
+                        window_id=window.window_id,
+                        certificate_digest_matches=False,
+                        source_replayable=False,
+                        target_replayable=False,
+                        source_equivalent=False,
+                        target_equivalent=False,
+                        accepted=False,
+                        reasons=("no PPO reduction certificate for window",),
+                    )
+                )
+                continue
+            reports.append(replay_ppo_reduction(build_ppo_graph_input(window), item))
+        observed_window_ids = {window.window_id for window in windows}
+        extra_window_ids = sorted(set(by_window) - observed_window_ids)
+        if extra_window_ids:
+            binding_reasons.append(
+                "certificate contains windows absent from trace: "
+                + ",".join(extra_window_ids)
+            )
+        if binding_reasons:
+            reports = [
+                item.model_copy(
+                    update={
+                        "accepted": False,
+                        "reasons": item.reasons + tuple(binding_reasons),
+                    }
+                )
+                for item in reports
+            ]
+        report = TracePpoReductionReplayReport(
+            trace_id=manifest.trace_id,
+            trace_complete=bool(getattr(validation, "structurally_complete", False)),
+            analysis_reached_windows=True,
+            windows=tuple(reports),
+            reasons=tuple(window_unknowns) + tuple(binding_reasons),
+        )
+        raise _PpoReplayInspectionComplete(report)
+
+    try:
+        analyzed = analyze_trace(
+            trace_dir,
+            dbt_contract=dbt_contract,
+            config=config,
+            _window_observer=inspect,
+        )
+    except _PpoReplayInspectionComplete as complete:
+        return complete.report
+
+    return TracePpoReductionReplayReport(
+        trace_id=analyzed.scope.trace_ids[0],
+        trace_complete=analyzed.trace_complete,
+        analysis_reached_windows=False,
+        reasons=analyzed.unknown_reasons,
     )
 
 

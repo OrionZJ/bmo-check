@@ -310,3 +310,68 @@ encoding before lazy RF/FR generation. A single SB trace cannot establish
 cross-workload scalability or soundness; P8 would require a proof-preserving
 representation design and independent regression witnesses. P7 ends at this
 review point and does not start that work.
+
+## P8 PPO reachability-summary contract
+
+P8 introduces only a shadow representation and a replayable certificate. The
+existing checker continues to generate and consume its full source and target
+PPO sets. `PpoSemanticContract` records the code-level dependency recovered
+from `proof/checker.py`:
+
+- source PPO is an unconditional candidate edge in the selected source-cycle
+  query;
+- target PPO contributes unconditional rank inequalities for the target
+  acyclicity query;
+- cross-thread RF, coherence and from-read remain conditional relation edges;
+- control-flow closure and value matching remain outside the PPO reduction
+  proof and are not weakened by it.
+
+For either side, reachability is summarized only between endpoints that can
+connect to a non-PPO relation: communication, RF, FR, coherence, Fence or
+RMW. The required set is stored by count and digest with bounded samples, so
+the certificate does not pretend that a sampled pair list is complete. A
+reduction is eligible only when the independent replay recomputes the original
+graph binding, verifies that the reduced graph is an original-edge subset,
+checks every removed edge's final witness path, and obtains zero missing,
+extra or unresolved relevant pairs. Fence/RMW/FUTEX boundary-incident PPO
+edges are protected and cannot be removed by this diagnostic producer.
+
+Fence/RMW/FUTEX events are themselves required reachability endpoints; a
+producer may not omit the ordering paths that enter or leave them. The
+default producer therefore does not blanket-protect every boundary-incident
+edge (which would hide the transitive-reduction question), but replay rejects
+any missing boundary endpoint pair.
+
+`PpoReductionCertificate` binds source and target graph digests, semantic
+contract digest, removed-edge witnesses and reachability inventories.
+`replay_ppo_reduction` reconstructs the reduced graph from the original graph
+and certificate; it does not use producer reachability state. The CLI routes
+are:
+
+```text
+bmo-check ppo-reduction TRACE --output REPORT --certificate CERT
+bmo-check ppo-replay TRACE --certificate CERT --output REPLAY
+```
+
+The shadow report compares full and certificate-reduced symbolic term
+estimates without creating a Z3 formula or passing the reduced graph to
+`check_window`. The report and certificate therefore cannot produce SAFE,
+TRACE_SAFE or COUNTEREXAMPLE. Missing or unresolved replay facts reject the
+reduction and leave the formal checker untouched.
+
+On the frozen 3,720-event SB window, the independently replayed certificate
+kept all relevant endpoint reachability pairs:
+
+- source PPO: 59,060 -> 3,728 edges; 55,332 removed edges, 6,693,496 required
+  and preserved pairs, zero missing/extra/unresolved pairs;
+- target PPO: 55,418 -> 7,361 edges; 48,057 removed edges, 153,846 required
+  and preserved pairs, zero missing/extra/unresolved pairs;
+- the shadow formula estimate fell from 319,215 to 49,830 terms, a reduction
+  of 269,385 terms. This is not a solver result and was not sent to the
+  checker.
+
+Large certificates use a digest-bound witness descriptor per removed edge
+(path length plus digest); small certificates inline the path. Independent
+replay reconstructs the deterministic path from the original/reduced graph
+and checks the descriptor, so the producer does not retain tens of thousands
+of duplicated long Python tuples.

@@ -192,14 +192,31 @@ def check_window(
     )
 
 
-def characterize_symbolic_encoding(window: AnalysisWindow) -> SymbolicEncodingStats:
-    """统计当前 symbolic encoder 的算术规模，不启动 solver 或生成 AST。"""
+def characterize_symbolic_encoding(
+    window: AnalysisWindow,
+    *,
+    source_ppo: set[Edge] | None = None,
+    target_ppo: set[Edge] | None = None,
+) -> SymbolicEncodingStats:
+    """统计 symbolic encoder 规模，不启动 solver 或生成 AST。
+
+    P8 的 shadow 路径可以传入经过证书验证的 PPO 图；正式 checker 不传这
+    两个参数，因此其原有输入和 verdict 路径保持不变。
+    """
 
     memory = tuple(event for event in window.events if event.kind.is_memory)
     reads = tuple(event for event in memory if event.kind.is_read)
     writes = tuple(event for event in memory if event.kind.is_write)
-    source_ppo = source_preserved_order(window.events)
-    target_ppo = target_preserved_order(window.events)
+    source_ppo = (
+        source_preserved_order(window.events)
+        if source_ppo is None
+        else source_ppo
+    )
+    target_ppo = (
+        target_preserved_order(window.events)
+        if target_ppo is None
+        else target_ppo
+    )
     nodes = tuple(sorted(event.event_id for event in window.events))
     coherence_groups = _overlap_components(writes)
     coherence_pair_count = sum(
