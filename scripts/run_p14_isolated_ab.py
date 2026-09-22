@@ -110,6 +110,31 @@ def _run_one(args: argparse.Namespace, mode: str, output: Path) -> dict[str, obj
             report = json.loads(output.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             report = None
+    if report is not None and args.checkpoint_dir is not None:
+        # Discovery 写入的 progress.json 在 worker 退出后补上局部查询结果，
+        # 让长实验即使只留下进度文件也能区分 encoding/solver 状态。
+        progress_path = args.checkpoint_dir / f"{mode}.progress.json"
+        try:
+            progress = json.loads(progress_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            progress = {}
+        mode_report = (
+            report.get("reports", [{}])[0].get("modes", [{}])[0]
+            if isinstance(report, dict)
+            else {}
+        )
+        progress.update(
+            {
+                "local_query_count": mode_report.get("local_queries", 0),
+                "feasible": mode_report.get("feasible", 0),
+                "infeasible": mode_report.get("infeasible", 0),
+                "unknown": mode_report.get("unknown", 0),
+                "not_run": mode_report.get("not_run", 0),
+                "worker_finished": True,
+            }
+        )
+        progress_path.parent.mkdir(parents=True, exist_ok=True)
+        progress_path.write_text(json.dumps(progress, sort_keys=True), encoding="utf-8")
     return {
         "mode": mode,
         "returncode": None if completed is None else completed.returncode,

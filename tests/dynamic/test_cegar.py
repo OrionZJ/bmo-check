@@ -344,6 +344,24 @@ def test_p15_lazy_discovery_is_bounded_and_resumable(tmp_path) -> None:
     resumed_profile = resumed.modes[0].discovery_profile
     assert resumed_profile is not None
     assert resumed_profile.checkpoint_binding_digest is None
+    direct = compare_cegar_modes(
+        window,
+        fixture="synthetic-lb-p15-direct",
+        reduction_certificate=certificate,
+        max_cycle_length=6,
+        max_search_states=10_000,
+        max_local_queries=32,
+        execute_local_solver=False,
+        only_mode=CegarExperimentMode.STRUCTURED_P15,
+        discovery_only=True,
+        discovery_resource_policy=CandidateDiscoveryResourcePolicy(
+            max_in_memory_frontier=16,
+            max_search_states=10_000,
+        ),
+    )
+    assert set(resumed.modes[0].candidate_skeleton_ids) == set(
+        direct.modes[0].candidate_skeleton_ids
+    )
 
 
 def test_p15_complete_candidate_set_matches_p14_on_small_fixture() -> None:
