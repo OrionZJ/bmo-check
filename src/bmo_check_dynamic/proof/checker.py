@@ -22,6 +22,8 @@ from bmo_check_dynamic.model import (
     SymbolicEncodingStats,
     TraceEvent,
     WindowResult,
+    SolverConstraintInventory,
+    SolverDiagnosticProfile,
 )
 
 from .relations import Edge, find_cycle, source_preserved_order, target_preserved_order
@@ -90,6 +92,8 @@ class SymbolicSolverObservation:
     formula_breakdown: dict[str, int]
     constraint_breakdown: dict[str, int]
     variable_counts: dict[str, int]
+    profile: SolverDiagnosticProfile
+    constraint_inventory: SolverConstraintInventory
 
 
 @dataclass(slots=True)
@@ -108,6 +112,8 @@ class _MutableSymbolicObservation:
     formula_breakdown: dict[str, int] = field(default_factory=dict)
     constraint_breakdown: dict[str, int] = field(default_factory=dict)
     variable_counts: dict[str, int] = field(default_factory=dict)
+    profile: SolverDiagnosticProfile = SolverDiagnosticProfile.FULL
+    constraint_inventory: SolverConstraintInventory | None = None
 
     def finish(
         self,
@@ -158,6 +164,17 @@ class _MutableSymbolicObservation:
             formula_breakdown=dict(self.formula_breakdown or {}),
             constraint_breakdown=dict(self.constraint_breakdown or {}),
             variable_counts=dict(self.variable_counts or {}),
+            profile=self.profile,
+            constraint_inventory=self.constraint_inventory
+            or SolverConstraintInventory(
+                profile=self.profile,
+                event_count=0,
+                memory_event_count=0,
+                formula_terms=self.formula_terms,
+                formula_breakdown=dict(self.formula_breakdown or {}),
+                constraint_counts=dict(self.constraint_breakdown or {}),
+                variable_counts=dict(self.variable_counts or {}),
+            ),
         )
 
 
@@ -603,6 +620,66 @@ def _covers(write: TraceEvent, read: TraceEvent) -> bool:
     return write.address <= read.address and write.end_address >= read.end_address
 
 
+def _build_constraint_inventory(
+    *,
+    window: AnalysisWindow,
+    reads: tuple[TraceEvent, ...],
+    profile: SolverDiagnosticProfile,
+    formula_terms: int,
+    formula_breakdown: dict[str, int],
+    constraint_breakdown: dict[str, int],
+    variable_counts: dict[str, int],
+    source_ppo: set[Edge],
+    target_ppo: set[Edge],
+    conditional_edge_count: int,
+    conditional_category_counts: dict[str, int],
+    fixed_rf_parts: int,
+    fixed_rf_assigned: int,
+    fixed_rf_ambiguous: int,
+    fixed_rf_initial_or_unmatched: int,
+    fixed_rf_value_unknown: int,
+) -> SolverConstraintInventory:
+    """从 encoder 当前计数恢复 P10 的约束依赖摘要。
+
+    这里不重新解释 memory model，也不推断缺失关系。摘要只说明本次
+    shadow encoder 把哪些变量和约束连在了一起，供消融实验定位瓶颈。
+    """
+
+    dependencies = {
+        "source_ppo -> source_cycle_edge": len(source_ppo),
+        "target_ppo -> target_rank": len(target_ppo),
+        "conditional_ordering -> cycle_edge": conditional_edge_count,
+        "rf_choice -> rf_edge": conditional_category_counts.get("rf", 0),
+        "rf_choice -> fr_edge": conditional_category_counts.get("fr", 0),
+        "coherence_rank -> co_edge": conditional_category_counts.get("coherence", 0),
+        "cycle_edge -> cycle_balance": variable_counts.get("cycle_edge", 0),
+    }
+    notes = [
+        "diagnostic-only; not a memory-model proof",
+        "counts describe this encoder instance, not a complete semantic inventory",
+    ]
+    if profile == SolverDiagnosticProfile.PPO_FIXED_RF:
+        notes.append("RF choices were fixed from observed values and execution order")
+    if profile != SolverDiagnosticProfile.FULL:
+        notes.append("constraint families omitted by the selected ablation profile")
+    return SolverConstraintInventory(
+        profile=profile,
+        event_count=len(window.events),
+        memory_event_count=sum(event.kind.is_memory for event in window.events),
+        formula_terms=formula_terms,
+        formula_breakdown=dict(formula_breakdown),
+        constraint_counts=dict(constraint_breakdown),
+        variable_counts=dict(variable_counts),
+        dependency_counts=dependencies,
+        fixed_rf_parts=fixed_rf_parts,
+        fixed_rf_assigned=fixed_rf_assigned,
+        fixed_rf_ambiguous=fixed_rf_ambiguous,
+        fixed_rf_initial_or_unmatched=fixed_rf_initial_or_unmatched,
+        fixed_rf_value_unknown=fixed_rf_value_unknown,
+        notes=tuple(notes),
+    )
+
+
 def _check_symbolic(
     window: AnalysisWindow,
     reads: tuple[TraceEvent, ...],
@@ -616,6 +693,7 @@ def _check_symbolic(
     max_symbolic_terms: int,
     runtime_observation: _MutableSymbolicObservation | None = None,
     execute_solver: bool = True,
+    profile: SolverDiagnosticProfile = SolverDiagnosticProfile.FULL,
 ) -> WindowResult:
     deadline = monotonic() + timeout_ms / 1000
     build_started_at = (
@@ -627,6 +705,11 @@ def _check_symbolic(
     formula_breakdown: dict[str, int] = {}
     constraint_breakdown: dict[str, int] = {}
     variable_counts: dict[str, int] = {}
+    fixed_rf_parts = 0
+    fixed_rf_assigned = 0
+    fixed_rf_ambiguous = 0
+    fixed_rf_initial_or_unmatched = 0
+    fixed_rf_value_unknown = 0
 
     def finish(
         result: WindowResult,
@@ -637,6 +720,31 @@ def _check_symbolic(
         build_time_ms: int | None = None,
     ) -> WindowResult:
         if runtime_observation is not None:
+            runtime_observation.profile = profile
+            runtime_observation.constraint_inventory = _build_constraint_inventory(
+                window=window,
+                reads=reads,
+                profile=profile,
+                formula_terms=formula_terms,
+                formula_breakdown=formula_breakdown,
+                constraint_breakdown=constraint_breakdown,
+                variable_counts=variable_counts,
+                source_ppo=source_ppo,
+                target_ppo=target_ppo,
+                conditional_edge_count=len(conditional_edges),
+                conditional_category_counts={
+                    category: sum(
+                        category in categories
+                        for categories in conditional_categories.values()
+                    )
+                    for category in {category for categories in conditional_categories.values() for category in categories}
+                },
+                fixed_rf_parts=fixed_rf_parts,
+                fixed_rf_assigned=fixed_rf_assigned,
+                fixed_rf_ambiguous=fixed_rf_ambiguous,
+                fixed_rf_initial_or_unmatched=fixed_rf_initial_or_unmatched,
+                fixed_rf_value_unknown=fixed_rf_value_unknown,
+            )
             runtime_observation.finish(
                 result=solver_result,
                 reason=result.reason,
@@ -670,6 +778,11 @@ def _check_symbolic(
     solver.set(timeout=timeout_ms)
     event_by_id = {event.event_id: event for event in window.events}
     nodes = tuple(sorted(event_by_id))
+    conditional_edges: dict[Edge, list[z3.BoolRef]] = {}
+    conditional_categories: dict[Edge, set[str]] = {}
+    rf_choice: dict[
+        tuple[str, int], tuple[_ReadPart, z3.ArithRef, tuple[TraceEvent, ...]]
+    ] = {}
     # 一个 PPO edge 后续至少出现在 rank 约束、source 条件和 cycle 选择中。
     # 用保守权重在创建 Z3 AST 前拒绝巨窗，避免“项数不多但重复引用很多”的低估。
     formula_terms = len(nodes) * 3 + len(source_ppo) * 4 + len(target_ppo)
@@ -686,7 +799,19 @@ def _check_symbolic(
     # 有向图无环只要求每条边的 rank 严格递增。无关节点可以共享 rank；强迫
     # 数千个节点全异会制造一个与 memory model 无关的排列问题。
 
-    coherence_groups = _overlap_components(writes)
+    include_fr = profile in {
+        SolverDiagnosticProfile.FULL,
+        SolverDiagnosticProfile.PPO_RF_FR,
+        SolverDiagnosticProfile.PPO_RF_FR_CO,
+    }
+    include_co = profile in {
+        SolverDiagnosticProfile.FULL,
+        SolverDiagnosticProfile.PPO_RF_FR_CO,
+    }
+    include_rmw = profile is SolverDiagnosticProfile.FULL
+    fixed_rf = profile is SolverDiagnosticProfile.PPO_FIXED_RF
+    needs_co_rank = include_co or include_fr or include_rmw
+    coherence_groups = _overlap_components(writes) if needs_co_rank else ()
     co_rank: dict[str, z3.ArithRef] = {}
 
     def add_constraint(category: str, *expressions: z3.AstRef) -> None:
@@ -703,23 +828,19 @@ def _check_symbolic(
             rank = z3.Int(f"co_{location_index}_{write_index}")
             co_rank[write.event_id] = rank
             ranks.append(rank)
-            add_constraint("coherence", rank >= 0, rank < len(location_writes))
-        if len(ranks) > 1:
+            if include_co:
+                add_constraint("coherence", rank >= 0, rank < len(location_writes))
+        if include_co and len(ranks) > 1:
             add_constraint("coherence", z3.Distinct(*ranks))
-        for left in location_writes:
-            for right in location_writes:
-                if (left.overlaps(right) and left.thread_id == right.thread_id and
-                        left.sequence < right.sequence):
-                    add_constraint(
-                        "coherence",
-                        co_rank[left.event_id] < co_rank[right.event_id],
-                    )
-
-    rf_choice: dict[
-        tuple[str, int], tuple[_ReadPart, z3.ArithRef, tuple[TraceEvent, ...]]
-    ] = {}
-    conditional_edges: dict[Edge, list[z3.BoolRef]] = {}
-    conditional_categories: dict[Edge, set[str]] = {}
+        if include_co:
+            for left in location_writes:
+                for right in location_writes:
+                    if (left.overlaps(right) and left.thread_id == right.thread_id and
+                            left.sequence < right.sequence):
+                        add_constraint(
+                            "coherence",
+                            co_rank[left.event_id] < co_rank[right.event_id],
+                        )
 
     def add_edge(
         edge: Edge,
@@ -737,22 +858,47 @@ def _check_symbolic(
         conditional_categories.setdefault(edge, set()).add(category)
         return True
 
-    for location_writes in coherence_groups:
-        if monotonic() >= deadline:
-            return finish(timed_out(), solver_result="timeout", solver=solver)
-        for left in location_writes:
-            for right in location_writes:
-                if left is not right and left.overlaps(right):
-                    if not add_edge(
-                        (left.event_id, right.event_id),
-                        co_rank[left.event_id] < co_rank[right.event_id],
-                        category="coherence",
-                    ):
-                        return finish(
-                            formula_limited(),
-                            solver_result="resource_limited",
-                            solver=solver,
-                        )
+    if include_co:
+        for location_writes in coherence_groups:
+            if monotonic() >= deadline:
+                return finish(timed_out(), solver_result="timeout", solver=solver)
+            for left in location_writes:
+                for right in location_writes:
+                    if left is not right and left.overlaps(right):
+                        if not add_edge(
+                            (left.event_id, right.event_id),
+                            co_rank[left.event_id] < co_rank[right.event_id],
+                            category="coherence",
+                        ):
+                            return finish(
+                                formula_limited(),
+                                solver_result="resource_limited",
+                                solver=solver,
+                            )
+
+    def add_fixed_rf(
+        read: TraceEvent,
+        part: _ReadPart,
+        part_index: int,
+        candidates: tuple[TraceEvent, ...],
+    ) -> bool:
+        nonlocal fixed_rf_parts, fixed_rf_assigned, fixed_rf_ambiguous
+        fixed_rf_parts += 1
+        write, ambiguous, values_known = _choose_observed_rf(read, part, candidates)
+        if not values_known:
+            nonlocal fixed_rf_value_unknown
+            fixed_rf_value_unknown += 1
+        if write is None:
+            nonlocal fixed_rf_initial_or_unmatched
+            fixed_rf_initial_or_unmatched += 1
+            return True
+        fixed_rf_assigned += 1
+        fixed_rf_ambiguous += int(ambiguous)
+        return add_edge(
+            (write.event_id, read.event_id),
+            z3.BoolVal(True),
+            category="rf_fixed",
+        )
 
     choice_index = 0
     for read in reads:
@@ -768,11 +914,20 @@ def _check_symbolic(
                     write.thread_id == read.thread_id and write.sequence >= read.sequence
                 )
             )
+            if fixed_rf:
+                if not add_fixed_rf(read, part, part_index, candidates):
+                    return finish(
+                        formula_limited(),
+                        solver_result="resource_limited",
+                        solver=solver,
+                    )
+                continue
+
             choice = z3.Int(f"rf_{choice_index}")
             choice_index += 1
             add_constraint("rf", choice >= -1, choice < len(candidates))
             rf_choice[(read.event_id, part_index)] = (part, choice, candidates)
-            if read.kind == EventKind.ATOMIC_RMW:
+            if include_rmw and read.kind == EventKind.ATOMIC_RMW:
                 add_constraint(
                     "rmw",
                     z3.Implies(choice == -1, co_rank[read.event_id] == 0),
@@ -797,6 +952,8 @@ def _check_symbolic(
                         solver_result="resource_limited",
                         solver=solver,
                     )
+            if not include_fr:
+                continue
             for later in writes:
                 if (later.address >= part.end_address or
                         later.end_address <= part.address or
@@ -823,6 +980,21 @@ def _check_symbolic(
                         solver_result="resource_limited",
                         solver=solver,
                     )
+
+    if fixed_rf and fixed_rf_value_unknown:
+        return finish(
+            WindowResult(
+                window_id=window.window_id,
+                event_ids=tuple(event.event_id for event in window.events),
+                status="unknown",
+                reason=(
+                    "fixed observed RF unavailable: trace lacks VALUE_KNOWN "
+                    "for one or more read/write parts"
+                ),
+            ),
+            solver_result="unknown",
+            solver=solver,
+        )
 
     for left, right in target_ppo:
         add_constraint("ppo", topological[left] < topological[right])
@@ -939,9 +1111,18 @@ def _check_symbolic(
         )
         for part, choice, candidates in rf_choice.values()
     )
-    coherence_orders = tuple(
-        tuple(sorted(location_writes, key=lambda event: model.eval(co_rank[event.event_id]).as_long()))
-        for location_writes in coherence_groups
+    coherence_orders = (
+        tuple(
+            tuple(
+                sorted(
+                    location_writes,
+                    key=lambda event: model.eval(co_rank[event.event_id]).as_long(),
+                )
+            )
+            for location_writes in coherence_groups
+        )
+        if include_co
+        else ()
     )
     selected_source_edges = {
         edge for edge, selected in selected_edges.items() if z3.is_true(model.eval(selected))
@@ -1000,6 +1181,7 @@ def run_symbolic_shadow(
     timeout_ms: int,
     max_symbolic_terms: int,
     execute_solver: bool = True,
+    profile: SolverDiagnosticProfile = SolverDiagnosticProfile.FULL,
 ) -> tuple[WindowResult, SymbolicSolverObservation]:
     """用正式 symbolic encoder 跑一侧 shadow，不进入 ``check_window``。
 
@@ -1021,6 +1203,7 @@ def run_symbolic_shadow(
         started_at=monotonic(),
         source_ppo_edge_count=len(source_ppo),
         target_ppo_edge_count=len(target_ppo),
+        profile=profile,
     )
     result = _check_symbolic(
         window,
@@ -1034,6 +1217,7 @@ def run_symbolic_shadow(
         max_symbolic_terms=max_symbolic_terms,
         runtime_observation=observation,
         execute_solver=execute_solver,
+        profile=profile,
     )
     return result, observation.freeze()
 
@@ -1101,3 +1285,65 @@ def _slice_values_match(
         if (read.value >> read_shift) & mask != (write.value >> write_shift) & mask:
             return False
     return True
+
+
+def _observed_part_value_matches(
+    read: TraceEvent,
+    write: TraceEvent,
+    part: _ReadPart,
+) -> bool:
+    """比较一次 trace 中已记录的 byte part 值。
+
+    该判断只服务于 fixed-RF 性能诊断。它不能证明该写入是唯一合法
+    read-from 来源，所以调用方会单独记录多匹配和无匹配情况。
+    """
+
+    if not (
+        read.flags & EventFlags.VALUE_KNOWN
+        and write.flags & EventFlags.VALUE_KNOWN
+    ):
+        return False
+    if read.size > 8 or write.size > 8 or part.size <= 0:
+        return False
+    mask = (1 << part.size * 8) - 1
+    read_shift = (part.address - read.address) * 8
+    write_shift = (part.address - write.address) * 8
+    return (
+        (read.value >> read_shift) & mask
+        == (write.value >> write_shift) & mask
+    )
+
+
+def _choose_observed_rf(
+    read: TraceEvent,
+    part: _ReadPart,
+    candidates: tuple[TraceEvent, ...],
+) -> tuple[TraceEvent | None, bool, bool]:
+    """为 fixed-RF shadow 选择一个可复现的 observed source。
+
+    多个写入写入相同值时，按 trace ticket/线程内序号选最后一个候选；
+    返回的第二项让报告明确显示这种选择不是唯一事实。
+    """
+
+    values_known = bool(read.flags & EventFlags.VALUE_KNOWN) and all(
+        bool(write.flags & EventFlags.VALUE_KNOWN) for write in candidates
+    )
+    if not values_known:
+        return None, False, False
+    matches = [
+        write
+        for write in candidates
+        if _observed_part_value_matches(read, write, part)
+    ]
+    if not matches:
+        return None, False, True
+    matches.sort(
+        key=lambda write: (
+            write.ticket < read.ticket,
+            write.ticket,
+            write.thread_id == read.thread_id,
+            write.sequence,
+            write.event_id,
+        )
+    )
+    return matches[-1], len(matches) > 1, True

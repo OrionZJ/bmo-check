@@ -13,6 +13,7 @@ from bmo_check_dynamic.model import (
     ShadowSolverRun,
     ReducedSolverRunCertificate,
     SolverRunReplay,
+    SolverDiagnosticProfile,
 )
 
 from .ppo_reduction import PpoGraphInput, replay_ppo_reduction
@@ -121,6 +122,7 @@ def _run_model(
     return ShadowSolverRun(
         window_id=window_id,
         phase=phase,
+        profile=observation.profile,
         result=observation.result,
         reason=observation.reason,
         source_ppo_edges=observation.source_ppo_edge_count,
@@ -134,6 +136,7 @@ def _run_model(
         formula_breakdown=dict(observation.formula_breakdown),
         constraint_breakdown=dict(observation.constraint_breakdown),
         variable_counts=dict(observation.variable_counts),
+        constraint_inventory=observation.constraint_inventory,
     )
 
 
@@ -143,10 +146,12 @@ def _not_run(
     target_count: int,
     reason: str,
     phase: ShadowSolverPhase,
+    profile: SolverDiagnosticProfile = SolverDiagnosticProfile.FULL,
 ) -> ShadowSolverRun:
     return ShadowSolverRun(
         window_id=window_id,
         phase=phase,
+        profile=profile,
         result="not_run",
         reason=reason,
         source_ppo_edges=source_count,
@@ -194,6 +199,7 @@ def build_shadow_solver_run(
     timeout_ms: int,
     max_symbolic_terms: int,
     execute_solver: bool,
+    profile: SolverDiagnosticProfile = SolverDiagnosticProfile.FULL,
 ) -> ShadowSolverRun:
     """只运行 full 或 reduced 一侧，供隔离 benchmark worker 使用。"""
 
@@ -216,6 +222,7 @@ def build_shadow_solver_run(
             len(target),
             "PPO replay failed; shadow solver not run",
             phase,
+            profile,
         ).model_copy(update={"ppo_replay_time_ms": replay_time_ms})
 
     from bmo_check_dynamic.proof import run_symbolic_shadow
@@ -228,6 +235,7 @@ def build_shadow_solver_run(
         timeout_ms=timeout_ms,
         max_symbolic_terms=max_symbolic_terms,
         execute_solver=execute_solver,
+        profile=profile,
     )
     return _run_model(window.window_id, phase, observation).model_copy(
         update={"ppo_replay_time_ms": replay_time_ms}

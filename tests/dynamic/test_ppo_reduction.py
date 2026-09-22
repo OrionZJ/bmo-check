@@ -24,12 +24,15 @@ from bmo_check_dynamic.analysis.communication import CommunicationEdge
 from bmo_check_dynamic.config import DynamicConfig
 from bmo_check_dynamic.model import (
     BenchmarkSide,
+    EventFlags,
     EventKind,
     RemovedPpoEdge,
     ShadowSolverPhase,
+    SolverDiagnosticProfile,
     TraceEvent,
 )
 from bmo_check_dynamic.cli import main
+from bmo_check_dynamic.proof import run_symbolic_shadow
 from bmo_check_dynamic.trace import TraceWriter
 
 
@@ -540,3 +543,28 @@ def test_isolated_solver_benchmark_records_child_resources(trace_manifest, tmp_p
     assert all(aggregate.completed == 1 for aggregate in report.aggregates)
     assert all(aggregate.median_analysis_overhead_ms is not None for aggregate in report.aggregates)
     assert any(aggregate.constraint_breakdown for aggregate in report.aggregates)
+
+
+def test_fixed_rf_profile_records_observed_assignment() -> None:
+    known = EventFlags.VALUE_KNOWN
+    events = (
+        TraceEvent(1, 1, 1, 0x10, EventKind.STORE, 0x1000, 4, 7, known),
+        TraceEvent(2, 1, 2, 0x20, EventKind.LOAD, 0x1000, 4, 7, known),
+    )
+    window = AnalysisWindow("fixed-rf", events, ())
+    _, observation = run_symbolic_shadow(
+        window,
+        source_ppo=set(),
+        target_ppo=set(),
+        control_flow_closed=True,
+        timeout_ms=1_000,
+        max_symbolic_terms=100_000,
+        execute_solver=False,
+        profile=SolverDiagnosticProfile.PPO_FIXED_RF,
+    )
+
+    inventory = observation.constraint_inventory
+    assert inventory.profile is SolverDiagnosticProfile.PPO_FIXED_RF
+    assert inventory.fixed_rf_parts == 1
+    assert inventory.fixed_rf_assigned == 1
+    assert inventory.fixed_rf_value_unknown == 0

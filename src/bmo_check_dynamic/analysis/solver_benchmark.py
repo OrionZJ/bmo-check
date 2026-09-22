@@ -14,6 +14,7 @@ from bmo_check_dynamic.model import (
     SolverBenchmarkChildReport,
     SolverBenchmarkProcessRun,
     SolverBenchmarkReport,
+    SolverDiagnosticProfile,
 )
 
 
@@ -43,6 +44,7 @@ def _child_command(
     dbt_contract: Path,
     side: BenchmarkSide,
     phase: ShadowSolverPhase,
+    profile: SolverDiagnosticProfile,
     repetition: int,
     budget_ms: int,
     config: DynamicConfig,
@@ -64,6 +66,8 @@ def _child_command(
         str(repetition),
         "--budget-ms",
         str(budget_ms),
+        "--profile",
+        profile.value,
         "--dbt-contract",
         str(dbt_contract),
         "--output",
@@ -128,6 +132,7 @@ def _aggregate(
         trace=trace,
         side=side,
         phase=phase,
+        profile=(children[0].profile if children else SolverDiagnosticProfile.FULL),
         budget_ms=budget_ms,
         repetitions=repetitions,
         completed=completed,
@@ -177,6 +182,7 @@ def run_isolated_solver_benchmark(
     config: DynamicConfig,
     process_grace_ms: int,
     worker_output_dir: Path,
+    profile: SolverDiagnosticProfile = SolverDiagnosticProfile.FULL,
     python_executable: str | None = None,
     keep_worker_outputs: bool = False,
 ) -> SolverBenchmarkReport:
@@ -215,6 +221,7 @@ def run_isolated_solver_benchmark(
                         dbt_contract=dbt_contract,
                         side=side,
                         phase=phase,
+                        profile=profile,
                         repetition=repetition,
                         budget_ms=budget_ms,
                         config=config,
@@ -284,6 +291,7 @@ def run_isolated_solver_benchmark(
     )
     return SolverBenchmarkReport(
         phase=phase,
+        profile=profile,
         traces=tuple(str(trace) for trace in traces),
         runs=tuple(runs),
         aggregates=aggregates,

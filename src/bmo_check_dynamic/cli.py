@@ -48,6 +48,7 @@ from bmo_check_dynamic.model import (
     BenchmarkSide,
     SolverBenchmarkChildReport,
     ShadowSolverPhase,
+    SolverDiagnosticProfile,
 )
 from bmo_check_dynamic.storage import TraceStoreError
 from bmo_check_dynamic.report import explain_certificate
@@ -331,6 +332,7 @@ def _ppo_solver_worker(args: argparse.Namespace) -> int:
         execute_solver=args.phase == ShadowSolverPhase.SOLVER.value,
         repetition=args.repetition,
         budget_ms=args.budget_ms,
+        profile=SolverDiagnosticProfile(args.profile),
     )
     after_user, after_system, peak_rss = _worker_rusage()
     wall_time_ms = max(0, int((time.perf_counter() - started) * 1000))
@@ -349,6 +351,7 @@ def _ppo_solver_worker(args: argparse.Namespace) -> int:
         trace_id=report.trace_id,
         side=report.side,
         phase=report.phase,
+        profile=SolverDiagnosticProfile(args.profile),
         repetition=args.repetition,
         budget_ms=args.budget_ms,
         trace_complete=report.trace_complete,
@@ -397,6 +400,7 @@ def _ppo_solver_benchmark(args: argparse.Namespace) -> int:
         config=_analysis_config(args),
         process_grace_ms=args.process_grace_ms,
         worker_output_dir=args.worker_output_dir,
+        profile=SolverDiagnosticProfile(args.profile),
         python_executable=args.python_executable,
         keep_worker_outputs=args.keep_worker_outputs,
     )
@@ -912,6 +916,11 @@ def build_parser() -> argparse.ArgumentParser:
     ppo_solver_worker.add_argument("--phase", choices=[item.value for item in ShadowSolverPhase], required=True)
     ppo_solver_worker.add_argument("--repetition", type=int, required=True)
     ppo_solver_worker.add_argument("--budget-ms", type=int, required=True)
+    ppo_solver_worker.add_argument(
+        "--profile",
+        choices=[item.value for item in SolverDiagnosticProfile],
+        default=SolverDiagnosticProfile.FULL.value,
+    )
     ppo_solver_worker.add_argument("--reduction-certificate", type=Path)
     ppo_solver_worker.add_argument("--output", type=Path, required=True)
     ppo_solver_worker.add_argument("--encoding-only", action="store_true")
@@ -938,6 +947,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="repeat for each side; defaults to full and reduced",
     )
     ppo_solver_benchmark.add_argument("--repetitions", type=int, default=3)
+    ppo_solver_benchmark.add_argument(
+        "--profile",
+        choices=[item.value for item in SolverDiagnosticProfile],
+        default=SolverDiagnosticProfile.FULL.value,
+        help="diagnostic-only constraint ablation profile",
+    )
     ppo_solver_benchmark.add_argument(
         "--budgets",
         type=_parse_budgets,

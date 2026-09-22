@@ -3,6 +3,7 @@ from __future__ import annotations
 from enum import StrEnum
 
 from .manifest import StrictModel
+from .solver_diagnostics import SolverConstraintInventory, SolverDiagnosticProfile
 
 
 class ShadowSolverPhase(StrEnum):
@@ -16,6 +17,7 @@ class ShadowSolverRun(StrictModel):
     schema_version: str = "shadow-solver-run-v1"
     window_id: str
     phase: ShadowSolverPhase
+    profile: SolverDiagnosticProfile = SolverDiagnosticProfile.FULL
     result: str
     reason: str = ""
     source_ppo_edges: int
@@ -32,6 +34,7 @@ class ShadowSolverRun(StrictModel):
     formula_breakdown: dict[str, int] = {}
     constraint_breakdown: dict[str, int] = {}
     variable_counts: dict[str, int] = {}
+    constraint_inventory: SolverConstraintInventory | None = None
 
 
 class ShadowSolverComparison(StrictModel):
@@ -119,4 +122,6 @@ __all__ = [
     "TraceShadowSolverReport",
     "TraceReducedSolverRunCertificate",
     "TraceSolverReplayReport",
+    "SolverDiagnosticProfile",
+    "SolverConstraintInventory",
 ]

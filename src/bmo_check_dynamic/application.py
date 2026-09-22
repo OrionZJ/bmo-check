@@ -29,6 +29,7 @@ from bmo_check_dynamic.model import (
     TraceSolverReplayReport,
     BenchmarkSide,
     TraceShadowSolverSideReport,
+    SolverDiagnosticProfile,
 )
 from bmo_check_dynamic.pipeline import (
     analyze_trace,
@@ -237,6 +238,7 @@ def ppo_solver_side(
     execute_solver: bool = True,
     repetition: int = 0,
     budget_ms: int | None = None,
+    profile: SolverDiagnosticProfile = SolverDiagnosticProfile.FULL,
 ) -> TraceShadowSolverSideReport:
     """worker 应用服务：只运行 full 或 reduced 一侧。"""
 
@@ -249,6 +251,7 @@ def ppo_solver_side(
         execute_solver=execute_solver,
         repetition=repetition,
         budget_ms=budget_ms,
+        profile=profile,
     )
 
 

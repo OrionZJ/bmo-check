@@ -68,6 +68,7 @@ from bmo_check_dynamic.model import (
     BenchmarkSide,
     ShadowSolverPhase,
     TraceShadowSolverSideReport,
+    SolverDiagnosticProfile,
 )
 from bmo_check_dynamic.proof import (
     characterize_symbolic_encoding,
@@ -1109,6 +1110,7 @@ def ppo_solver_side_trace(
     execute_solver: bool = True,
     repetition: int = 0,
     budget_ms: int | None = None,
+    profile: SolverDiagnosticProfile = SolverDiagnosticProfile.FULL,
 ) -> TraceShadowSolverSideReport:
     """只在当前进程构造一侧 PPO，供独立 benchmark worker 调用。"""
 
@@ -1149,6 +1151,7 @@ def ppo_solver_side_trace(
                     timeout_ms=config.solver_timeout_ms,
                     max_symbolic_terms=config.max_symbolic_terms,
                     execute_solver=execute_solver,
+                    profile=profile,
                 )
             )
         raise _PpoSolverSideInspectionComplete(
@@ -1156,6 +1159,9 @@ def ppo_solver_side_trace(
                 trace_id=manifest.trace_id,
                 side=side,
                 phase=phase,
+                profile=profile,
+                # profile is carried by every window; this top-level route
+                # remains a diagnostic report rather than a verdict.
                 trace_complete=bool(getattr(validation, "structurally_complete", False)),
                 analysis_reached_windows=True,
                 windows=tuple(runs),
@@ -1176,6 +1182,7 @@ def ppo_solver_side_trace(
         trace_id=analyzed.scope.trace_ids[0],
         side=side,
         phase=phase,
+        profile=profile,
         trace_complete=analyzed.trace_complete,
         analysis_reached_windows=False,
         reasons=analyzed.unknown_reasons,

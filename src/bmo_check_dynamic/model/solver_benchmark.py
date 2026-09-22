@@ -4,6 +4,7 @@ from enum import StrEnum
 
 from .manifest import StrictModel
 from .shadow_solver import ShadowSolverPhase, ShadowSolverRun
+from .solver_diagnostics import SolverDiagnosticProfile
 
 
 class BenchmarkSide(StrEnum):
@@ -18,6 +19,7 @@ class SolverBenchmarkChildReport(StrictModel):
     trace_id: str
     side: BenchmarkSide
     phase: ShadowSolverPhase
+    profile: SolverDiagnosticProfile = SolverDiagnosticProfile.FULL
     repetition: int
     budget_ms: int
     trace_complete: bool
@@ -40,6 +42,7 @@ class TraceShadowSolverSideReport(StrictModel):
     trace_id: str
     side: BenchmarkSide
     phase: ShadowSolverPhase
+    profile: SolverDiagnosticProfile = SolverDiagnosticProfile.FULL
     trace_complete: bool
     analysis_reached_windows: bool
     windows: tuple[ShadowSolverRun, ...] = ()
@@ -70,6 +73,7 @@ class SolverBenchmarkAggregate(StrictModel):
     trace: str
     side: BenchmarkSide
     phase: ShadowSolverPhase
+    profile: SolverDiagnosticProfile = SolverDiagnosticProfile.FULL
     budget_ms: int
     repetitions: int
     completed: int
@@ -99,6 +103,7 @@ class SolverBenchmarkReport(StrictModel):
 
     schema_version: str = "solver-benchmark-v1"
     phase: ShadowSolverPhase
+    profile: SolverDiagnosticProfile = SolverDiagnosticProfile.FULL
     traces: tuple[str, ...]
     runs: tuple[SolverBenchmarkProcessRun, ...] = ()
     aggregates: tuple[SolverBenchmarkAggregate, ...] = ()

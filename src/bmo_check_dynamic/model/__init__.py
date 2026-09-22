@@ -99,6 +99,7 @@ from .solver_benchmark import (
     SolverBenchmarkReport,
     TraceShadowSolverSideReport,
 )
+from .solver_diagnostics import SolverConstraintInventory, SolverDiagnosticProfile
 
 __all__ = [
     "BinaryFingerprint",
@@ -190,4 +191,6 @@ __all__ = [
     "SolverBenchmarkProcessRun",
     "SolverBenchmarkReport",
     "TraceShadowSolverSideReport",
+    "SolverDiagnosticProfile",
+    "SolverConstraintInventory",
 ]
