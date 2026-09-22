@@ -72,6 +72,8 @@ class CegarModeMetrics(StrictModel):
     infeasible: int = 0
     unknown: int = 0
     not_run: int = 0
+    replay_accepted: int = 0
+    replay_rejected: int = 0
     blocked: int = 0
     invalid_blocks: int = 0
     search_truncated: bool = False

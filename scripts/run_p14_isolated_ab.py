@@ -130,6 +130,8 @@ def _run_one(args: argparse.Namespace, mode: str, output: Path) -> dict[str, obj
                 "infeasible": mode_report.get("infeasible", 0),
                 "unknown": mode_report.get("unknown", 0),
                 "not_run": mode_report.get("not_run", 0),
+                "replay_accepted": mode_report.get("replay_accepted", 0),
+                "replay_rejected": mode_report.get("replay_rejected", 0),
                 "worker_finished": True,
             }
         )

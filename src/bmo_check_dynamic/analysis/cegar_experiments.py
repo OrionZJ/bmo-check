@@ -119,6 +119,14 @@ def _p11_metrics(report, prepared: _PreparedCertificate, started: float) -> Cega
         if query.status.value == "not_run":
             not_run += 1
     ledger = report.search_ledger
+    replay_accepted = sum(
+        record.replay is not None and record.replay.status.value == "accepted"
+        for record in records
+    )
+    replay_rejected = sum(
+        record.replay is not None and record.replay.status.value == "rejected"
+        for record in records
+    )
     search_ms = int((time.perf_counter() - started) * 1000)
     return CegarModeMetrics(
         mode=CegarExperimentMode.RAW_P11,
@@ -145,6 +153,8 @@ def _p11_metrics(report, prepared: _PreparedCertificate, started: float) -> Cega
         infeasible=infeasible,
         unknown=unknown,
         not_run=not_run,
+        replay_accepted=replay_accepted,
+        replay_rejected=replay_rejected,
         blocked=0,
         status=("TRUNCATED" if report.truncated else "COMPLETE"),
         search_truncated=report.truncated,
@@ -172,6 +182,14 @@ def _p12_metrics(report, mode: CegarExperimentMode, prepared: _PreparedCertifica
         if not replay.accepted:
             invalid_blocks += 1
     search_ms = int((time.perf_counter() - started) * 1000)
+    replay_accepted = sum(
+        record.replay is not None and record.replay.status.value == "accepted"
+        for record in records
+    )
+    replay_rejected = sum(
+        record.replay is not None and record.replay.status.value == "rejected"
+        for record in records
+    )
     return CegarModeMetrics(
         mode=mode,
         certificate_prepare_ms=prepared.prepare_ms,
@@ -199,6 +217,8 @@ def _p12_metrics(report, mode: CegarExperimentMode, prepared: _PreparedCertifica
         infeasible=infeasible,
         unknown=unknown,
         not_run=not_run,
+        replay_accepted=replay_accepted,
+        replay_rejected=replay_rejected,
         blocked=ledger.pruned_by_block_count if ledger else 0,
         invalid_blocks=invalid_blocks,
         search_truncated=profile.search_truncated if profile else False,

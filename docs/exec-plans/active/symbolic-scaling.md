@@ -1132,3 +1132,11 @@ checkpoint 约 4.4 MiB；报告为 `TRUNCATED(max_search_states)`，没有局部
 或正式 verdict。该数据只说明 bounded cursor 的资源行为，不能宣称候选空间已
 穷尽。10,000-state 与后续长时间实验必须使用相同 trace、certificate 和
 contract，并单独记录 RSS、frontier、candidate、checkpoint 和终止原因。
+
+冻结 SB 的 10,000-state 对照在 1 分 55 秒内达到 `max_cycles=100`：实际
+扩展 4,158 状态，峰值约 453 MiB，frontier 11,757，产生 100 个 canonical
+candidates，未触发 3.5 GiB RSS 或 wall-time guard。对这 100 个候选做
+`encoding-only` 的局部模型构造耗时约 16 分 36 秒、峰值约 482 MiB；100 个
+查询均为 `not_run`，不能当作 INFEASIBLE。这个结果把后续瓶颈定位为局部
+window/SMT encoding 成本，而不是 frontier 内存；真实求解仍需更小的 bounded
+query 样本单独测量。
