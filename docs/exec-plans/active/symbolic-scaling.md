@@ -568,3 +568,140 @@ encoding measurements, not formal verdicts.
 The experiments above are local artifacts only. They are not added to Git;
 the reproducible commands, report schema and this interpretation are the
 versioned research record.
+
+## P10 constraint characterization and graph-first shadow prototype
+
+P10 remains a shadow-only investigation. The official checker still uses the
+full PPO representation and no result below is a SAFE, TRACE_SAFE or
+COUNTEREXAMPLE verdict.
+
+### Constraint inventory
+
+`SolverConstraintInventory` is attached to every symbolic shadow observation.
+It records the variables, assertion families, formula-term categories and a
+small dependency map. The dependency map makes the current formulation
+explicit:
+
+```text
+RF choice -> RF edge -> conditional ordering -> cycle edge -> cycle balance
+RF choice -> FR edge -> conditional ordering -> cycle edge -> cycle balance
+coherence rank -> CO edge -> conditional ordering -> cycle edge
+target PPO -> target rank
+source PPO -> source cycle edge
+```
+
+The inventory is a characterization of one encoder invocation, not a semantic
+proof and not a completeness claim. The profiles used in the experiments are:
+
+| profile | enabled families |
+| --- | --- |
+| `ppo_fixed_rf` | PPO plus observed-RF fixing; no symbolic RF choice |
+| `ppo_rf` | PPO plus symbolic RF choice |
+| `ppo_rf_fr` | previous profile plus FR implications |
+| `ppo_rf_fr_co` | previous profile plus CO ordering |
+| `full` | the existing shadow formulation, including RMW constraints |
+
+`ppo_fixed_rf` is intentionally conservative. It requires known read and
+write values for every byte part and records ambiguity; if values are missing,
+the profile returns diagnostic `UNKNOWN` instead of selecting a source. The
+captured SB traces currently contain no `VALUE_KNOWN` events, so this profile
+cannot be interpreted as a completed observed-RF experiment on those traces.
+
+### Reduced-SB ablation result
+
+The frozen large SB trace was run with the same reduced PPO graph, 30-second
+child budget, and 1,000,000-term limit. These are diagnostic submodels only:
+
+| profile | terms | AST nodes | assertions | solver result | peak RSS |
+| --- | ---: | ---: | ---: | --- | ---: |
+| `ppo_fixed_rf` | 33,433 | 0 | 0 | RF unavailable (`VALUE_KNOWN` missing) | 445.5 MiB |
+| `ppo_rf` | 48,377 | 215,784 | 33,382 | `UNKNOWN` / timeout | 734.2 MiB |
+| `ppo_rf_fr` | 64,166 | 313,852 | 40,914 | `UNKNOWN` / timeout | 822.2 MiB |
+| `ppo_rf_fr_co` | 64,774 | 316,396 | 41,215 | `UNKNOWN` / timeout | 817.6 MiB |
+| `full` | 64,774 | 317,171 | 41,308 | `UNKNOWN` / timeout | 806.2 MiB |
+
+The important characterization is that `ppo_rf` already times out. Therefore
+the first irreducible difficulty in this formulation is the interaction of
+symbolic RF choices with global cycle/order constraints; FR increases the
+formula and memory footprint, but cannot alone be blamed for the timeout. CO
+and RMW add comparatively little at this scale. The fixed-RF row is not a
+solver speed result because the trace lacks the observations needed to define
+that submodel.
+
+The per-profile JSON files are local experiment artifacts under
+`.experiments/p10-*`; they are intentionally not versioned.
+
+### Graph-first candidate-cycle prototype
+
+The new `cycle-prototype` route is a bounded diagnostic path:
+
+```text
+window
+  -> PPO reduction certificate
+  -> independent replay
+  -> reduced source PPO + RF/FR/CO candidate graph
+  -> bounded SCC/simple-cycle search
+  -> induced cycle-local window
+  -> shadow SMT with required candidate edges
+```
+
+The route refuses to search when the PPO reduction certificate cannot be
+independently replayed. It reports the bound, explored states, SCC counts,
+relation-family counts, candidate edge labels and local query resources. Each
+local query is marked `diagnostic_only`; its `sat_candidate`, `unsat_local` or
+`unknown_local` status never enters the certificate or verdict pipeline.
+
+The local query requires the selected candidate edges in the shadow source
+cycle. This is a feasibility check for the induced node set, not a proof that
+the full window has no other cycle or that the candidate's observed values are
+valid. A bounded search limit is reported as `truncated`, never as a negative
+result.
+
+Example (small captured SB, encoding-only, two candidates):
+
+```text
+event_count                110
+source PPO                 1299 -> 119
+target PPO                 1269 -> 138
+candidate graph edges      608
+SCCs / cyclic SCCs         1 / 1
+cycles returned            2 (bounded at 2)
+local query                65 terms, 60 assertions, 341 AST nodes
+formal verdict             none
+```
+
+Run it with:
+
+```text
+bmo-check cycle-prototype TRACE \
+  --reduction-certificate CERT \
+  --output graph-first.json \
+  --max-cycle-length 12 \
+  --max-cycles 32 \
+  --max-search-states 100000 \
+  --local-timeout-ms 1000 \
+  --local-max-symbolic-terms 100000
+```
+
+The graph search collapses parallel RF/FR/CO labels with the same endpoint and
+relation family for bounded enumeration, and records that collapse in the
+report. The underlying symbolic encoder still reconstructs its complete local
+candidate domain; this collapse is a search bound, not an event or relation
+deletion from the official checker.
+
+### P10 conclusion and review boundary
+
+1. RF choice plus global cycle/order constraints is the smallest tested
+   profile that reproduces the reduced-SB timeout.
+2. FR materially expands the conditional ordering and cycle encoding, but the
+   current data does not justify claiming FR is the primary cause.
+3. The graph-first prototype separates bounded candidate-cycle discovery from
+   local SMT feasibility and provides the next algorithmic experiment without
+   changing formal semantics.
+4. No reduced PPO, ablation result or local SAT/UNSAT result is used by the
+   official checker.
+
+P10 stops here for review. The next decision is whether to prototype a
+   formally replayable graph-first/CEGAR refinement algorithm; it must retain
+   the full proof path as the reference and must not turn a bounded candidate
+   search into SAFE.

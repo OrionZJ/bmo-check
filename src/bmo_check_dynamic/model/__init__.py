@@ -100,6 +100,14 @@ from .solver_benchmark import (
     TraceShadowSolverSideReport,
 )
 from .solver_diagnostics import SolverConstraintInventory, SolverDiagnosticProfile
+from .graph_first import (
+    GraphFirstCandidateCycle,
+    GraphFirstEdge,
+    GraphFirstLocalQuery,
+    GraphFirstQueryStatus,
+    GraphFirstWindowReport,
+    TraceGraphFirstReport,
+)
 
 __all__ = [
     "BinaryFingerprint",
@@ -193,4 +201,10 @@ __all__ = [
     "TraceShadowSolverSideReport",
     "SolverDiagnosticProfile",
     "SolverConstraintInventory",
+    "GraphFirstQueryStatus",
+    "GraphFirstEdge",
+    "GraphFirstLocalQuery",
+    "GraphFirstCandidateCycle",
+    "GraphFirstWindowReport",
+    "TraceGraphFirstReport",
 ]

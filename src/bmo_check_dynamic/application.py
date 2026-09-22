@@ -30,6 +30,7 @@ from bmo_check_dynamic.model import (
     BenchmarkSide,
     TraceShadowSolverSideReport,
     SolverDiagnosticProfile,
+    TraceGraphFirstReport,
 )
 from bmo_check_dynamic.pipeline import (
     analyze_trace,
@@ -42,6 +43,7 @@ from bmo_check_dynamic.pipeline import (
     ppo_solver_trace,
     ppo_solver_replay_trace,
     ppo_solver_side_trace,
+    graph_first_trace,
     slice_plan_trace,
 )
 
@@ -255,6 +257,33 @@ def ppo_solver_side(
     )
 
 
+def graph_first(
+    request: AnalyzeRequest,
+    reduction_certificate: TracePpoReductionCertificate | None = None,
+    *,
+    max_cycle_length: int = 12,
+    max_cycles: int = 32,
+    max_search_states: int = 100_000,
+    local_timeout_ms: int = 1_000,
+    local_max_symbolic_terms: int = 100_000,
+    execute_local_solver: bool = True,
+) -> TraceGraphFirstReport:
+    """运行 graph-first 候选环诊断；结果不进入正式 verdict。"""
+
+    return graph_first_trace(
+        request.trace_dir,
+        dbt_contract=request.dbt_contract,
+        config=request.config,
+        reduction_certificate=reduction_certificate,
+        max_cycle_length=max_cycle_length,
+        max_cycles=max_cycles,
+        max_search_states=max_search_states,
+        local_timeout_ms=local_timeout_ms,
+        local_max_symbolic_terms=local_max_symbolic_terms,
+        execute_local_solver=execute_local_solver,
+    )
+
+
 __all__ = [
     "AnalyzeRequest",
     "CaptureRequest",
@@ -269,6 +298,7 @@ __all__ = [
     "ppo_solver",
     "ppo_solver_replay",
     "ppo_solver_side",
+    "graph_first",
     "characterize",
     "capture",
 ]

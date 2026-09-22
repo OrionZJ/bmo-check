@@ -28,6 +28,7 @@ from bmo_check_dynamic.application import (
     ppo_solver as ppo_solver_request,
     ppo_solver_replay as ppo_solver_replay_request,
     ppo_solver_side as ppo_solver_side_request,
+    graph_first as graph_first_request,
     capture as capture_request,
 )
 from bmo_check_dynamic.capture import CaptureError
@@ -230,6 +231,34 @@ def _ppo_reduction(args: argparse.Namespace) -> int:
             encoding="utf-8",
         )
     print(report.model_dump_json(indent=2))
+    return 0
+
+
+def _graph_first(args: argparse.Namespace) -> int:
+    reduction = None
+    if args.reduction_certificate is not None:
+        reduction = TracePpoReductionCertificate.model_validate_json(
+            args.reduction_certificate.read_text(encoding="utf-8")
+        )
+    report = graph_first_request(
+        AnalyzeRequest(
+            trace_dir=args.trace,
+            dbt_contract=args.dbt_contract,
+            config=_analysis_config(args),
+        ),
+        reduction,
+        max_cycle_length=args.max_cycle_length,
+        max_cycles=args.max_cycles,
+        max_search_states=args.max_search_states,
+        local_timeout_ms=args.local_timeout_ms,
+        local_max_symbolic_terms=args.local_max_symbolic_terms,
+        execute_local_solver=not args.encoding_only,
+    )
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(report.model_dump_json(indent=2), encoding="utf-8")
+    print(report.model_dump_json(indent=2))
+    # graph-first 是 bounded shadow diagnosis，永远不把 local SAT/UNSAT
+    # 映射成 TRACE_SAFE、COUNTEREXAMPLE 或 UNKNOWN 退出码。
     return 0
 
 
@@ -868,6 +897,40 @@ def build_parser() -> argparse.ArgumentParser:
     ppo_reduction.add_argument("--certificate", type=Path)
     _add_analysis_options(ppo_reduction)
     ppo_reduction.set_defaults(handler=_ppo_reduction)
+
+    graph_first = subparsers.add_parser(
+        "cycle-prototype",
+        help="bounded graph-first candidate-cycle shadow diagnosis",
+    )
+    graph_first.add_argument("trace", type=Path)
+    graph_first.add_argument("--reduction-certificate", type=Path)
+    graph_first.add_argument("--output", type=Path, required=True)
+    graph_first.add_argument(
+        "--max-cycle-length", type=int, default=12,
+        help="maximum simple-cycle length explored by the diagnostic graph",
+    )
+    graph_first.add_argument(
+        "--max-cycles", type=int, default=32,
+        help="maximum candidate cycles sent to local shadow SMT",
+    )
+    graph_first.add_argument(
+        "--max-search-states", type=int, default=100_000,
+        help="maximum bounded DFS edge visits",
+    )
+    graph_first.add_argument(
+        "--local-timeout-ms", type=int, default=1_000,
+        help="timeout for each candidate-local shadow SMT query",
+    )
+    graph_first.add_argument(
+        "--local-max-symbolic-terms", type=int, default=100_000,
+        help="symbolic-term budget for each candidate-local shadow query",
+    )
+    graph_first.add_argument(
+        "--encoding-only", action="store_true",
+        help="build local diagnostic formulas without calling Z3",
+    )
+    _add_analysis_options(graph_first)
+    graph_first.set_defaults(handler=_graph_first)
 
     ppo_replay = subparsers.add_parser(
         "ppo-replay",

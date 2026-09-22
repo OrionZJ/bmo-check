@@ -694,6 +694,7 @@ def _check_symbolic(
     runtime_observation: _MutableSymbolicObservation | None = None,
     execute_solver: bool = True,
     profile: SolverDiagnosticProfile = SolverDiagnosticProfile.FULL,
+    required_source_cycle_edges: frozenset[Edge] | None = None,
 ) -> WindowResult:
     deadline = monotonic() + timeout_ms / 1000
     build_started_at = (
@@ -1031,6 +1032,26 @@ def _check_symbolic(
         }
     )
     add_constraint("cycle", z3.Or(*selected_nodes.values()))
+    if required_source_cycle_edges:
+        missing_required = set(required_source_cycle_edges) - set(selected_edges)
+        if missing_required:
+            return finish(
+                WindowResult(
+                    window_id=window.window_id,
+                    event_ids=nodes,
+                    status="unknown",
+                    reason=(
+                        "shadow candidate cycle contains edges absent from the "
+                        "local source relation graph"
+                    ),
+                ),
+                solver_result="unknown",
+                solver=solver,
+            )
+        # graph-first 只把候选环作为局部查询的必要条件；该约束不会进入
+        # 正式 check_window，因此不能把一个局部可满足性结果当成全窗 verdict。
+        for edge in required_source_cycle_edges:
+            add_constraint("cycle_candidate", selected_edges[edge])
     incoming_by_node: dict[str, list[z3.BoolRef]] = {node: [] for node in nodes}
     outgoing_by_node: dict[str, list[z3.BoolRef]] = {node: [] for node in nodes}
     for edge, selected in selected_edges.items():
@@ -1182,6 +1203,7 @@ def run_symbolic_shadow(
     max_symbolic_terms: int,
     execute_solver: bool = True,
     profile: SolverDiagnosticProfile = SolverDiagnosticProfile.FULL,
+    required_source_cycle_edges: frozenset[Edge] | None = None,
 ) -> tuple[WindowResult, SymbolicSolverObservation]:
     """用正式 symbolic encoder 跑一侧 shadow，不进入 ``check_window``。
 
@@ -1218,6 +1240,7 @@ def run_symbolic_shadow(
         runtime_observation=observation,
         execute_solver=execute_solver,
         profile=profile,
+        required_source_cycle_edges=required_source_cycle_edges,
     )
     return result, observation.freeze()
 
