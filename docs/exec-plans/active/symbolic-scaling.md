@@ -1031,3 +1031,74 @@ semantics, or any verdict.  Candidate coverage is marked complete only when
 the independent bounded enumeration agrees with the normalized set, no local
 query is unresolved, and every block replays.  Search truncation, missing
 candidates, or any `UNKNOWN` leaves the coverage result incomplete.
+
+## P14 candidate discovery and coverage (diagnostic-only)
+
+P14 adds a fair, structured candidate-discovery scheduler without changing
+the may graph, PPO certificate, local memory-model encoding, or official
+verdict.  The scheduler starts from RF/FR/CO conditional edges and uses the
+certified PPO reachability oracle as a summary edge.  Its round-robin frontier
+keeps unvisited seed states explicit; a bound therefore reports `TRUNCATED`
+and a remaining frontier instead of treating omitted candidates as absent.
+
+Each graph-first report can carry a `CandidateDiscoveryProfile` with the
+conditional seed count, visited seeds, reachability queries/cache hits, path
+expansions, rejection reasons, generated/unique skeletons, and frontier size.
+`--discovery-only` records this profile without constructing local SMT
+queries.  The normal path still performs the same local shadow query and
+independent replay as P11/P12.
+
+P14.1 used two explicitly named regression inputs:
+
+* `captured-sb-p11-baseline` is the real 110-event ELF trace from
+  `live-litmus-sb-20260920`, with the current certificate digest
+  `e0203462...`; under the P11-like bound it produces the same two canonical
+  skeleton IDs in `P11_RAW`, `P12_CANONICAL`, and
+  `P12_CANONICAL_BLOCKING`.
+* `synthetic-sb-p13-fixture` is the four-event hand-written store/load fixture
+  used by the earlier P13 script.  It has no source PPO under the current
+  contract and therefore intentionally has an empty candidate set.  It is not
+  interchangeable with the captured ELF case.
+
+The fair scheduler may expose a different *bounded prefix* on the captured
+trace: with two or 100 candidate slots it finds valid shorter
+PPO-reachability skeletons before the depth-first baseline reaches the same
+conditional choices.  The report records these IDs under
+`candidate_set_differences` and leaves the comparison incomplete; it does not
+call this a semantic mismatch or claim coverage.  This was diagnosed as a
+search-order/bound effect with the same trace and certificate digest, not an
+input or contract drift; forcing the prefixes to match would hide the
+unexplored frontier.  On Synthetic LB the
+structured set agrees with the independent enumerator (missing/unexpected
+IDs are empty); encoding-only coverage remains incomplete because no local
+query was run.
+
+The reproducible CLI is:
+
+```text
+bmo-check cegar-ab TRACE --reduction-certificate CERT --output REPORT.json \
+  --include-structured --max-search-states 10000 --max-local-queries 100
+```
+
+For per-mode RSS, `scripts/run_p14_isolated_ab.py` launches one worker per
+mode and parses `/usr/bin/time -v`.  A worker timeout, OOM/termination, or
+missing report is retained as an incomplete resource result; it is never
+converted to a verdict.
+
+The first frozen-SB measurements (discovery-only, 3,720 events) were:
+
+| bound | mode | states | candidates | local queries | peak RSS | remaining frontier |
+| ---: | --- | ---: | ---: | ---: | ---: | ---: |
+| 1,000 | P11 raw | 1,000 | 0 | 0 | 629.6 MiB | not exposed by legacy path |
+| 1,000 | P12 canonical | 1,000 | 0 | 0 | 637.5 MiB | not exposed by legacy path |
+| 1,000 | P12 blocking | 1,000 | 0 | 0 | 648.8 MiB | not exposed by legacy path |
+| 1,000 | P14 structured | 1,000 | 53 | 0 | 5,789.1 MiB | 108,458 |
+
+The structured row demonstrates why fair discovery must remain diagnostic:
+it reaches conditional candidates early, but retaining a large unexplored
+frontier is expensive.  A 10,000-state P12 worker reached its bound at about
+2.3 GiB RSS.  Raw 10,000- and 100,000-state preflights were stopped by the
+external resource guard before a report was written; the structured 10,000+
+state run was not repeated after that guard fired.  Those missing runs are
+recorded as resource-limited, not as empty candidate spaces.
+No P14 result changes SAFE, TRACE_SAFE, COUNTEREXAMPLE, or UNKNOWN.

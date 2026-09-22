@@ -47,6 +47,7 @@ from bmo_check_dynamic.model import (
     CampaignSummary,
     DynamicCertificate,
     TracePpoReductionCertificate,
+    CegarExperimentMode,
     TraceReducedSolverRunCertificate,
     TraceVerdict,
     BenchmarkSide,
@@ -329,6 +330,13 @@ def _cegar_ab(args: argparse.Namespace) -> int:
         local_timeout_ms=args.local_timeout_ms,
         local_max_symbolic_terms=args.local_max_symbolic_terms,
         execute_local_solver=not args.encoding_only,
+        include_structured=args.include_structured,
+        only_mode=(
+            CegarExperimentMode(args.only_mode)
+            if args.only_mode is not None
+            else None
+        ),
+        discovery_only=args.discovery_only,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(report.model_dump_json(indent=2), encoding="utf-8")
@@ -1072,6 +1080,21 @@ def build_parser() -> argparse.ArgumentParser:
     cegar_ab.add_argument("--local-timeout-ms", type=int, default=1_000)
     cegar_ab.add_argument("--local-max-symbolic-terms", type=int, default=100_000)
     cegar_ab.add_argument("--encoding-only", action="store_true")
+    cegar_ab.add_argument(
+        "--include-structured",
+        action="store_true",
+        help="include the fair P14 structured candidate-discovery shadow mode",
+    )
+    cegar_ab.add_argument(
+        "--only-mode",
+        choices=[mode.value for mode in CegarExperimentMode],
+        help="run one shadow mode in an isolated worker",
+    )
+    cegar_ab.add_argument(
+        "--discovery-only",
+        action="store_true",
+        help="record candidate discovery without constructing local SMT queries",
+    )
     _add_analysis_options(cegar_ab)
     cegar_ab.set_defaults(handler=_cegar_ab)
 

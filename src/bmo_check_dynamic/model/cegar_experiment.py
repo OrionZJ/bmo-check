@@ -5,14 +5,16 @@ from enum import StrEnum
 from pydantic import Field
 
 from .manifest import StrictModel
+from .graph_first import CandidateDiscoveryProfile
 
 
 class CegarExperimentMode(StrEnum):
-    """P13 只读对比的三条搜索路径。"""
+    """P13/P14 只读对比的搜索路径。"""
 
     RAW_P11 = "P11_RAW"
     CANONICAL = "P12_CANONICAL"
     CANONICAL_BLOCKING = "P12_CANONICAL_BLOCKING"
+    STRUCTURED_P14 = "P14_STRUCTURED"
 
 
 class BlockingReplayReport(StrictModel):
@@ -59,6 +61,9 @@ class CegarModeMetrics(StrictModel):
     generated_candidates: int = 0
     unique_candidates: int = 0
     duplicate_candidates: int = 0
+    # 用稳定 canonical skeleton identity 比较模式，不依赖候选遍历编号。
+    candidate_skeleton_ids: tuple[str, ...] = ()
+    discovery_profile: CandidateDiscoveryProfile | None = None
     same_rf_variants: int = 0
     ppo_witness_variants: int = 0
     local_queries: int = 0
@@ -91,6 +96,8 @@ class CegarModeComparisonReport(StrictModel):
     certificate_prepare_ms: int = 0
     certificate_replay_ms: int = 0
     modes: tuple[CegarModeMetrics, ...] = ()
+    candidate_sets_match: bool = True
+    candidate_set_differences: dict[str, tuple[str, ...]] = Field(default_factory=dict)
     coverage: CandidateCoverageReport | None = None
     isolated_process: bool = False
     diagnostic_only: bool = True

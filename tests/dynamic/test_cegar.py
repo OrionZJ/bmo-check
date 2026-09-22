@@ -12,6 +12,7 @@ from bmo_check_dynamic.analysis.cegar import (
     replay_blocking_constraint,
     replay_blocking_constraint_detail,
 )
+from bmo_check_dynamic.analysis.graph_first import characterize_graph_first_window
 from bmo_check_dynamic.model import (
     CandidateViolationCycle,
     CandidateViolationEdge,
@@ -223,6 +224,72 @@ def test_p13_same_budget_modes_record_canonical_and_blocking_effects() -> None:
     assert canonical.duplicate_candidates >= 1
     assert blocking.local_queries <= canonical.local_queries
     assert all(item.same_budget for item in report.modes)
+
+
+def test_p14_structured_discovery_is_fair_and_shadow_only() -> None:
+    report = compare_cegar_modes(
+        _lb_window(),
+        fixture="synthetic-lb-p14",
+        max_cycle_length=6,
+        max_search_states=100,
+        max_local_queries=4,
+        local_timeout_ms=500,
+        local_max_symbolic_terms=10_000,
+        execute_local_solver=False,
+        include_structured=True,
+    )
+    structured = report.modes[-1]
+    assert structured.mode is CegarExperimentMode.STRUCTURED_P14
+    assert structured.discovery_profile is not None
+    assert structured.discovery_profile.fair_seed_scheduling is True
+    assert structured.discovery_profile.conditional_seed_count >= 1
+    assert structured.diagnostic_only is True
+    assert report.modes[0].discovery_profile is not None
+    assert report.modes[0].discovery_profile.scheduler == "depth_first"
+    assert report.candidate_sets_match is True
+
+
+def test_p14_structured_candidate_set_matches_independent_small_oracle() -> None:
+    window = _lb_window()
+    graph = build_ppo_graph_input(window)
+    certificate, replay = build_ppo_reduction_certificate(graph)
+    assert replay.accepted
+    structured = characterize_graph_first_window(
+        window,
+        reduction_certificate=certificate,
+        max_cycle_length=6,
+        max_cycles=32,
+        max_search_states=10_000,
+        execute_local_solver=False,
+        discovery_scheduler="fair_structured",
+    )
+    coverage = compare_candidate_coverage(
+        window,
+        structured,
+        certificate=certificate,
+        max_cycle_length=6,
+        max_search_states=10_000,
+        max_candidates=32,
+    )
+    assert coverage.missing_candidate_ids == ()
+    assert coverage.unexpected_candidate_ids == ()
+    assert coverage.complete is False
+    assert "UNKNOWN local queries remain" in coverage.reasons
+
+
+def test_p14_discovery_only_does_not_construct_local_queries() -> None:
+    report = compare_cegar_modes(
+        _lb_window(),
+        fixture="synthetic-lb-discovery-only",
+        max_cycle_length=6,
+        max_search_states=100,
+        max_local_queries=4,
+        execute_local_solver=True,
+        include_structured=True,
+        discovery_only=True,
+    )
+    assert all(item.local_queries == 0 for item in report.modes)
+    assert all("discovery-only profile" in " ".join(item.reasons) for item in report.modes)
 
 
 def test_p13_independent_coverage_is_complete_on_small_fixture() -> None:

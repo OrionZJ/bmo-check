@@ -65,6 +65,7 @@ def main() -> int:
     parser.add_argument("--max-local-queries", type=int, default=100)
     parser.add_argument("--local-timeout-ms", type=int, default=1_000)
     parser.add_argument("--encoding-only", action="store_true")
+    parser.add_argument("--include-structured", action="store_true")
     args = parser.parse_args()
 
     window = _window(args.fixture)
@@ -81,6 +82,7 @@ def main() -> int:
         max_local_queries=args.max_local_queries,
         local_timeout_ms=args.local_timeout_ms,
         execute_local_solver=not args.encoding_only,
+        include_structured=args.include_structured,
     )
     canonical = characterize_cegar_window(
         window,

@@ -532,6 +532,7 @@ def characterize_cegar_window(
     canonicalize: bool = True,
     enable_blocking: bool = True,
     mode: str = "P12_CANONICAL_BLOCKING",
+    evaluate_candidates: bool = True,
 ) -> CegarWindowReport:
     """执行 bounded CEGAR candidate search；结果始终为 diagnostic-only。
 
@@ -682,6 +683,17 @@ def characterize_cegar_window(
                 )
             )
             continue
+        if not evaluate_candidates:
+            records.append(
+                CegarCandidateRecord(
+                    candidate_id=candidate_id,
+                    canonical_skeleton=skeleton,
+                    candidate_violation_cycle=candidate,
+                    local_obligations=obligations,
+                    diagnostic_only=True,
+                )
+            )
+            continue
         if local_query_count >= max_local_queries:
             query_truncated = True
             break
@@ -723,6 +735,8 @@ def characterize_cegar_window(
         reasons.append("local query budget reached before candidate space was explored")
     if search_truncated:
         reasons.append("bounded candidate search reached max_search_states or candidate limit")
+    if not evaluate_candidates:
+        reasons.append("candidate evaluation skipped; discovery-only profile")
     if unknown_count:
         status = CegarSearchStatus.UNKNOWN_REMAINS
     elif not_run_count:

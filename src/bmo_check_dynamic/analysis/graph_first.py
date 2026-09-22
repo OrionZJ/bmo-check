@@ -7,6 +7,7 @@ from dataclasses import dataclass
 
 from bmo_check_dynamic.model import (
     CandidateBlockingClause,
+    CandidateDiscoveryProfile,
     CandidateCycleReplay,
     CandidateCycleReplayStatus,
     CandidateSearchLedger,
@@ -58,6 +59,8 @@ def characterize_graph_first_window(
     local_timeout_ms: int = 1_000,
     local_max_symbolic_terms: int = 100_000,
     execute_local_solver: bool = True,
+    discovery_scheduler: str = "depth_first",
+    evaluate_candidates: bool = True,
 ) -> GraphFirstWindowReport:
     """寻找有界候选坏环，并对每个候选做局部 shadow SMT 查询。
 
@@ -117,6 +120,7 @@ def characterize_graph_first_window(
         if len(nodes) > 1
         or any(edge.source == edge.target and components.get(edge.source) == component for edge in labeled)
     }
+    discovery_data: dict[str, object] = {}
     candidates, explored, truncated, skeleton_edges = _enumerate_skeleton_cycles(
         window.events,
         labeled,
@@ -126,11 +130,15 @@ def characterize_graph_first_window(
         max_cycle_length=max_cycle_length,
         max_cycles=max_cycles,
         max_search_states=max_search_states,
+        scheduler=discovery_scheduler,
+        profile=discovery_data,
     )
     if truncated:
         reasons.append("bounded graph search reached a configured limit")
     if not candidates:
         reasons.append("no non-PPO candidate cycle was found within the bound")
+    if not evaluate_candidates:
+        reasons.append("candidate evaluation skipped; discovery-only profile")
 
     event_by_id = {event.event_id: event for event in window.events}
     reports: list[GraphFirstCandidateCycle] = []
@@ -160,65 +168,72 @@ def characterize_graph_first_window(
         )
         local_source = {edge for edge in source_reduced if edge[0] in local_ids and edge[1] in local_ids}
         local_target = {edge for edge in target_reduced if edge[0] in local_ids and edge[1] in local_ids}
-        required = frozenset(_required_local_source_edges(cycle_edges))
-        local_result, observation = run_symbolic_shadow(
-            local_window,
-            source_ppo=local_source,
-            target_ppo=local_target,
-            control_flow_closed=control_flow_closed,
-            timeout_ms=local_timeout_ms,
-            max_symbolic_terms=local_max_symbolic_terms,
-            execute_solver=execute_local_solver,
-            required_source_cycle_edges=required,
-        )
-        query = GraphFirstLocalQuery(
-            status=_local_status(observation.result, execute_local_solver),
-            feasibility_status=_feasibility_status(observation.result),
-            solver_result=observation.result,
-            reason=observation.reason,
-            event_count=len(local_events),
-            source_ppo_edge_count=len(local_source),
-            target_ppo_edge_count=len(local_target),
-            formula_terms=observation.formula_terms,
-            assertion_count=observation.assertion_count,
-            z3_ast_count=observation.z3_ast_count,
-            build_time_ms=observation.build_time_ms,
-            solver_time_ms=observation.solver_time_ms,
-        )
         candidate = _build_candidate_violation_cycle(
             cycle_id=f"{window.window_id}:cycle-{index:04d}",
             cycle_edges=cycle_edges,
             event_by_id=event_by_id,
         )
-        local_witness = _build_local_witness(
-            candidate,
-            cycle_edges=cycle_edges,
-            local_result=local_result,
-        )
-        # RF/CO 的端点也必须成为 local query 的必要条件；否则 solver
-        # 可能用另一条 conditional edge 闭合一个不同的环，而 replay
-        # 看到的却仍是 producer 声称的 candidate。
-        obligations = _build_local_obligations(
-            candidate,
-            cycle_edges=cycle_edges,
-            events=window.events,
-            witness=local_witness,
-        )
-        replay = replay_candidate_cycle(
-            graph,
-            certificate,
-            candidate,
-            obligations,
-            local_witness,
-            source_reduced=source_reduced,
-            target_reduced=target_reduced,
-            events=window.events,
-        )
-        blocking = (
-            _blocking_clause(candidate, obligations, observation.result)
-            if query.feasibility_status is LocalCycleStatus.INFEASIBLE
-            else None
-        )
+        if evaluate_candidates:
+            required = frozenset(_required_local_source_edges(cycle_edges))
+            local_result, observation = run_symbolic_shadow(
+                local_window,
+                source_ppo=local_source,
+                target_ppo=local_target,
+                control_flow_closed=control_flow_closed,
+                timeout_ms=local_timeout_ms,
+                max_symbolic_terms=local_max_symbolic_terms,
+                execute_solver=execute_local_solver,
+                required_source_cycle_edges=required,
+            )
+            query = GraphFirstLocalQuery(
+                status=_local_status(observation.result, execute_local_solver),
+                feasibility_status=_feasibility_status(observation.result),
+                solver_result=observation.result,
+                reason=observation.reason,
+                event_count=len(local_events),
+                source_ppo_edge_count=len(local_source),
+                target_ppo_edge_count=len(local_target),
+                formula_terms=observation.formula_terms,
+                assertion_count=observation.assertion_count,
+                z3_ast_count=observation.z3_ast_count,
+                build_time_ms=observation.build_time_ms,
+                solver_time_ms=observation.solver_time_ms,
+            )
+            local_witness = _build_local_witness(
+                candidate,
+                cycle_edges=cycle_edges,
+                local_result=local_result,
+            )
+            # RF/CO 的端点也必须成为 local query 的必要条件；否则 solver
+            # 可能用另一条 conditional edge 闭合一个不同的环，而 replay
+            # 看到的却仍是 producer 声称的 candidate。
+            obligations = _build_local_obligations(
+                candidate,
+                cycle_edges=cycle_edges,
+                events=window.events,
+                witness=local_witness,
+            )
+            replay = replay_candidate_cycle(
+                graph,
+                certificate,
+                candidate,
+                obligations,
+                local_witness,
+                source_reduced=source_reduced,
+                target_reduced=target_reduced,
+                events=window.events,
+            )
+            blocking = (
+                _blocking_clause(candidate, obligations, observation.result)
+                if query.feasibility_status is LocalCycleStatus.INFEASIBLE
+                else None
+            )
+        else:
+            query = None
+            local_witness = None
+            obligations = None
+            replay = None
+            blocking = None
         reports.append(
             GraphFirstCandidateCycle(
                 cycle_id=f"{window.window_id}:cycle-{index:04d}",
@@ -250,7 +265,8 @@ def characterize_graph_first_window(
         )
         # Keep the result variable visible in this diagnostic route: the
         # observation is intentionally the only accepted summary of the query.
-        del local_result
+        if evaluate_candidates:
+            del local_result
 
     component_nodes = _component_nodes(may_components)
     component_edge_counts = {
@@ -345,6 +361,11 @@ def characterize_graph_first_window(
         reasons=tuple(dict.fromkeys(reasons)),
         may_graph=may_graph,
         search_ledger=ledger,
+        discovery_profile=(
+            CandidateDiscoveryProfile(**discovery_data)
+            if discovery_data
+            else None
+        ),
         skeleton_edge_count=len(skeleton_edges),
         skeleton_scc_count=len(
             _component_nodes(
@@ -583,6 +604,8 @@ def _enumerate_skeleton_cycles(
     max_cycle_length: int,
     max_cycles: int,
     max_search_states: int,
+    scheduler: str = "depth_first",
+    profile: dict[str, object] | None = None,
 ) -> tuple[
     list[tuple[tuple[str, ...], tuple[_LabeledEdge, ...]]],
     int,
@@ -591,7 +614,32 @@ def _enumerate_skeleton_cycles(
 ]:
     """从 conditional edges 出发，懒查询 PPO reachability 并生成 skeleton。"""
 
+    if scheduler == "fair_structured":
+        return _enumerate_structured_skeleton_cycles(
+            events,
+            may_edges,
+            source_ppo,
+            components,
+            cyclic_components,
+            max_cycle_length=max_cycle_length,
+            max_cycles=max_cycles,
+            max_search_states=max_search_states,
+            profile=profile,
+        )
+    if scheduler != "depth_first":
+        raise ValueError(f"unknown candidate discovery scheduler: {scheduler}")
+
     conditional = tuple(edge for edge in may_edges if edge.kind != "source_ppo")
+    if profile is not None:
+        profile.update(
+            {
+                "scheduler": "depth_first",
+                "fair_seed_scheduling": False,
+                "conditional_seed_count": len(conditional),
+                "max_cycle_length": max_cycle_length,
+                "max_search_states": max_search_states,
+            }
+        )
     by_source: dict[str, list[_LabeledEdge]] = defaultdict(list)
     targets_by_thread: dict[int, set[str]] = defaultdict(set)
     event_by_id = {event.event_id: event for event in events}
@@ -725,6 +773,212 @@ def _enumerate_skeleton_cycles(
         visit(start_edge.target)
         if truncated:
             break
+    if profile is not None:
+        profile.update(
+            {
+                "seeds_visited": len(conditional),
+                "ppo_reachability_queries": len(oracle.source_cache),
+                "ppo_reachability_cache_hits": 0,
+                "path_expansions": explored,
+                "rejected_cycles": 0,
+                "rejection_reasons": {},
+                "generated_skeletons": len(candidates),
+                "unique_skeletons": len(seen),
+                "remaining_frontier": None if truncated else 0,
+                "search_truncated": truncated,
+            }
+        )
+    return candidates, explored, truncated, tuple(skeleton_edges.values())
+
+
+def _enumerate_structured_skeleton_cycles(
+    events: tuple[TraceEvent, ...],
+    may_edges: tuple[_LabeledEdge, ...],
+    source_ppo: frozenset[Edge],
+    components: dict[str, int],
+    cyclic_components: set[int],
+    *,
+    max_cycle_length: int,
+    max_cycles: int,
+    max_search_states: int,
+    profile: dict[str, object] | None = None,
+) -> tuple[
+    list[tuple[tuple[str, ...], tuple[_LabeledEdge, ...]]],
+    int,
+    bool,
+    tuple[_LabeledEdge, ...],
+]:
+    """用条件边种子和 round-robin 前沿生成结构化候选。
+
+    这条路径只改变诊断候选的遍历顺序和计数，不改变 may graph、PPO
+    certificate 或正式 checker。前沿被显式保留，达到边界时只能报告
+    截断，不能把未访问的种子当作不存在。
+    """
+
+    conditional = tuple(
+        sorted(
+            (edge for edge in may_edges if edge.kind != "source_ppo"),
+            key=lambda edge: (edge.source, edge.target, edge.kind, edge.relation_id),
+        )
+    )
+    event_by_id = {event.event_id: event for event in events}
+    by_source: dict[str, list[_LabeledEdge]] = defaultdict(list)
+    targets_by_thread: dict[int, set[str]] = defaultdict(set)
+    for edge in conditional:
+        by_source[edge.source].append(edge)
+        source_event = event_by_id.get(edge.source)
+        if source_event is not None:
+            targets_by_thread[source_event.thread_id].add(edge.source)
+    for values in by_source.values():
+        values.sort(key=lambda edge: (edge.target, edge.kind, edge.relation_id))
+    oracle = _ReachabilityOracle.build(events, source_ppo)
+    candidates: list[tuple[tuple[str, ...], tuple[_LabeledEdge, ...]]] = []
+    skeleton_edges: dict[tuple[str, str, str], _LabeledEdge] = {}
+    seen: set[tuple[tuple[str, ...], tuple[str, ...]]] = set()
+    rejection_reasons: Counter[str] = Counter()
+    # state: seed index, start event, current event, conditional endpoints,
+    # edges (including reachability summaries), used relation ids.
+    frontier: deque[
+        tuple[int, str, str, tuple[str, ...], tuple[_LabeledEdge, ...], frozenset[str]]
+    ] = deque()
+    for index, seed in enumerate(conditional):
+        component = components.get(seed.source)
+        if component not in cyclic_components or components.get(seed.target) != component:
+            rejection_reasons["seed_outside_cyclic_scc"] += 1
+            continue
+        frontier.append(
+            (
+                index,
+                seed.source,
+                seed.target,
+                (seed.source, seed.target),
+                (seed,),
+                frozenset((seed.relation_id,)),
+            )
+        )
+    explored = 0
+    truncated = False
+    seeds_visited: set[int] = set()
+
+    def add_candidate(
+        nodes: tuple[str, ...], edges: tuple[_LabeledEdge, ...]
+    ) -> None:
+        nonlocal truncated
+        key = (nodes, tuple(edge.relation_id for edge in edges))
+        if key in seen:
+            rejection_reasons["duplicate_skeleton"] += 1
+            return
+        seen.add(key)
+        candidates.append((nodes, edges))
+        if len(candidates) >= max_cycles:
+            truncated = True
+
+    while frontier and not truncated:
+        if explored >= max_search_states:
+            truncated = True
+            rejection_reasons["search_state_limit"] += 1
+            break
+        seed_index, start, current, path_nodes, path_edges, used_relations = frontier.popleft()
+        explored += 1
+        seeds_visited.add(seed_index)
+        if len(path_nodes) >= max_cycle_length:
+            rejection_reasons["max_cycle_length"] += 1
+            continue
+        cached = current in oracle.source_cache
+        reachable = oracle.reachable_sources(current, targets_by_thread)
+        if cached:
+            # ReachabilitySource already computed this exact source in an
+            # earlier fair state; retain the cache-hit measurement separately.
+            rejection_reasons["cached_reachability"] += 1
+        for next_source, ppo_path in sorted(reachable.items()):
+            if components.get(next_source) != components.get(start):
+                rejection_reasons["reachability_outside_scc"] += 1
+                continue
+            reach_edge: _LabeledEdge | None = None
+            if ppo_path:
+                relation_ids = tuple(
+                    f"ppo:source:{left}:{right}"
+                    for left, right in zip(ppo_path, ppo_path[1:])
+                )
+                reach_edge = _LabeledEdge(
+                    current,
+                    next_source,
+                    "ppo_reachability",
+                    f"ppo-reach:source:{current}:{next_source}",
+                    relation_ids,
+                    ppo_path,
+                )
+                skeleton_edges[(reach_edge.source, reach_edge.target, reach_edge.kind)] = reach_edge
+            if reach_edge is None:
+                continue
+            if next_source == start:
+                completed = tuple(path_edges + (reach_edge,))
+                if any(edge.kind != "ppo_reachability" for edge in completed[:-1]):
+                    add_candidate(path_nodes, completed)
+                else:
+                    rejection_reasons["ppo_only_cycle"] += 1
+                continue
+            if next_source in path_nodes:
+                rejection_reasons["repeated_endpoint"] += 1
+                continue
+            for next_edge in by_source.get(next_source, ()):
+                if truncated:
+                    break
+                if explored >= max_search_states:
+                    truncated = True
+                    rejection_reasons["search_state_limit"] += 1
+                    break
+                if next_edge.relation_id in used_relations:
+                    rejection_reasons["repeated_relation"] += 1
+                    continue
+                if components.get(next_edge.target) != components.get(start):
+                    rejection_reasons["edge_outside_scc"] += 1
+                    continue
+                if next_edge.target == start:
+                    completed = tuple(path_edges + (reach_edge, next_edge))
+                    add_candidate(path_nodes, completed)
+                    skeleton_edges[(next_edge.source, next_edge.target, next_edge.kind)] = next_edge
+                    continue
+                if next_edge.target in path_nodes:
+                    rejection_reasons["repeated_endpoint"] += 1
+                    continue
+                skeleton_edges[(next_edge.source, next_edge.target, next_edge.kind)] = next_edge
+                frontier.append(
+                    (
+                        seed_index,
+                        start,
+                        next_edge.target,
+                        path_nodes + (next_edge.target,),
+                        path_edges + (reach_edge, next_edge),
+                        used_relations | frozenset((next_edge.relation_id,)),
+                    )
+                )
+                # Count each fair frontier expansion, not an unbounded hidden
+                # recursive traversal.
+                rejection_reasons["frontier_expansion"] += 1
+
+    if profile is not None:
+        cached_queries = rejection_reasons.pop("cached_reachability", 0)
+        path_expansions = rejection_reasons.pop("frontier_expansion", 0)
+        profile.update(
+            {
+                "scheduler": "fair_structured",
+                "fair_seed_scheduling": True,
+                "conditional_seed_count": len(conditional),
+                "seeds_visited": len(seeds_visited),
+                "ppo_reachability_queries": len(oracle.source_cache),
+                "ppo_reachability_cache_hits": cached_queries,
+                "path_expansions": path_expansions,
+                "rejected_cycles": sum(rejection_reasons.values()),
+                "rejection_reasons": dict(sorted(rejection_reasons.items())),
+                "generated_skeletons": len(candidates),
+                "unique_skeletons": len(seen),
+                "remaining_frontier": len(frontier) if truncated else 0,
+                "search_truncated": truncated,
+                "max_cycle_length": max_cycle_length,
+                "max_search_states": max_search_states,
+            }
+        )
     return candidates, explored, truncated, tuple(skeleton_edges.values())
 
 

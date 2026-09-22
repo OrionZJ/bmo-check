@@ -129,7 +129,17 @@ def _p11_metrics(report, prepared: _PreparedCertificate, started: float) -> Cega
         raw_search_states=report.explored_states,
         generated_candidates=report.cycles_considered,
         unique_candidates=report.cycles_considered,
-        local_queries=report.cycles_returned,
+        candidate_skeleton_ids=tuple(
+            sorted(
+                {
+                    canonicalize_cycle_skeleton(record.candidate_violation_cycle).canonical_id
+                    for record in records
+                    if record.candidate_violation_cycle is not None
+                }
+            )
+        ),
+        discovery_profile=report.discovery_profile,
+        local_queries=sum(record.local_query is not None for record in records),
         feasible=feasible,
         infeasible=infeasible,
         unknown=unknown,
@@ -172,6 +182,15 @@ def _p12_metrics(report, mode: CegarExperimentMode, prepared: _PreparedCertifica
         generated_candidates=profile.generated_skeletons if profile else 0,
         unique_candidates=profile.unique_skeletons if profile else 0,
         duplicate_candidates=profile.duplicate_skeletons if profile else 0,
+        candidate_skeleton_ids=tuple(
+            sorted(
+                {
+                    record.canonical_skeleton.canonical_id
+                    for record in records
+                    if record.canonical_skeleton is not None
+                }
+            )
+        ),
         same_rf_variants=profile.same_rf_assignment_variants if profile else 0,
         ppo_witness_variants=profile.same_structural_cycle_different_ppo_witness if profile else 0,
         local_queries=ledger.local_query_count if ledger else 0,
@@ -188,6 +207,26 @@ def _p12_metrics(report, mode: CegarExperimentMode, prepared: _PreparedCertifica
     )
 
 
+def _p14_metrics(
+    report,
+    prepared: _PreparedCertificate,
+    started: float,
+) -> CegarModeMetrics:
+    """把结构化发现器接到同一局部 SMT 评估路径；仍是 shadow-only。"""
+
+    metrics = _p11_metrics(report, prepared, started)
+    return metrics.model_copy(
+        update={
+            "mode": CegarExperimentMode.STRUCTURED_P14,
+            "discovery_profile": report.discovery_profile,
+            "unique_candidates": len(metrics.candidate_skeleton_ids),
+            "duplicate_candidates": max(
+                0, metrics.generated_candidates - len(metrics.candidate_skeleton_ids)
+            ),
+        }
+    )
+
+
 def compare_cegar_modes(
     window: AnalysisWindow,
     *,
@@ -201,30 +240,37 @@ def compare_cegar_modes(
     local_max_symbolic_terms: int = 100_000,
     execute_local_solver: bool = True,
     coverage: CandidateCoverageReport | None = None,
+    include_structured: bool = False,
+    only_mode: CegarExperimentMode | None = None,
+    discovery_only: bool = False,
 ) -> CegarModeComparisonReport:
     """用完全相同的边界比较 P11、P12 canonical 和 P12 blocking。"""
 
     prepared = _prepare_certificate(window, reduction_certificate)
     modes: list[CegarModeMetrics] = []
 
-    started = time.perf_counter()
-    raw = characterize_graph_first_window(
-        window,
-        reduction_certificate=prepared.certificate,
-        control_flow_closed=control_flow_closed,
-        max_cycle_length=max_cycle_length,
-        max_cycles=max_local_queries,
-        max_search_states=max_search_states,
-        local_timeout_ms=local_timeout_ms,
-        local_max_symbolic_terms=local_max_symbolic_terms,
-        execute_local_solver=execute_local_solver,
-    )
-    modes.append(_p11_metrics(raw, prepared, started))
+    if only_mode in (None, CegarExperimentMode.RAW_P11):
+        started = time.perf_counter()
+        raw = characterize_graph_first_window(
+            window,
+            reduction_certificate=prepared.certificate,
+            control_flow_closed=control_flow_closed,
+            max_cycle_length=max_cycle_length,
+            max_cycles=max_local_queries,
+            max_search_states=max_search_states,
+            local_timeout_ms=local_timeout_ms,
+            local_max_symbolic_terms=local_max_symbolic_terms,
+            execute_local_solver=execute_local_solver,
+            evaluate_candidates=not discovery_only,
+        )
+        modes.append(_p11_metrics(raw, prepared, started))
 
     for mode, enable_blocking in (
         (CegarExperimentMode.CANONICAL, False),
         (CegarExperimentMode.CANONICAL_BLOCKING, True),
     ):
+        if only_mode is not None and only_mode is not mode:
+            continue
         started = time.perf_counter()
         report = characterize_cegar_window(
             window,
@@ -237,11 +283,51 @@ def compare_cegar_modes(
             local_timeout_ms=local_timeout_ms,
             local_max_symbolic_terms=local_max_symbolic_terms,
             execute_local_solver=execute_local_solver,
+            evaluate_candidates=not discovery_only,
             canonicalize=True,
             enable_blocking=enable_blocking,
             mode=mode.value,
         )
         modes.append(_p12_metrics(report, mode, prepared, started))
+
+    if (include_structured or only_mode is CegarExperimentMode.STRUCTURED_P14) and (
+        only_mode is None or only_mode is CegarExperimentMode.STRUCTURED_P14
+    ):
+        started = time.perf_counter()
+        structured = characterize_graph_first_window(
+            window,
+            reduction_certificate=prepared.certificate,
+            control_flow_closed=control_flow_closed,
+            max_cycle_length=max_cycle_length,
+            max_cycles=max_local_queries,
+            max_search_states=max_search_states,
+            local_timeout_ms=local_timeout_ms,
+            local_max_symbolic_terms=local_max_symbolic_terms,
+            execute_local_solver=execute_local_solver,
+            discovery_scheduler="fair_structured",
+            evaluate_candidates=not discovery_only,
+        )
+        modes.append(_p14_metrics(structured, prepared, started))
+
+    candidate_sets = {
+        item.mode.value: set(item.candidate_skeleton_ids)
+        for item in modes
+    }
+    raw_candidates = candidate_sets.get(CegarExperimentMode.RAW_P11.value, set())
+    candidate_differences = {
+        mode: tuple(sorted(values ^ raw_candidates))
+        for mode, values in candidate_sets.items()
+        if values ^ raw_candidates
+    }
+    baseline_differences = (
+        {
+            mode: values
+            for mode, values in candidate_differences.items()
+            if mode != CegarExperimentMode.STRUCTURED_P14.value
+        }
+        if CegarExperimentMode.RAW_P11.value in candidate_sets
+        else {}
+    )
 
     return CegarModeComparisonReport(
         fixture=fixture,
@@ -256,10 +342,15 @@ def compare_cegar_modes(
         certificate_prepare_ms=prepared.prepare_ms,
         certificate_replay_ms=prepared.replay_ms,
         modes=tuple(modes),
+        # P11/P12 are the characterization baseline.  P14 deliberately uses
+        # a fair scheduler, so a bounded run may expose a different prefix;
+        # that difference is reported, but is not hidden as a baseline drift.
+        candidate_sets_match=not baseline_differences,
+        candidate_set_differences=candidate_differences,
         coverage=coverage,
         isolated_process=False,
         reasons=(
-            "P13 shadow-only comparison; RSS is same-process rusage and must not be used as an isolated peak bound",
+            "P13/P14 shadow-only comparison; RSS is same-process rusage and must not be used as an isolated peak bound",
         ),
     )
 
@@ -340,11 +431,15 @@ def compare_candidate_coverage(
         max_search_states=max_search_states,
         max_cycles=max_candidates,
     )
-    observed = {
-        item.canonical_skeleton.canonical_id
-        for item in report.candidates
-        if not item.pruned or item.prune_reason is not None
-    }
+    observed: set[str] = set()
+    for item in report.candidates:
+        if hasattr(item, "canonical_skeleton"):
+            if not item.pruned or item.prune_reason is not None:
+                observed.add(item.canonical_skeleton.canonical_id)
+        elif getattr(item, "candidate_violation_cycle", None) is not None:
+            observed.add(
+                canonicalize_cycle_skeleton(item.candidate_violation_cycle).canonical_id
+            )
     unresolved = sum(
         1
         for item in report.candidates
@@ -356,14 +451,16 @@ def compare_candidate_coverage(
     )
     invalid = 0
     for item in report.candidates:
-        block = item.blocking_constraint
-        if block is None or item.local_obligations is None:
+        block = getattr(item, "blocking_constraint", None)
+        obligations = getattr(item, "local_obligations", None)
+        skeleton = getattr(item, "canonical_skeleton", None)
+        if block is None or obligations is None or skeleton is None:
             continue
         if not replay_blocking_constraint_detail(
             block,
             item.candidate_violation_cycle,
-            item.canonical_skeleton,
-            item.local_obligations,
+            skeleton,
+            obligations,
         ).accepted:
             invalid += 1
     missing = tuple(sorted(expected - observed))

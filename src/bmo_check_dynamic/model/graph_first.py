@@ -212,6 +212,28 @@ class CandidateSpaceProfile(StrictModel):
     diagnostic_only: bool = True
 
 
+class CandidateDiscoveryProfile(StrictModel):
+    """结构化候选发现的阶段计数；不表示候选空间已经穷尽。"""
+
+    schema_version: str = "candidate-discovery-profile-v1"
+    scheduler: str = "depth_first"
+    fair_seed_scheduling: bool = False
+    conditional_seed_count: int = 0
+    seeds_visited: int = 0
+    ppo_reachability_queries: int = 0
+    ppo_reachability_cache_hits: int = 0
+    path_expansions: int = 0
+    rejected_cycles: int = 0
+    rejection_reasons: dict[str, int] = Field(default_factory=dict)
+    generated_skeletons: int = 0
+    unique_skeletons: int = 0
+    remaining_frontier: int | None = None
+    search_truncated: bool = False
+    max_cycle_length: int = 0
+    max_search_states: int = 0
+    diagnostic_only: bool = True
+
+
 class CandidateBlockingConstraint(StrictModel):
     """由一次已知 UNSAT 查询产生的可重放语义阻塞约束。"""
 
@@ -473,6 +495,8 @@ class GraphFirstWindowReport(StrictModel):
     may_graph: MayViolationGraphSummary | None = None
     # 候选生成与检查是否覆盖完整空间的账本。
     search_ledger: CandidateSearchLedger | None = None
+    # P14 结构化发现计数；仅用于比较搜索前沿，不进入 verdict。
+    discovery_profile: CandidateDiscoveryProfile | None = None
     # skeleton 图只显式保留条件边，PPO 通过 reachability oracle 懒查询。
     skeleton_edge_count: int = 0
     skeleton_scc_count: int = 0
@@ -520,6 +544,7 @@ __all__ = [
     "CegarSearchStatus",
     "CanonicalCycleSkeleton",
     "CandidateSpaceProfile",
+    "CandidateDiscoveryProfile",
     "CandidateBlockingConstraint",
     "CegarCandidateRecord",
     "CegarSearchLedger",

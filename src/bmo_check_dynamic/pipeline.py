@@ -81,6 +81,7 @@ from bmo_check_dynamic.model import (
     TraceGraphFirstReport,
     TraceCegarReport,
     CegarExperimentReport,
+    CegarExperimentMode,
 )
 from bmo_check_dynamic.proof import (
     characterize_symbolic_encoding,
@@ -1555,8 +1556,11 @@ def cegar_mode_comparison_trace(
     local_timeout_ms: int = 1_000,
     local_max_symbolic_terms: int = 100_000,
     execute_local_solver: bool = True,
+    include_structured: bool = False,
+    only_mode: CegarExperimentMode | None = None,
+    discovery_only: bool = False,
 ) -> CegarExperimentReport:
-    """对真实 trace 的每个窗口执行 P13 三模式 shadow A/B。"""
+    """对真实 trace 的每个窗口执行 P13/P14 shadow A/B。"""
 
     config = config or DynamicConfig()
 
@@ -1590,6 +1594,9 @@ def cegar_mode_comparison_trace(
                 local_timeout_ms=local_timeout_ms,
                 local_max_symbolic_terms=local_max_symbolic_terms,
                 execute_local_solver=execute_local_solver,
+                include_structured=include_structured,
+                only_mode=only_mode,
+                discovery_only=discovery_only,
             )
             for window in windows
         )
