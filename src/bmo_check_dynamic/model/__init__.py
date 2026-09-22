@@ -109,11 +109,18 @@ from .solver_benchmark import (
 from .solver_diagnostics import SolverConstraintInventory, SolverDiagnosticProfile
 from .graph_first import (
     CandidateBlockingClause,
+    CandidateBlockingConstraint,
     CandidateCycleReplay,
     CandidateCycleReplayStatus,
+    CandidateSpaceProfile,
     CandidateSearchLedger,
     CandidateViolationCycle,
     CandidateViolationEdge,
+    CegarCandidateRecord,
+    CegarSearchLedger,
+    CegarSearchStatus,
+    CegarWindowReport,
+    CanonicalCycleSkeleton,
     GraphFirstCandidateCycle,
     GraphFirstEdge,
     GraphFirstLocalQuery,
@@ -125,6 +132,7 @@ from .graph_first import (
     MayViolationGraphContract,
     MayViolationGraphSummary,
     TraceGraphFirstReport,
+    TraceCegarReport,
 )
 
 __all__ = [
@@ -237,10 +245,18 @@ __all__ = [
     "LocalCycleObligationSet",
     "LocalCycleWitness",
     "CandidateBlockingClause",
+    "CandidateBlockingConstraint",
     "CandidateCycleReplay",
+    "CandidateSpaceProfile",
     "CandidateSearchLedger",
     "GraphFirstLocalQuery",
     "GraphFirstCandidateCycle",
     "GraphFirstWindowReport",
     "TraceGraphFirstReport",
+    "CegarCandidateRecord",
+    "CegarSearchLedger",
+    "CegarSearchStatus",
+    "CegarWindowReport",
+    "CanonicalCycleSkeleton",
+    "TraceCegarReport",
 ]

@@ -32,6 +32,7 @@ from bmo_check_dynamic.model import (
     TraceShadowSolverSideReport,
     SolverDiagnosticProfile,
     TraceGraphFirstReport,
+    TraceCegarReport,
 )
 from bmo_check_dynamic.pipeline import (
     analyze_trace,
@@ -46,6 +47,7 @@ from bmo_check_dynamic.pipeline import (
     ppo_solver_replay_trace,
     ppo_solver_side_trace,
     graph_first_trace,
+    cegar_trace,
     slice_plan_trace,
 )
 
@@ -301,6 +303,35 @@ def graph_first(
     )
 
 
+def cegar_prototype(
+    request: AnalyzeRequest,
+    reduction_certificate: TracePpoReductionCertificate | None = None,
+    *,
+    max_cycle_length: int = 12,
+    max_search_states: int = 10_000,
+    max_local_queries: int = 1_000,
+    max_generated_candidates: int = 100_000,
+    local_timeout_ms: int = 1_000,
+    local_max_symbolic_terms: int = 100_000,
+    execute_local_solver: bool = True,
+) -> TraceCegarReport:
+    """运行 P12 bounded CEGAR shadow；结果不进入正式 verdict。"""
+
+    return cegar_trace(
+        request.trace_dir,
+        dbt_contract=request.dbt_contract,
+        config=request.config,
+        reduction_certificate=reduction_certificate,
+        max_cycle_length=max_cycle_length,
+        max_search_states=max_search_states,
+        max_local_queries=max_local_queries,
+        max_generated_candidates=max_generated_candidates,
+        local_timeout_ms=local_timeout_ms,
+        local_max_symbolic_terms=local_max_symbolic_terms,
+        execute_local_solver=execute_local_solver,
+    )
+
+
 __all__ = [
     "AnalyzeRequest",
     "CaptureRequest",
@@ -317,6 +348,7 @@ __all__ = [
     "ppo_solver_replay",
     "ppo_solver_side",
     "graph_first",
+    "cegar_prototype",
     "characterize",
     "capture",
 ]

@@ -165,6 +165,154 @@ class CandidateBlockingClause(StrictModel):
     diagnostic_only: bool = True
 
 
+class CegarSearchStatus(StrEnum):
+    """CEGAR 候选搜索的覆盖状态；这些值不能映射为正式 verdict。"""
+
+    COMPLETE = "COMPLETE"
+    INCOMPLETE = "INCOMPLETE"
+    UNKNOWN_REMAINS = "UNKNOWN_REMAINS"
+    TRUNCATED = "TRUNCATED"
+
+
+class CanonicalCycleSkeleton(StrictModel):
+    """忽略 PPO witness 走法、保留语义端点和条件关系的候选身份。"""
+
+    schema_version: str = "canonical-cycle-skeleton-v1"
+    canonical_id: str
+    # 每项为 source,target,relation,side,conditional,relation-labels。
+    # PPO 的内部 witness 不写入这里，避免同一可达性被重复计数。
+    edge_signatures: tuple[tuple[str, ...], ...]
+    critical_endpoints: tuple[str, ...]
+    rf_candidate_ids: tuple[str, ...] = ()
+    fr_dependency_ids: tuple[str, ...] = ()
+    co_dependency_ids: tuple[str, ...] = ()
+    ppo_reachability_pairs: tuple[tuple[str, str], ...] = ()
+    source_side: str = "source"
+    target_side_condition: str = "target_acyclic"
+    diagnostic_only: bool = True
+
+
+class CandidateSpaceProfile(StrictModel):
+    """CEGAR 搜索空间的诊断剖面，不表示候选空间已经穷尽。"""
+
+    schema_version: str = "candidate-space-profile-v1"
+    raw_search_states: int = 0
+    generated_skeletons: int = 0
+    unique_skeletons: int = 0
+    duplicate_skeletons: int = 0
+    same_rf_assignment_variants: int = 0
+    same_structural_cycle_different_ppo_witness: int = 0
+    local_smt_submitted: int = 0
+    exact_blocked_candidates: int = 0
+    repeated_infeasible_cores: int = 0
+    branching_factor: float = 0.0
+    depth_histogram: dict[str, int] = Field(default_factory=dict)
+    search_truncated: bool = False
+    query_truncated: bool = False
+    diagnostic_only: bool = True
+
+
+class CandidateBlockingConstraint(StrictModel):
+    """由一次已知 UNSAT 查询产生的可重放语义阻塞约束。"""
+
+    schema_version: str = "candidate-blocking-constraint-v1"
+    block_id: str
+    kind: str
+    # 规范化后的 RF/CO/FR/edge assumptions；不能由 timeout 生成。
+    assumptions: tuple[str, ...] = ()
+    rf_relation_ids: tuple[str, ...] = ()
+    co_relation_ids: tuple[str, ...] = ()
+    fr_relation_ids: tuple[str, ...] = ()
+    canonical_structure_id: str | None = None
+    source_candidate_id: str
+    source_query_digest: str
+    solver_result: str
+    verified_unsat: bool
+    replayable: bool
+    pruned_candidate_count: int = 0
+    diagnostic_only: bool = True
+
+
+class CegarCandidateRecord(StrictModel):
+    """CEGAR 一次候选的生成、局部查询和 replay 结果。"""
+
+    candidate_id: str
+    canonical_skeleton: CanonicalCycleSkeleton
+    candidate_violation_cycle: CandidateViolationCycle
+    local_query: GraphFirstLocalQuery | None = None
+    local_obligations: LocalCycleObligationSet | None = None
+    local_witness: LocalCycleWitness | None = None
+    replay: CandidateCycleReplay | None = None
+    blocking_constraint: CandidateBlockingConstraint | None = None
+    pruned: bool = False
+    prune_reason: str | None = None
+    diagnostic_only: bool = True
+
+
+class CegarSearchLedger(StrictModel):
+    """CEGAR 状态机账本，显式区分未探索、UNKNOWN 和穷尽。"""
+
+    schema_version: str = "cegar-search-ledger-v1"
+    candidate_space: str
+    may_graph_complete: bool
+    status: CegarSearchStatus
+    raw_search_states: int
+    generated_count: int
+    canonical_count: int
+    duplicate_count: int
+    feasible_count: int
+    infeasible_count: int
+    unknown_count: int
+    not_run_count: int
+    blocked_count: int
+    pruned_by_block_count: int
+    local_query_count: int
+    not_explored_count: int | None
+    search_truncated: bool
+    query_truncated: bool
+    # 截断时无法估计剩余 frontier，使用 None 而不是伪造为 0。
+    frontier_count: int | None
+    blocking_constraints: tuple[CandidateBlockingConstraint, ...] = ()
+    diagnostic_only: bool = True
+
+
+class CegarWindowReport(StrictModel):
+    """单窗口 CEGAR shadow 报告；永远不产生正式 SAFE/反例。"""
+
+    schema_version: str = "cegar-window-v1"
+    window_id: str
+    event_count: int
+    diagnostic_only: bool = True
+    reduction_replay_accepted: bool = False
+    reduction_certificate_digest: str | None = None
+    source_original_ppo_edges: int = 0
+    source_reduced_ppo_edges: int = 0
+    target_original_ppo_edges: int = 0
+    target_reduced_ppo_edges: int = 0
+    candidate_edge_count: int = 0
+    relation_counts: dict[str, int] = Field(default_factory=dict)
+    scc_count: int = 0
+    cyclic_scc_count: int = 0
+    largest_scc_node_count: int = 0
+    largest_scc_edge_count: int = 0
+    candidates: tuple[CegarCandidateRecord, ...] = ()
+    profile: CandidateSpaceProfile | None = None
+    ledger: CegarSearchLedger | None = None
+    reasons: tuple[str, ...] = ()
+
+
+class TraceCegarReport(StrictModel):
+    """整条 trace 的 CEGAR 诊断报告，不能改变 trace verdict。"""
+
+    schema_version: str = "trace-cegar-v1"
+    trace_id: str
+    trace_complete: bool
+    analysis_reached_windows: bool
+    diagnostic_only: bool = True
+    windows: tuple[CegarWindowReport, ...] = ()
+    reasons: tuple[str, ...] = ()
+
+
 class CandidateCycleReplay(StrictModel):
     """不信任 local solver producer 的候选环独立 replay 结果。"""
 
@@ -342,6 +490,13 @@ class TraceGraphFirstReport(StrictModel):
     reasons: tuple[str, ...] = ()
 
 
+# These classes are declared before some of the legacy graph-first classes so
+# the shared model file keeps the historical schema order.  Resolve the
+# forward references once every model is available.
+CegarCandidateRecord.model_rebuild()
+CegarWindowReport.model_rebuild()
+
+
 __all__ = [
     "GraphFirstQueryStatus",
     "LocalCycleStatus",
@@ -354,6 +509,14 @@ __all__ = [
     "LocalCycleObligationSet",
     "LocalCycleWitness",
     "CandidateBlockingClause",
+    "CegarSearchStatus",
+    "CanonicalCycleSkeleton",
+    "CandidateSpaceProfile",
+    "CandidateBlockingConstraint",
+    "CegarCandidateRecord",
+    "CegarSearchLedger",
+    "CegarWindowReport",
+    "TraceCegarReport",
     "CandidateCycleReplay",
     "CandidateSearchLedger",
     "GraphFirstLocalQuery",

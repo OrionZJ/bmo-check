@@ -917,3 +917,43 @@ claiming the large workload is solved.
 P11.5 therefore closes the certificate production/replay scalability boundary,
 but it does not make the global solver complete. The reduced SB solver remains a
 bounded shadow experiment, and P12 CEGAR is still a separate reviewed decision.
+
+## P12 bounded CEGAR candidate refinement (diagnostic-only)
+
+P12 adds `cegar-prototype` as a separate shadow route.  It keeps the
+official full-PPO checker, the P8 reduction contract, and all formal verdict
+semantics unchanged.  The route is intentionally unable to emit SAFE,
+TRACE_SAFE, or COUNTEREXAMPLE.
+
+The route records a `CandidateSpaceProfile` before local SMT queries.  It
+counts raw search states, generated and canonical skeletons, duplicate
+skeletons, RF-assignment variants, candidates that differ only in PPO witness
+paths, local queries, semantic blocks, repeated infeasible cores, branching,
+and depth.  `CanonicalCycleSkeleton` rotates a directed cycle to a stable
+identity, keeps RF/FR/CO labels, and omits internal PPO witness paths.
+
+An UNSAT local query can produce a `CandidateBlockingConstraint` only when its
+assumptions pass an independent obligation/domain replay.  TIMEOUT and UNKNOWN
+never create a block.  RF/CO/FR assumptions are semantic subsets, so an
+infeasible combination can prune another PPO-witness variant without merging
+different RF or CO choices.  Every block records the source query digest and
+is retained in the `CegarSearchLedger`.
+
+The ledger exposes four non-verdict states: `COMPLETE`, `INCOMPLETE`,
+`UNKNOWN_REMAINS`, and `TRUNCATED`.  `COMPLETE` means only that the bounded
+candidate generator was exhausted; it is not a SAFE proof.  A replay-accepted
+local feasible candidate is evidence for later investigation, not a formal
+COUNTEREXAMPLE.  The CLI supports independent bounds for search states,
+generated candidates, local queries, local timeout, and symbolic terms:
+
+```text
+bmo-check cegar-prototype TRACE \
+  --output cegar.json \
+  --max-search-states 10000 \
+  --max-local-queries 1000 \
+  --max-generated-candidates 100000
+```
+
+P12 stops at this diagnostic boundary.  A future completeness/CEGAR phase
+must first establish candidate-space coverage and replay all blocking facts
+before any formal checker integration is considered.

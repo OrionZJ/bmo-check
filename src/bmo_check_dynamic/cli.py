@@ -30,6 +30,7 @@ from bmo_check_dynamic.application import (
     ppo_solver_replay as ppo_solver_replay_request,
     ppo_solver_side as ppo_solver_side_request,
     graph_first as graph_first_request,
+    cegar_prototype as cegar_request,
     capture as capture_request,
 )
 from bmo_check_dynamic.capture import CaptureError
@@ -275,6 +276,35 @@ def _graph_first(args: argparse.Namespace) -> int:
     print(report.model_dump_json(indent=2))
     # graph-first 是 bounded shadow diagnosis，永远不把 local SAT/UNSAT
     # 映射成 TRACE_SAFE、COUNTEREXAMPLE 或 UNKNOWN 退出码。
+    return 0
+
+
+def _cegar_prototype(args: argparse.Namespace) -> int:
+    reduction = None
+    if args.reduction_certificate is not None:
+        reduction = TracePpoReductionCertificate.model_validate_json(
+            args.reduction_certificate.read_text(encoding="utf-8")
+        )
+    report = cegar_request(
+        AnalyzeRequest(
+            trace_dir=args.trace,
+            dbt_contract=args.dbt_contract,
+            config=_analysis_config(args),
+        ),
+        reduction,
+        max_cycle_length=args.max_cycle_length,
+        max_search_states=args.max_search_states,
+        max_local_queries=args.max_local_queries,
+        max_generated_candidates=args.max_generated_candidates,
+        local_timeout_ms=args.local_timeout_ms,
+        local_max_symbolic_terms=args.local_max_symbolic_terms,
+        execute_local_solver=not args.encoding_only,
+    )
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(report.model_dump_json(indent=2), encoding="utf-8")
+    print(report.model_dump_json(indent=2))
+    # CEGAR 仍是 bounded diagnostic：即使找到 replay-valid candidate，
+    # 也不能把结果映射为正式 COUNTEREXAMPLE 或 SAFE。
     return 0
 
 
@@ -961,6 +991,44 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_analysis_options(graph_first)
     graph_first.set_defaults(handler=_graph_first)
+
+    cegar = subparsers.add_parser(
+        "cegar-prototype",
+        help="bounded graph-first CEGAR candidate refinement (diagnostic only)",
+    )
+    cegar.add_argument("trace", type=Path)
+    cegar.add_argument("--reduction-certificate", type=Path)
+    cegar.add_argument("--output", type=Path, required=True)
+    cegar.add_argument(
+        "--max-cycle-length", type=int, default=12,
+        help="maximum critical-edge cycle length explored",
+    )
+    cegar.add_argument(
+        "--max-search-states", type=int, default=10_000,
+        help="maximum bounded candidate-search states",
+    )
+    cegar.add_argument(
+        "--max-local-queries", type=int, default=1_000,
+        help="maximum local SMT feasibility queries",
+    )
+    cegar.add_argument(
+        "--max-generated-candidates", type=int, default=100_000,
+        help="maximum raw candidates retained for CEGAR profiling",
+    )
+    cegar.add_argument(
+        "--local-timeout-ms", type=int, default=1_000,
+        help="timeout for each candidate-local shadow SMT query",
+    )
+    cegar.add_argument(
+        "--local-max-symbolic-terms", type=int, default=100_000,
+        help="symbolic-term budget for each candidate-local shadow query",
+    )
+    cegar.add_argument(
+        "--encoding-only", action="store_true",
+        help="build local diagnostic formulas without calling Z3",
+    )
+    _add_analysis_options(cegar)
+    cegar.set_defaults(handler=_cegar_prototype)
 
     ppo_replay = subparsers.add_parser(
         "ppo-replay",

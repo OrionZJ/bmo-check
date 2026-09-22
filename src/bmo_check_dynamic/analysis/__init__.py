@@ -63,6 +63,13 @@ from .graph_first import (
     graph_first_trace,
     replay_candidate_cycle,
 )
+from .cegar import (
+    blocking_constraint_applies,
+    build_blocking_constraint,
+    canonicalize_cycle_skeleton,
+    characterize_cegar_window,
+    replay_blocking_constraint,
+)
 from .solver_benchmark import run_isolated_solver_benchmark
 from .window_diagnostics import (
     WindowCharacterizationReport,
@@ -127,6 +134,11 @@ __all__ = [
     "characterize_graph_first_window",
     "graph_first_trace",
     "replay_candidate_cycle",
+    "canonicalize_cycle_skeleton",
+    "build_blocking_constraint",
+    "blocking_constraint_applies",
+    "characterize_cegar_window",
+    "replay_blocking_constraint",
     "build_trace_coverage",
     "coverage_state",
     "digest_edges",
