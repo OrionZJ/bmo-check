@@ -803,3 +803,117 @@ peak RSS and wall time
 No such bounded diagnostic result can create a certificate or a formal
 verdict. P11 is complete only as the graph-first/replayable shadow boundary;
 CEGAR and complete candidate-space coverage remain P12 work.
+
+## P11.5 PPO certificate generation and replay scalability
+
+P11.5 keeps the P8 reduction contract and official full-PPO checker unchanged.
+It adds a `ppo-certificate-profile` diagnostic route, a deterministic
+`PpoReachabilityIndex`, shared witness-path/hash construction, and a separate
+non-trusted cache artifact. A cache is usable only after the current graph is
+bound to the cache key and the existing independent replay accepts the cached
+certificate. A cache miss, stale key, corrupt JSON/digest, or replay mismatch
+is never treated as a reduction success.
+
+The cache key binds:
+
+```text
+trace digest
+window digest
+event-set digest
+source PPO digest
+target PPO digest
+DBT contract digest
+reduction algorithm version
+required-pair inventory digest
+PPO semantic contract digest
+```
+
+The current algorithm version includes the shared witness index, so certificates
+created by the pre-index witness strategy cannot be silently reused.
+
+### Frozen large-SB stage profile
+
+The profile was run on the same complete 3,720-event SB window used by P9--P11
+with a bounded 300-second external limit. The resulting certificate and its
+independent replay both had `accepted=true`.
+
+| stage | wall time |
+| --- | ---: |
+| window reconstruction (actual `build_windows`) | 6.73 s |
+| full PPO generation | 1.05 s |
+| reduced PPO computation | 6.35 s |
+| required reachability inventories | 11.94 s |
+| witness generation (before shared index) | 74.81 s |
+| witness generation (shared index, final run) | 37.03 s |
+| digest/serialization | 0.26 s |
+| independent replay (before shared index) | 59.11 s |
+| independent replay (shared index, final run) | 15.44 s |
+
+The final profiled process peak RSS was about 331 MiB. Stage RSS fields report
+that cumulative process peak (not an additive per-stage allocation), so they
+must not be summed.
+
+The optimized run produced the same graph sizes as P8/P9:
+
+```text
+events                 3720
+source PPO             59060
+target PPO             55418
+replay                 accepted
+witness records        103389
+logical witness nodes  99815233
+```
+
+The logical path-node count remains high because the certificate still binds a
+digest and length for every removed edge. The improvement comes from traversing
+each source's reduced graph once and sharing parent/hash state across its target
+edges; it does not delete events or weaken witness checking. The replay uses a
+fresh index and recomputes the same path digest/length, rather than trusting the
+producer's index or cache.
+
+The profile also records repeated inventory queries. On the large window the
+required-inventory stage observed 13,720,724 repeated source queries and
+7,001,188 repeated pair queries; these are characterization data, not a license
+to omit inventory entries. They identify the next possible optimization target
+after the witness bottleneck.
+
+### Cache and reproduction commands
+
+Cold generation can save one cache file per window:
+
+```text
+bmo-check ppo-certificate-profile TRACE \
+  --dbt-contract specs/dynamic/dbt6-mo-off.yaml \
+  --max-window-events 100000 \
+  --cache-dir .experiments/ppo-cache \
+  --output profile-cold.json
+```
+
+Repeating the command reports `cache_status=hit` only after binding checks and
+independent replay. `miss`, `stale`, and `corrupt` statuses remain explicit in
+the report. The cache files and large profile JSON are experiment artifacts and
+are not versioned.
+
+On the frozen large SB, the warm run reported `cache_status=hit`, the same
+certificate digest, and `replay_accepted=true`; its `stages` array is empty by
+design because generation was skipped, while the cache loader still ran the
+independent replay. A bounded `cycle-prototype` launched from that replayed
+certificate reached the real 3,720-node may graph:
+
+```text
+may graph edges       11433 (source PPO 3728, RF 3736, FR 3817, CO 152)
+SCCs / cyclic SCCs    1 / 1
+largest SCC            3720 nodes / 11433 edges
+search states          10000 (configured bound)
+candidate cycles       0 returned; search_truncated=true
+formal verdict         none
+```
+
+The zero returned candidates is an incomplete bounded search, not a SAFE or
+counterexample result. It confirms that a replayed certificate can now start
+P11 graph-first analysis reproducibly; it does not justify entering P12 or
+claiming the large workload is solved.
+
+P11.5 therefore closes the certificate production/replay scalability boundary,
+but it does not make the global solver complete. The reduced SB solver remains a
+bounded shadow experiment, and P12 CEGAR is still a separate reviewed decision.

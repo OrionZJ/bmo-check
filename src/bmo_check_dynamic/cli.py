@@ -24,6 +24,7 @@ from bmo_check_dynamic.application import (
     obligation_bottleneck as obligation_bottleneck_request,
     cycle_relevance as cycle_relevance_request,
     ppo_reduction as ppo_reduction_request,
+    ppo_certificate_profile as ppo_certificate_profile_request,
     ppo_replay as ppo_replay_request,
     ppo_solver as ppo_solver_request,
     ppo_solver_replay as ppo_solver_replay_request,
@@ -230,6 +231,21 @@ def _ppo_reduction(args: argparse.Namespace) -> int:
             certificate.model_dump_json(indent=2),
             encoding="utf-8",
         )
+    print(report.model_dump_json(indent=2))
+    return 0
+
+
+def _ppo_certificate_profile(args: argparse.Namespace) -> int:
+    report = ppo_certificate_profile_request(
+        AnalyzeRequest(
+            trace_dir=args.trace,
+            dbt_contract=args.dbt_contract,
+            config=_analysis_config(args),
+        ),
+        cache_dir=args.cache_dir,
+    )
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(report.model_dump_json(indent=2), encoding="utf-8")
     print(report.model_dump_json(indent=2))
     return 0
 
@@ -897,6 +913,20 @@ def build_parser() -> argparse.ArgumentParser:
     ppo_reduction.add_argument("--certificate", type=Path)
     _add_analysis_options(ppo_reduction)
     ppo_reduction.set_defaults(handler=_ppo_reduction)
+
+    ppo_certificate_profile = subparsers.add_parser(
+        "ppo-certificate-profile",
+        help="profile PPO certificate generation and independent replay stages",
+    )
+    ppo_certificate_profile.add_argument("trace", type=Path)
+    ppo_certificate_profile.add_argument("--output", type=Path, required=True)
+    ppo_certificate_profile.add_argument(
+        "--cache-dir",
+        type=Path,
+        help="optional per-window certificate cache directory; every load still replays independently",
+    )
+    _add_analysis_options(ppo_certificate_profile)
+    ppo_certificate_profile.set_defaults(handler=_ppo_certificate_profile)
 
     graph_first = subparsers.add_parser(
         "cycle-prototype",

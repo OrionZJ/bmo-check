@@ -32,12 +32,21 @@ from .obligation_bottleneck import characterize_obligation_bottleneck
 from .cycle_relevance import characterize_cycle_relevance
 from .ppo_reduction import (
     PpoGraphInput,
+    PpoReachabilityIndex,
     build_ppo_graph_input,
     build_ppo_reduction,
     build_ppo_reduction_certificate,
+    profile_ppo_reduction_window,
+    build_profiled_ppo_reduction_window,
     ppo_semantic_contract,
     ppo_certificate_digest,
     replay_ppo_reduction,
+)
+from .ppo_cache import (
+    REDUCTION_ALGORITHM_VERSION,
+    load_ppo_certificate_cache,
+    ppo_certificate_cache_key,
+    save_ppo_certificate_cache,
 )
 from .shadow_solver import (
     build_shadow_solver_comparison,
@@ -93,12 +102,19 @@ __all__ = [
     "characterize_obligation_bottleneck",
     "characterize_cycle_relevance",
     "PpoGraphInput",
+    "PpoReachabilityIndex",
     "build_ppo_graph_input",
     "build_ppo_reduction",
     "build_ppo_reduction_certificate",
+    "profile_ppo_reduction_window",
+    "build_profiled_ppo_reduction_window",
     "ppo_semantic_contract",
     "ppo_certificate_digest",
     "replay_ppo_reduction",
+    "REDUCTION_ALGORITHM_VERSION",
+    "ppo_certificate_cache_key",
+    "save_ppo_certificate_cache",
+    "load_ppo_certificate_cache",
     "build_shadow_solver_comparison",
     "build_shadow_solver_run",
     "build_solver_certificate",

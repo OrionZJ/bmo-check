@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import model_validator
 
@@ -226,6 +227,94 @@ class PpoReductionReplay(StrictModel):
     reasons: tuple[str, ...] = ()
 
 
+class PpoCertificateStage(StrEnum):
+    """证书生成/重放的可观测阶段；只描述成本，不改变证明语义。"""
+
+    WINDOW_RECONSTRUCTION = "window_reconstruction"
+    FULL_PPO_GENERATION = "full_ppo_generation"
+    REDUCED_PPO_COMPUTATION = "reduced_ppo_computation"
+    REQUIRED_REACHABILITY_INVENTORY = "required_reachability_inventory"
+    WITNESS_GENERATION = "witness_generation"
+    DIGEST_SERIALIZATION = "digest_serialization"
+    INDEPENDENT_REPLAY = "independent_replay"
+
+
+class PpoCertificateStageMetrics(StrictModel):
+    """单阶段成本与遍历计数；峰值 RSS 是进程内累计峰值。"""
+
+    stage: PpoCertificateStage
+    invocation_count: int = 0
+    wall_time_ms: float = 0.0
+    cpu_time_ms: float = 0.0
+    peak_rss_mb: float | None = None
+    input_node_count: int = 0
+    output_node_count: int = 0
+    input_edge_count: int = 0
+    output_edge_count: int = 0
+    graph_traversal_count: int = 0
+    visited_node_count: int = 0
+    visited_edge_count: int = 0
+    duplicate_source_query_count: int = 0
+    duplicate_pair_query_count: int = 0
+    witness_count: int = 0
+    witness_path_node_count: int = 0
+    reachability_pair_count: int = 0
+
+
+class PpoCertificateCacheKey(StrictModel):
+    """缓存只在所有影响证明的输入身份完全相同的时候可复用。"""
+
+    schema_version: str = "ppo-certificate-cache-key-v1"
+    trace_digest: str
+    window_digest: str
+    event_set_digest: str
+    source_ppo_digest: str
+    target_ppo_digest: str
+    dbt_contract_digest: str
+    reduction_algorithm_version: str = "ppo-reduction-v1-witness-index-v1"
+    required_pair_inventory_digest: str
+    ppo_contract_digest: str
+
+
+class PpoCertificateGenerationReport(StrictModel):
+    """证书 producer/replay 的分阶段表征；永远不产生正式 verdict。"""
+
+    schema_version: str = "ppo-certificate-generation-v1"
+    window_id: str
+    event_count: int
+    source_ppo_edge_count: int
+    target_ppo_edge_count: int
+    certificate_digest: str = ""
+    replay_accepted: bool = False
+    replay_reasons: tuple[str, ...] = ()
+    stages: tuple[PpoCertificateStageMetrics, ...] = ()
+    cache_key: PpoCertificateCacheKey | None = None
+    cache_status: Literal["not_requested", "miss", "hit", "stale", "corrupt"] = (
+        "not_requested"
+    )
+    cache_reasons: tuple[str, ...] = ()
+
+
+class PpoCertificateCacheArtifact(StrictModel):
+    """磁盘缓存的非可信副本；读取后必须再次独立 replay。"""
+
+    schema_version: str = "ppo-certificate-cache-v1"
+    cache_key: PpoCertificateCacheKey
+    certificate: PpoReductionCertificate
+    replay: PpoReductionReplay
+    artifact_digest: str
+
+
+class PpoCertificateCacheLoad(StrictModel):
+    """缓存读取状态，避免 miss/stale/corrupt 被误当成命中。"""
+
+    schema_version: str = "ppo-certificate-cache-load-v1"
+    status: Literal["hit", "miss", "stale", "corrupt"]
+    reasons: tuple[str, ...] = ()
+    certificate: PpoReductionCertificate | None = None
+    replay: PpoReductionReplay | None = None
+
+
 class PpoShadowComparison(StrictModel):
     """full/reduced encoding 的只读估计；不送入 checker。"""
 
@@ -271,6 +360,18 @@ class TracePpoReductionReplayReport(StrictModel):
     reasons: tuple[str, ...] = ()
 
 
+class TracePpoCertificateGenerationReport(StrictModel):
+    """整条 trace 的 certificate profiling；每个窗口仍单独绑定和 replay。"""
+
+    schema_version: str = "trace-ppo-certificate-generation-v1"
+    trace_id: str
+    trace_complete: bool
+    analysis_reached_windows: bool
+    window_reconstruction_time_ms: float | None = None
+    windows: tuple[PpoCertificateGenerationReport, ...] = ()
+    reasons: tuple[str, ...] = ()
+
+
 __all__ = [
     "PpoSide",
     "SourcePpoSemantics",
@@ -284,9 +385,16 @@ __all__ = [
     "PpoSideReduction",
     "PpoReductionCertificate",
     "PpoReductionReplay",
+    "PpoCertificateStage",
+    "PpoCertificateStageMetrics",
+    "PpoCertificateCacheKey",
+    "PpoCertificateGenerationReport",
+    "PpoCertificateCacheArtifact",
+    "PpoCertificateCacheLoad",
     "PpoShadowComparison",
     "PpoReductionWindowReport",
     "TracePpoReductionReport",
     "TracePpoReductionCertificate",
     "TracePpoReductionReplayReport",
+    "TracePpoCertificateGenerationReport",
 ]

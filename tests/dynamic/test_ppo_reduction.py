@@ -13,6 +13,9 @@ from bmo_check_dynamic.analysis import (
     build_ppo_graph_input,
     build_ppo_reduction,
     build_ppo_reduction_certificate,
+    profile_ppo_reduction_window,
+    load_ppo_certificate_cache,
+    save_ppo_certificate_cache,
     build_shadow_solver_comparison,
     run_isolated_solver_benchmark,
     build_solver_certificate,
@@ -83,6 +86,86 @@ def test_chain_reduction_has_replayable_witness() -> None:
         "t1:e3",
     )
     assert certificate.source.missing_pairs.pair_count == 0
+
+
+def test_ppo_profile_is_deterministic_and_reports_traversals() -> None:
+    events = _events(EventKind.LOAD, EventKind.LOAD, EventKind.LOAD)
+    edges = {("t1:e1", "t1:e2"), ("t1:e2", "t1:e3"), ("t1:e1", "t1:e3")}
+    window = AnalysisWindow(
+        "profile-fixture",
+        events,
+        (CommunicationEdge("t1:e1", "t1:e3", 0x1000, 4),),
+    )
+
+    first = profile_ppo_reduction_window(window)
+    second = profile_ppo_reduction_window(window)
+
+    assert first.replay_accepted is True
+    assert first.certificate_digest == second.certificate_digest
+    first_stage_shape = [
+        item.model_copy(update={"wall_time_ms": 0.0, "cpu_time_ms": 0.0, "peak_rss_mb": None})
+        for item in first.stages
+    ]
+    second_stage_shape = [
+        item.model_copy(update={"wall_time_ms": 0.0, "cpu_time_ms": 0.0, "peak_rss_mb": None})
+        for item in second.stages
+    ]
+    assert first_stage_shape == second_stage_shape
+    stages = {item.stage.value: item for item in first.stages}
+    assert "full_ppo_generation" in stages
+    assert "reduced_ppo_computation" in stages
+    assert "required_reachability_inventory" in stages
+    assert "witness_generation" in stages
+    assert stages["required_reachability_inventory"].graph_traversal_count > 0
+    assert stages["required_reachability_inventory"].visited_node_count > 0
+
+
+def test_ppo_certificate_cache_requires_binding_and_replay(tmp_path: Path) -> None:
+    events = _events(EventKind.LOAD, EventKind.LOAD, EventKind.LOAD)
+    edges = {("t1:e1", "t1:e2"), ("t1:e2", "t1:e3"), ("t1:e1", "t1:e3")}
+    graph = _graph(events, edges, edges, {"t1:e1", "t1:e3"})
+    certificate, replay = build_ppo_reduction_certificate(graph)
+    cache = tmp_path / "ppo-cache.json"
+
+    save_ppo_certificate_cache(
+        cache,
+        graph,
+        certificate,
+        replay,
+        trace_digest="trace-a",
+        window_digest="window-a",
+        dbt_contract_digest="contract-a",
+    )
+    hit = load_ppo_certificate_cache(
+        cache,
+        graph,
+        trace_digest="trace-a",
+        window_digest="window-a",
+        dbt_contract_digest="contract-a",
+    )
+    assert hit.status == "hit"
+    assert hit.replay is not None and hit.replay.accepted is True
+
+    stale = load_ppo_certificate_cache(
+        cache,
+        graph,
+        trace_digest="trace-b",
+        window_digest="window-a",
+        dbt_contract_digest="contract-a",
+    )
+    assert stale.status == "stale"
+
+    payload = json.loads(cache.read_text(encoding="utf-8"))
+    payload["certificate"]["source"]["removed_edges"][0]["source_event"] = "t1:e2"
+    cache.write_text(json.dumps(payload), encoding="utf-8")
+    corrupt = load_ppo_certificate_cache(
+        cache,
+        graph,
+        trace_digest="trace-a",
+        window_digest="window-a",
+        dbt_contract_digest="contract-a",
+    )
+    assert corrupt.status in {"stale", "corrupt"}
 
 
 def test_replay_rejects_tampered_witness() -> None:
@@ -277,6 +360,25 @@ def test_ppo_cli_writes_certificate_and_replays_without_check_window(
         "trace-ppo-reduction-v1"
     )
     assert certificate.is_file()
+
+    profile_output = tmp_path / "ppo-profile.json"
+    assert main(
+        [
+            "ppo-certificate-profile",
+            str(trace_dir),
+            "--dbt-contract",
+            str(contract),
+            "--output",
+            str(profile_output),
+        ]
+    ) == 0
+    profile_payload = json.loads(profile_output.read_text(encoding="utf-8"))
+    assert profile_payload["schema_version"] == "trace-ppo-certificate-generation-v1"
+    assert profile_payload["windows"][0]["replay_accepted"] is True
+    assert {item["stage"] for item in profile_payload["windows"][0]["stages"]} >= {
+        "full_ppo_generation",
+        "independent_replay",
+    }
 
     replay_output = tmp_path / "ppo-replay.json"
     assert main(

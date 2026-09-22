@@ -24,6 +24,7 @@ from bmo_check_dynamic.model import (
     TracePpoReductionCertificate,
     TracePpoReductionReport,
     TracePpoReductionReplayReport,
+    TracePpoCertificateGenerationReport,
     TraceReducedSolverRunCertificate,
     TraceShadowSolverReport,
     TraceSolverReplayReport,
@@ -39,6 +40,7 @@ from bmo_check_dynamic.pipeline import (
     obligation_bottleneck_trace,
     cycle_relevance_trace,
     ppo_reduction_trace,
+    ppo_certificate_profile_trace,
     ppo_replay_trace,
     ppo_solver_trace,
     ppo_solver_replay_trace,
@@ -182,6 +184,21 @@ def ppo_reduction(request: AnalyzeRequest) -> TracePpoReductionReport:
     )
 
 
+def ppo_certificate_profile(
+    request: AnalyzeRequest,
+    *,
+    cache_dir: Path | None = None,
+) -> TracePpoCertificateGenerationReport:
+    """表征证书生成/重放成本，不改变 reduction 或正式 verdict。"""
+
+    return ppo_certificate_profile_trace(
+        request.trace_dir,
+        dbt_contract=request.dbt_contract,
+        config=request.config,
+        cache_dir=cache_dir,
+    )
+
+
 def ppo_replay(
     request: AnalyzeRequest,
     certificate: TracePpoReductionCertificate,
@@ -294,6 +311,7 @@ __all__ = [
     "obligation_bottleneck",
     "cycle_relevance",
     "ppo_reduction",
+    "ppo_certificate_profile",
     "ppo_replay",
     "ppo_solver",
     "ppo_solver_replay",

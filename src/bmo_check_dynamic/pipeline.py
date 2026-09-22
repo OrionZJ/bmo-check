@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import tempfile
+import time
 from dataclasses import fields
 from collections.abc import Callable
 from itertools import chain
@@ -34,12 +35,14 @@ from bmo_check_dynamic.analysis import (
     build_ppo_graph_input,
     build_ppo_reduction,
     build_ppo_reduction_certificate,
+    build_profiled_ppo_reduction_window,
     replay_ppo_reduction,
     build_shadow_solver_comparison,
     build_shadow_solver_run,
     build_solver_certificate,
     replay_solver_certificate,
     characterize_graph_first_window,
+    window_digest,
 )
 from bmo_check_dynamic.analysis.coverage import build_trace_coverage
 from bmo_check_dynamic.config import DynamicConfig
@@ -60,6 +63,8 @@ from bmo_check_dynamic.model import (
     PpoReductionReplay,
     TracePpoReductionReport,
     TracePpoReductionReplayReport,
+    TracePpoCertificateGenerationReport,
+    PpoCertificateGenerationReport,
     ReducedSolverRunCertificate,
     ShadowSolverComparison,
     TraceReducedSolverRunCertificate,
@@ -128,6 +133,14 @@ class _PpoReductionInspectionComplete(Exception):
 
     def __init__(self, report: TracePpoReductionReport) -> None:
         super().__init__("PPO reduction inspection completed")
+        self.report = report
+
+
+class _PpoCertificateProfileInspectionComplete(Exception):
+    """certificate profiling 完成后跳过正式 proof。"""
+
+    def __init__(self, report: TracePpoCertificateGenerationReport) -> None:
+        super().__init__("PPO certificate profiling completed")
         self.report = report
 
 
@@ -209,6 +222,7 @@ def analyze_trace(
     dbt_contract: Path,
     config: DynamicConfig | None = None,
     _window_observer: Callable[..., None] | None = None,
+    _window_reconstruction_sink: list[float] | None = None,
 ) -> DynamicCertificate:
     config = config or DynamicConfig()
     config.validate()
@@ -521,9 +535,14 @@ def analyze_trace(
                 # biconnected graph，避免“已知失败”先变成内存峰值。
                 windows, window_unknowns = (), ()
             else:
+                window_started = time.perf_counter()
                 windows, window_unknowns = build_windows(
                     store, edges, max_events=config.max_window_events
                 )
+                if _window_reconstruction_sink is not None:
+                    _window_reconstruction_sink.append(
+                        (time.perf_counter() - window_started) * 1000.0
+                    )
             unknowns.extend(window_unknowns)
             if _window_observer is not None:
                 # 诊断观察必须发生在同一条 pipeline、同一个完整窗口集合上；
@@ -927,6 +946,131 @@ def ppo_reduction_trace(
         trace_id=certificate.scope.trace_ids[0],
         trace_complete=certificate.trace_complete,
         analysis_reached_windows=False,
+        reasons=certificate.unknown_reasons,
+    )
+
+
+def ppo_certificate_profile_trace(
+    trace_dir: Path,
+    *,
+    dbt_contract: Path,
+    config: DynamicConfig | None = None,
+    cache_dir: Path | None = None,
+) -> TracePpoCertificateGenerationReport:
+    """表征 certificate producer/replay 阶段，不把结果送入正式 checker。"""
+
+    window_reconstruction: list[float] = []
+    trace_sha = trace_digest(trace_dir)
+    contract_sha = _file_digest(dbt_contract)
+
+    def inspect(
+        manifest: TraceManifest,
+        validation: object,
+        stored_event_count: int,
+        scan_stats: CommunicationScanStats,
+        edges: CompactCommunicationEdges | tuple[CommunicationEdge, ...],
+        windows: tuple[object, ...],
+        window_unknowns: tuple[str, ...],
+    ) -> None:
+        del stored_event_count, scan_stats, edges
+        profiled: list[PpoCertificateGenerationReport] = []
+        for window in windows:
+            cache_status = "not_requested"
+            cache_reasons: tuple[str, ...] = ()
+            cache_path = cache_dir / f"{window.window_id}.json" if cache_dir else None
+            if cache_path is not None:
+                from bmo_check_dynamic.analysis.ppo_cache import (
+                    load_ppo_certificate_cache,
+                    ppo_certificate_cache_key,
+                )
+
+                cache_path.parent.mkdir(parents=True, exist_ok=True)
+                graph_for_cache = build_ppo_graph_input(window)
+                loaded = load_ppo_certificate_cache(
+                    cache_path,
+                    graph_for_cache,
+                    trace_digest=trace_sha,
+                    window_digest=window_digest(window),
+                    dbt_contract_digest=contract_sha,
+                )
+                cache_status = loaded.status
+                cache_reasons = loaded.reasons
+                if loaded.status == "hit" and loaded.certificate is not None:
+                    cache_key = ppo_certificate_cache_key(
+                        graph_for_cache,
+                        loaded.certificate,
+                        trace_digest=trace_sha,
+                        window_digest=window_digest(window),
+                        dbt_contract_digest=contract_sha,
+                    )
+                    profiled.append(
+                        PpoCertificateGenerationReport(
+                            window_id=window.window_id,
+                            event_count=len(graph_for_cache.events),
+                            source_ppo_edge_count=len(graph_for_cache.source_edges),
+                            target_ppo_edge_count=len(graph_for_cache.target_edges),
+                            certificate_digest=loaded.certificate.proof_digest,
+                            replay_accepted=bool(loaded.replay and loaded.replay.accepted),
+                            replay_reasons=loaded.replay.reasons if loaded.replay else (),
+                            cache_key=cache_key,
+                            cache_status="hit",
+                        )
+                    )
+                    continue
+            item = build_profiled_ppo_reduction_window(
+                window,
+                trace_digest=trace_sha,
+                window_digest=window_digest(window),
+                dbt_contract_digest=contract_sha,
+            )
+            if cache_path is not None:
+                from bmo_check_dynamic.analysis.ppo_cache import save_ppo_certificate_cache
+
+                save_ppo_certificate_cache(
+                    cache_path,
+                    item[1],
+                    item[2],
+                    item[3],
+                    trace_digest=trace_sha,
+                    window_digest=window_digest(window),
+                    dbt_contract_digest=contract_sha,
+                )
+            profiled.append(
+                item[0].model_copy(
+                    update={
+                        "cache_status": cache_status,
+                        "cache_reasons": cache_reasons,
+                    }
+                )
+            )
+        report = TracePpoCertificateGenerationReport(
+            trace_id=manifest.trace_id,
+            trace_complete=bool(getattr(validation, "structurally_complete", False)),
+            analysis_reached_windows=True,
+            window_reconstruction_time_ms=(
+                sum(window_reconstruction) if window_reconstruction else None
+            ),
+            windows=tuple(profiled),
+            reasons=tuple(window_unknowns),
+        )
+        raise _PpoCertificateProfileInspectionComplete(report)
+
+    try:
+        certificate = analyze_trace(
+            trace_dir,
+            dbt_contract=dbt_contract,
+            config=config,
+            _window_observer=inspect,
+            _window_reconstruction_sink=window_reconstruction,
+        )
+    except _PpoCertificateProfileInspectionComplete as complete:
+        return complete.report
+
+    return TracePpoCertificateGenerationReport(
+        trace_id=certificate.scope.trace_ids[0],
+        trace_complete=certificate.trace_complete,
+        analysis_reached_windows=False,
+        windows=(),
         reasons=certificate.unknown_reasons,
     )
 
