@@ -403,6 +403,55 @@ def test_p15_complete_candidate_set_matches_p14_on_small_fixture() -> None:
     assert p15_ids == p14_ids
 
 
+def test_p15_checkpoint_binding_rejects_other_window(tmp_path) -> None:
+    window = _lb_window()
+    graph = build_ppo_graph_input(window)
+    certificate, replay = build_ppo_reduction_certificate(graph)
+    assert replay.accepted
+    checkpoint = tmp_path / "bound.json"
+    compare_cegar_modes(
+        window,
+        fixture="synthetic-lb-bound",
+        reduction_certificate=certificate,
+        max_cycle_length=6,
+        max_search_states=1,
+        max_local_queries=4,
+        execute_local_solver=False,
+        only_mode=CegarExperimentMode.STRUCTURED_P15,
+        discovery_only=True,
+        discovery_resource_policy=CandidateDiscoveryResourcePolicy(
+            max_in_memory_frontier=4,
+            max_search_states=1,
+            checkpoint_path=str(checkpoint),
+        ),
+    )
+    other = AnalysisWindow("different-window", window.events, ())
+    other_certificate, other_replay = build_ppo_reduction_certificate(
+        build_ppo_graph_input(other)
+    )
+    assert other_replay.accepted
+    try:
+        compare_cegar_modes(
+            other,
+            fixture="synthetic-lb-bound-other",
+            reduction_certificate=other_certificate,
+            max_cycle_length=6,
+            max_search_states=10,
+            max_local_queries=4,
+            execute_local_solver=False,
+            only_mode=CegarExperimentMode.STRUCTURED_P15,
+            discovery_only=True,
+            discovery_resource_policy=CandidateDiscoveryResourcePolicy(
+                max_in_memory_frontier=4,
+                resume_checkpoint=str(checkpoint),
+            ),
+        )
+    except ValueError as error:
+        assert "binding mismatch" in str(error)
+    else:
+        raise AssertionError("checkpoint from another window was accepted")
+
+
 def test_p13_independent_coverage_is_complete_on_small_fixture() -> None:
     window = _lb_window()
     graph = build_ppo_graph_input(window)
