@@ -74,6 +74,7 @@ class CegarModeMetrics(StrictModel):
     not_run: int = 0
     replay_accepted: int = 0
     replay_rejected: int = 0
+    replay_reasons: tuple[str, ...] = ()
     blocked: int = 0
     invalid_blocks: int = 0
     search_truncated: bool = False

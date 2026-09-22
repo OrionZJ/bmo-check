@@ -127,6 +127,16 @@ def _p11_metrics(report, prepared: _PreparedCertificate, started: float) -> Cega
         record.replay is not None and record.replay.status.value == "rejected"
         for record in records
     )
+    replay_reasons = tuple(
+        sorted(
+            {
+                reason
+                for record in records
+                if record.replay is not None
+                for reason in record.replay.reasons
+            }
+        )
+    )
     search_ms = int((time.perf_counter() - started) * 1000)
     return CegarModeMetrics(
         mode=CegarExperimentMode.RAW_P11,
@@ -155,6 +165,7 @@ def _p11_metrics(report, prepared: _PreparedCertificate, started: float) -> Cega
         not_run=not_run,
         replay_accepted=replay_accepted,
         replay_rejected=replay_rejected,
+        replay_reasons=replay_reasons,
         blocked=0,
         status=("TRUNCATED" if report.truncated else "COMPLETE"),
         search_truncated=report.truncated,
@@ -190,6 +201,16 @@ def _p12_metrics(report, mode: CegarExperimentMode, prepared: _PreparedCertifica
         record.replay is not None and record.replay.status.value == "rejected"
         for record in records
     )
+    replay_reasons = tuple(
+        sorted(
+            {
+                reason
+                for record in records
+                if record.replay is not None
+                for reason in record.replay.reasons
+            }
+        )
+    )
     return CegarModeMetrics(
         mode=mode,
         certificate_prepare_ms=prepared.prepare_ms,
@@ -219,6 +240,7 @@ def _p12_metrics(report, mode: CegarExperimentMode, prepared: _PreparedCertifica
         not_run=not_run,
         replay_accepted=replay_accepted,
         replay_rejected=replay_rejected,
+        replay_reasons=replay_reasons,
         blocked=ledger.pruned_by_block_count if ledger else 0,
         invalid_blocks=invalid_blocks,
         search_truncated=profile.search_truncated if profile else False,
