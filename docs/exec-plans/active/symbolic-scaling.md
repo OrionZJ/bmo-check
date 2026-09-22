@@ -705,3 +705,101 @@ P10 stops here for review. The next decision is whether to prototype a
    formally replayable graph-first/CEGAR refinement algorithm; it must retain
    the full proof path as the reference and must not turn a bounded candidate
    search into SAFE.
+
+## P11 graph-guided candidate cycles and local feasibility shadow
+
+P11 is implemented as a diagnostic-only prototype. It does not replace the
+official full-PPO checker, does not alter `SAFE`, `TRACE_SAFE`,
+`COUNTEREXAMPLE` or `UNKNOWN`, and never treats a bounded search that found no
+cycle as evidence of safety.
+
+### Candidate and may-graph contracts
+
+`CandidateViolationCycle` is deliberately narrower than an arbitrary graph
+cycle. A candidate must contain at least one source PPO reachability summary
+and one conditional memory relation (`rf`, `fr` or `coherence`). The PPO part
+is represented by a witness path in the certified reduced source graph; the
+conditional part retains stable relation labels. A cycle made only of
+conditional relations is not emitted because it would be present on both
+source and target sides and cannot express a source/target ordering
+difference.
+
+`MayViolationGraphContract` defines the over-approximation used by P11:
+
+```text
+source reduced PPO (must reachability)
+    + cross-thread RF candidates
+    + FR candidates
+    + overlapping-write CO candidates
+```
+
+Parallel labels with the same topology edge are collapsed only for bounded
+graph traversal; all labels are retained in the edge and the local RF domain.
+Same-thread RF is omitted for the same reason it is omitted from the existing
+symbolic conditional-edge builder: it is not a cross-thread communication
+edge in this checker. A missing candidate relation is therefore an
+`UNKNOWN`/replay failure, not a negative proof.
+
+PPO reachability is queried lazily by `_ReachabilityOracle`. The search first
+localizes SCCs, then alternates conditional edges with certified PPO paths.
+It never materializes the all-pairs PPO closure and never enumerates all
+simple cycles. Search limits are recorded in `CandidateSearchLedger`; when a
+limit is reached `not_explored_count` remains `null` and `search_truncated`
+is true. Encoding-only runs record `not_run_count` separately from local
+`UNKNOWN`, so an intentionally unstarted query is never reported as an
+infeasible candidate.
+
+### Local obligations and independent replay
+
+For every candidate, `LocalCycleObligationSet` records:
+
+* selected RF labels and the complete RF candidate domain for each selected
+  read;
+* required FR and CO labels;
+* every PPO witness path;
+* fence/RMW/FUTEX boundary events;
+* whether the RF exactly-one domain was retained.
+
+The local shadow encoder receives required source endpoints for both PPO and
+conditional edges. Its result is only `FEASIBLE`, `INFEASIBLE` or `UNKNOWN`
+inside `GraphFirstLocalQuery`; these labels are not verifier verdicts.
+
+`replay_candidate_cycle` is an independent consumer. It replays the PPO
+certificate, checks the source/target bindings, verifies witness paths and
+cycle closure, checks RF candidate identity and exactly-one coverage, derives
+FR from the selected RF plus the witness CO order, validates CO acyclicity,
+and checks target acyclicity. A producer-supplied witness or domain that does
+not pass those checks is rejected. A local `UNSAT` creates only an exact
+candidate blocking record; it does not remove other candidates.
+
+### Small-corpus validation
+
+The synthetic LB fixture now exercises a source-only PPO cycle. The local
+query returns `FEASIBLE` and independent replay returns `accepted`, while the
+report remains `diagnostic_only`. Additional tests tamper with a PPO witness
+and with the RF domain; both are rejected by the independent consumer.
+
+On the complete small captured SB trace, a fresh certificate-bound run with
+two candidates produced one may graph of 110 events and 608 topology edges,
+one cyclic SCC, and two bounded local candidates. Both candidates were
+reported `INFEASIBLE` within the local budget and therefore had no witness;
+the ledger records this as local candidate elimination, not `SAFE`.
+
+### Large-workload boundary
+
+The frozen large SB window is only a bounded experiment target for P11. The
+first implementation records may-graph/SCC/candidate-search statistics and
+uses per-candidate local time and term budgets. It does not run an unbounded
+cycle enumeration or unbounded Z3 query. A future large run must report:
+
+```text
+may graph nodes/edges and SCCs
+generated skeletons and search truncation
+local FEASIBLE/INFEASIBLE/UNKNOWN counts
+replay acceptance count
+peak RSS and wall time
+```
+
+No such bounded diagnostic result can create a certificate or a formal
+verdict. P11 is complete only as the graph-first/replayable shadow boundary;
+CEGAR and complete candidate-space coverage remain P12 work.

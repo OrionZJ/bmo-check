@@ -22,6 +22,22 @@ class GraphFirstQueryStatus(StrEnum):
     REJECTED = "rejected"
 
 
+class LocalCycleStatus(StrEnum):
+    """局部环可满足性状态；不等价于任何全窗口 verdict。"""
+
+    FEASIBLE = "FEASIBLE"
+    INFEASIBLE = "INFEASIBLE"
+    UNKNOWN = "UNKNOWN"
+
+
+class CandidateCycleReplayStatus(StrEnum):
+    """独立 replay 对候选环的接受状态。"""
+
+    ACCEPTED = "accepted"
+    REJECTED = "rejected"
+    NOT_RUN = "not_run"
+
+
 class GraphFirstEdge(StrictModel):
     """候选坏环中的一条带关系族标签的边。"""
 
@@ -33,6 +49,157 @@ class GraphFirstEdge(StrictModel):
     relation_kind: str
     # 用于回到候选域的稳定关系标识。
     relation_id: str
+    # 同端点同关系族的所有候选标签；不能因图搜索去重而丢失候选域。
+    relation_ids: tuple[str, ...] = ()
+    # source/target 侧；PPO_REACHABILITY 表示两侧均需 replay。
+    side: str = "source"
+    # RF/FR/CO 是条件边，PPO_REACHABILITY 是已证明的 reachability。
+    conditional: bool = False
+    # PPO 摘要边的原始 reduced-graph witness path。
+    witness_path: tuple[str, ...] = ()
+
+
+class CandidateViolationEdge(StrictModel):
+    """CandidateViolationCycle 中一条已经分类的语义边。"""
+
+    source_event: str
+    target_event: str
+    relation_type: str
+    side: str
+    conditional: bool
+    relation_ids: tuple[str, ...] = ()
+    rf_candidate_ids: tuple[str, ...] = ()
+    fr_consequence_ids: tuple[str, ...] = ()
+    co_dependency_ids: tuple[str, ...] = ()
+    ppo_reachability_path: tuple[str, ...] = ()
+    boundary_dependency_ids: tuple[str, ...] = ()
+    unresolved_dependency_reasons: tuple[str, ...] = ()
+
+
+class CandidateViolationCycle(StrictModel):
+    """符合当前 source-cycle/target-acyclic 查询语义的候选，而非任意图环。"""
+
+    schema_version: str = "candidate-violation-cycle-v1"
+    cycle_id: str
+    cycle_nodes: tuple[str, ...]
+    ordered_edges: tuple[CandidateViolationEdge, ...]
+    source_side: str = "source"
+    target_side_condition: str = "target_acyclic"
+    rf_dependencies: tuple[str, ...] = ()
+    fr_dependencies: tuple[str, ...] = ()
+    co_dependencies: tuple[str, ...] = ()
+    ppo_reachability_dependencies: tuple[tuple[str, ...], ...] = ()
+    fence_rmw_futex_dependencies: tuple[str, ...] = ()
+    unresolved_dependencies: tuple[str, ...] = ()
+    # 该对象描述的是 over-approximate candidate space，不能单独证明结论。
+    diagnostic_only: bool = True
+
+
+class MayViolationGraphContract(StrictModel):
+    """may-edge graph 的保守边界。"""
+
+    schema_version: str = "may-violation-graph-contract-v1"
+    must_edge_families: tuple[str, ...] = ("source_ppo",)
+    conditional_edge_families: tuple[str, ...] = ("rf", "fr", "coherence")
+    reachability_is_summarized: bool = True
+    parallel_relation_labels_preserved: bool = True
+    over_approximate: bool = True
+    missing_edge_is_unknown: bool = True
+    diagnostic_only: bool = True
+
+
+class MayViolationGraphSummary(StrictModel):
+    """一个窗口 may graph 的结构和完整性摘要。"""
+
+    contract: MayViolationGraphContract = MayViolationGraphContract()
+    node_count: int
+    edge_count: int
+    relation_counts: dict[str, int] = Field(default_factory=dict)
+    conditional_edge_count: int
+    scc_count: int
+    cyclic_scc_count: int
+    largest_scc_node_count: int
+    largest_scc_edge_count: int
+    graph_complete_for_observed_candidates: bool
+    reasons: tuple[str, ...] = ()
+
+
+class LocalCycleObligationSet(StrictModel):
+    """判断一个候选环所需的局部关系和 global RF context。"""
+
+    cycle_id: str
+    selected_rf_relation_ids: tuple[str, ...] = ()
+    rf_candidate_domain_ids: tuple[str, ...] = ()
+    required_fr_relation_ids: tuple[str, ...] = ()
+    required_co_relation_ids: tuple[str, ...] = ()
+    ppo_witness_paths: tuple[tuple[str, ...], ...] = ()
+    boundary_event_ids: tuple[str, ...] = ()
+    unresolved_dependencies: tuple[str, ...] = ()
+    # 即使当前环只选一个 RF，也必须保留该 read 的 exactly-one 候选域。
+    rf_exclusivity_preserved: bool = True
+    diagnostic_only: bool = True
+
+
+class LocalCycleWitness(StrictModel):
+    """局部 solver 的可 replay witness，不是最终 counterexample。"""
+
+    cycle_id: str
+    rf_assignments: tuple[tuple[str, str | None, int, int], ...] = ()
+    co_assignments: tuple[tuple[str, str], ...] = ()
+    fr_consequences: tuple[tuple[str, str], ...] = ()
+    ppo_reachability_witnesses: tuple[tuple[str, ...], ...] = ()
+    ordering_assignment: tuple[tuple[str, str], ...] = ()
+    cycle_edges: tuple[tuple[str, str], ...] = ()
+    diagnostic_only: bool = True
+
+
+class CandidateBlockingClause(StrictModel):
+    """对一个已证实不可行的精确候选进行可追踪阻塞。"""
+
+    cycle_id: str
+    literals: tuple[str, ...] = ()
+    solver_result: str
+    exact_candidate_key: str
+    verified_unsat: bool
+    replayable: bool
+    diagnostic_only: bool = True
+
+
+class CandidateCycleReplay(StrictModel):
+    """不信任 local solver producer 的候选环独立 replay 结果。"""
+
+    cycle_id: str
+    status: CandidateCycleReplayStatus
+    cycle_closed: bool
+    ppo_reachability_valid: bool
+    rf_candidates_valid: bool
+    rf_exclusivity_valid: bool
+    fr_consequences_valid: bool
+    co_valid: bool
+    boundary_ordering_valid: bool
+    source_violation_valid: bool
+    target_condition_valid: bool
+    reasons: tuple[str, ...] = ()
+    diagnostic_only: bool = True
+
+
+class CandidateSearchLedger(StrictModel):
+    """记录候选空间覆盖，禁止把有限搜索误报成 SAFE。"""
+
+    candidate_space: str
+    may_graph_complete: bool
+    generated_count: int
+    feasible_count: int
+    infeasible_count: int
+    unknown_count: int
+    blocked_count: int
+    # 搜索截断时无法知道剩余候选数量，因此显式使用 None。
+    not_explored_count: int | None
+    search_truncated: bool
+    # encoding-only 或局部查询未启动时单独记账，不能伪装成 UNSAT。
+    not_run_count: int = 0
+    blocking_clauses: tuple[CandidateBlockingClause, ...] = ()
+    diagnostic_only: bool = True
 
 
 class GraphFirstLocalQuery(StrictModel):
@@ -66,6 +233,8 @@ class GraphFirstLocalQuery(StrictModel):
     solver_time_ms: int | None = None
     # 防止下游把局部结果当作证明事实。
     diagnostic_only: bool = True
+    # P11 统一使用 FEASIBLE/INFEASIBLE/UNKNOWN 三值标签。
+    feasibility_status: LocalCycleStatus = LocalCycleStatus.UNKNOWN
 
 
 class GraphFirstCandidateCycle(StrictModel):
@@ -83,13 +252,23 @@ class GraphFirstCandidateCycle(StrictModel):
     local_query: GraphFirstLocalQuery | None = None
     # 候选搜索不是完整证明，不能越过这个边界。
     diagnostic_only: bool = True
+    # P11 的语义候选；旧字段仍保留以兼容 P10 报告。
+    candidate_violation_cycle: CandidateViolationCycle | None = None
+    # 该环需要的局部 obligation，包含完整 RF candidate domain。
+    local_obligations: LocalCycleObligationSet | None = None
+    # local SMT 产出的可 replay witness。
+    local_witness: LocalCycleWitness | None = None
+    # 不信任 producer 的独立 replay 结果。
+    replay: CandidateCycleReplay | None = None
+    # local UNSAT 时的精确候选阻塞信息。
+    blocking_clause: CandidateBlockingClause | None = None
 
 
 class GraphFirstWindowReport(StrictModel):
     """单个窗口的 graph-first shadow 报告。"""
 
     # 报告结构版本，便于未来改变诊断字段时拒绝误读。
-    schema_version: str = "graph-first-window-v1"
+    schema_version: str = "graph-first-window-v2"
     # 来源分析窗口身份。
     window_id: str
     # 窗口保留的全部事件数量。
@@ -134,13 +313,21 @@ class GraphFirstWindowReport(StrictModel):
     candidates: tuple[GraphFirstCandidateCycle, ...] = ()
     # 不能当作成功的原因和边界说明。
     reasons: tuple[str, ...] = ()
+    # P11 may-edge graph 的 over-approximation 摘要。
+    may_graph: MayViolationGraphSummary | None = None
+    # 候选生成与检查是否覆盖完整空间的账本。
+    search_ledger: CandidateSearchLedger | None = None
+    # skeleton 图只显式保留条件边，PPO 通过 reachability oracle 懒查询。
+    skeleton_edge_count: int = 0
+    skeleton_scc_count: int = 0
+    skeleton_cyclic_scc_count: int = 0
 
 
 class TraceGraphFirstReport(StrictModel):
     """整条 trace 的 graph-first shadow 报告，永远不产生正式 verdict。"""
 
     # 报告结构版本。
-    schema_version: str = "trace-graph-first-v1"
+    schema_version: str = "trace-graph-first-v2"
     # 来源 trace 身份。
     trace_id: str
     # 采集结构是否完整；不等于局部查询完整。
@@ -157,7 +344,18 @@ class TraceGraphFirstReport(StrictModel):
 
 __all__ = [
     "GraphFirstQueryStatus",
+    "LocalCycleStatus",
+    "CandidateCycleReplayStatus",
     "GraphFirstEdge",
+    "CandidateViolationEdge",
+    "CandidateViolationCycle",
+    "MayViolationGraphContract",
+    "MayViolationGraphSummary",
+    "LocalCycleObligationSet",
+    "LocalCycleWitness",
+    "CandidateBlockingClause",
+    "CandidateCycleReplay",
+    "CandidateSearchLedger",
     "GraphFirstLocalQuery",
     "GraphFirstCandidateCycle",
     "GraphFirstWindowReport",

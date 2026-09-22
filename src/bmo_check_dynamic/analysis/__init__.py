@@ -49,7 +49,11 @@ from .shadow_solver import (
     solver_config_digest,
     window_digest,
 )
-from .graph_first import characterize_graph_first_window, graph_first_trace
+from .graph_first import (
+    characterize_graph_first_window,
+    graph_first_trace,
+    replay_candidate_cycle,
+)
 from .solver_benchmark import run_isolated_solver_benchmark
 from .window_diagnostics import (
     WindowCharacterizationReport,
@@ -106,6 +110,7 @@ __all__ = [
     "run_isolated_solver_benchmark",
     "characterize_graph_first_window",
     "graph_first_trace",
+    "replay_candidate_cycle",
     "build_trace_coverage",
     "coverage_state",
     "digest_edges",

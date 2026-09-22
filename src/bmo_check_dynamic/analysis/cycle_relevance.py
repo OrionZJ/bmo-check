@@ -37,6 +37,10 @@ class _Candidate:
     kind: str
     event_ids: tuple[str, str]
     owner_event_id: str
+    # RF 的字节分段属于候选 identity；只保存事件对会把 mixed-width
+    # 的不同 read-part 错当成同一个可选项。
+    address: int | None = None
+    size: int | None = None
     source_relevant: bool = False
     target_relevant: bool = False
 
@@ -292,6 +296,8 @@ def _candidate_relations(events: tuple[TraceEvent, ...]) -> tuple[_Candidate, ..
                         kind="rf",
                         event_ids=(write.event_id, read.event_id),
                         owner_event_id=read.event_id,
+                        address=part_address,
+                        size=part_size,
                     )
                 )
     for relation in _from_read_relations(events):
@@ -329,6 +335,8 @@ def _mark_candidate_relevance(
         kind=candidate.kind,
         event_ids=candidate.event_ids,
         owner_event_id=candidate.owner_event_id,
+        address=candidate.address,
+        size=candidate.size,
         source_relevant=(
             left != right
             and source_components.get(left) == source_components.get(right)
