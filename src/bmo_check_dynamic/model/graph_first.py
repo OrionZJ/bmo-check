@@ -153,6 +153,10 @@ class LocalCycleObligationSet(StrictModel):
     cycle_id: str
     # query_event_ids 固定局部 SMT 的事件 universe，replay 可独立重建变量域。
     query_event_ids: tuple[str, ...] = ()
+    # window_event_ids 固定候选所属的完整窗口；局部 UNSAT 不能排除全窗候选。
+    window_event_ids: tuple[str, ...] = ()
+    # 绑定实际编码的事件、PPO 输入、contract 和 solver 配置。
+    query_context_digest: str = ""
     selected_rf_relation_ids: tuple[str, ...] = ()
     rf_candidate_domain_ids: tuple[str, ...] = ()
     required_fr_relation_ids: tuple[str, ...] = ()
@@ -300,9 +304,9 @@ class CandidateDiscoveryResourcePolicy(StrictModel):
 
 
 class CandidateBlockingConstraint(StrictModel):
-    """由一次已知 UNSAT 查询产生的可重放语义阻塞约束。"""
+    """记录一次 UNSAT 查询；当前只允许按完全相同的全窗查询复用。"""
 
-    schema_version: str = "candidate-blocking-constraint-v1"
+    schema_version: str = "candidate-blocking-constraint-v2"
     block_id: str
     kind: str
     # 规范化后的 RF/CO/FR/edge assumptions；不能由 timeout 生成。
@@ -313,13 +317,14 @@ class CandidateBlockingConstraint(StrictModel):
     canonical_structure_id: str | None = None
     source_candidate_id: str
     source_query_digest: str
-    # 以下字段把 block 绑定到生成它的候选与局部 obligation；缺失时
-    # 独立 replay 必须拒绝，而不是把旧结果当成更宽的剪枝规则。
+    # 以下字段把记录绑定到候选、查询输入和 obligation。
+    # replayable 只表示这些边界可重放，不是 Z3 UNSAT 证明证书。
     candidate_digest: str | None = None
     obligation_digest: str | None = None
     semantic_context_digest: str | None = None
-    proof_scope: str = "local-cycle-obligations-v1"
+    proof_scope: str = "full-window-exact-query-v2"
     solver_result: str
+    # 这是求解器调用方记录的返回值；当前格式不携带可独立检查的 Z3 proof。
     verified_unsat: bool
     replayable: bool
     pruned_candidate_count: int = 0

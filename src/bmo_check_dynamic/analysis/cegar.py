@@ -161,6 +161,21 @@ def _obligation_digest(obligations: LocalCycleObligationSet) -> str:
     return _digest(obligations.model_dump(mode="json"))
 
 
+def _local_query_digest(
+    candidate: CandidateViolationCycle,
+    obligations: LocalCycleObligationSet,
+    solver_result: str,
+) -> str:
+    return _digest(
+        {
+            "candidate": candidate.model_dump(mode="json"),
+            "obligations": obligations.model_dump(mode="json"),
+            "solver_result": solver_result,
+            "proof_scope": "full-window-exact-query-v2",
+        }
+    )
+
+
 def _semantic_context_digest(
     skeleton: CanonicalCycleSkeleton,
     obligations: LocalCycleObligationSet,
@@ -175,6 +190,7 @@ def _semantic_context_digest(
             "target": skeleton.target_side_condition,
             "rf_domain": obligations.rf_candidate_domain_ids,
             "rf_exclusivity": obligations.rf_exclusivity_preserved,
+            "query_context": obligations.query_context_digest,
             "fr": obligations.required_fr_relation_ids,
             "co": obligations.required_co_relation_ids,
             "boundary": obligations.boundary_event_ids,
@@ -188,18 +204,28 @@ def _replay_blocking_assumptions(
 ) -> bool:
     """独立检查 block 的 identity/domain；不相信 solver 的内部状态。"""
 
-    if candidate.unresolved_dependencies or not obligations.rf_exclusivity_preserved:
+    if (
+        candidate.unresolved_dependencies
+        or not obligations.rf_exclusivity_preserved
+        or not obligations.query_context_digest
+        or not obligations.query_event_ids
+        or not obligations.window_event_ids
+        or len(set(obligations.query_event_ids)) != len(obligations.query_event_ids)
+        or len(set(obligations.window_event_ids)) != len(obligations.window_event_ids)
+        or set(obligations.query_event_ids) != set(obligations.window_event_ids)
+    ):
         return False
-    selected = set(obligations.selected_rf_relation_ids)
-    if not selected <= set(candidate.rf_dependencies):
+    if obligations.cycle_id != candidate.cycle_id:
         return False
-    if not set(obligations.required_fr_relation_ids) <= set(candidate.fr_dependencies):
+    if set(obligations.selected_rf_relation_ids) != set(candidate.rf_dependencies):
         return False
-    if not set(obligations.required_co_relation_ids) <= set(candidate.co_dependencies):
+    if set(obligations.required_fr_relation_ids) != set(candidate.fr_dependencies):
         return False
-    # RF domain 至少要包含每一个被选 read 的全部候选；这与候选 replay
-    # 使用的 exactly-one obligation 相同，避免把“未记录”当成“不存在”。
-    return bool(set(obligations.selected_rf_relation_ids) <= set(obligations.rf_candidate_domain_ids))
+    if set(obligations.required_co_relation_ids) != set(candidate.co_dependencies):
+        return False
+    return set(obligations.selected_rf_relation_ids) <= set(
+        obligations.rf_candidate_domain_ids
+    )
 
 
 def build_blocking_constraint(
@@ -210,20 +236,18 @@ def build_blocking_constraint(
     solver_result: str,
     query_digest: str,
 ) -> CandidateBlockingConstraint | None:
-    """只为明确 UNSAT 且可重放的局部查询生成 semantic block。"""
+    """只为完整窗口中的精确 UNSAT 查询生成可复用记录。"""
 
-    if solver_result != "unsat" or not _replay_blocking_assumptions(candidate, obligations):
+    if (
+        solver_result != "unsat"
+        or canonicalize_cycle_skeleton(candidate) != skeleton
+        or not _replay_blocking_assumptions(candidate, obligations)
+        or query_digest != _local_query_digest(candidate, obligations, solver_result)
+    ):
         return None
     rf, fr, co, assumptions = _obligation_assumptions(obligations)
-    if rf and co:
-        kind = "rf_co"
-    elif rf:
-        kind = "rf_combination"
-    elif fr or co:
-        kind = "edge_activation"
-    else:
-        kind = "exact"
-    structure_id = skeleton.canonical_id if kind == "exact" else None
+    kind = "exact_full_window_query"
+    structure_id = skeleton.canonical_id
     payload = {
         "kind": kind,
         "assumptions": assumptions,
@@ -243,7 +267,7 @@ def build_blocking_constraint(
         candidate_digest=_candidate_digest(candidate),
         obligation_digest=_obligation_digest(obligations),
         semantic_context_digest=_semantic_context_digest(skeleton, obligations),
-        proof_scope="local-cycle-obligations-v1",
+        proof_scope="full-window-exact-query-v2",
         solver_result=solver_result,
         verified_unsat=True,
         replayable=True,
@@ -252,11 +276,16 @@ def build_blocking_constraint(
 
 def blocking_constraint_applies(
     block: CandidateBlockingConstraint,
+    candidate: CandidateViolationCycle,
     skeleton: CanonicalCycleSkeleton,
     obligations: LocalCycleObligationSet,
 ) -> bool:
-    """判断一个已 replay 的 block 是否覆盖当前候选。"""
+    """只复用完全相同的全窗口查询，不把局部 UNSAT 推广到别的候选。"""
 
+    if not replay_blocking_constraint_detail(
+        block, candidate, skeleton, obligations
+    ).accepted:
+        return False
     if not block.verified_unsat or not block.replayable:
         return False
     expected_assumptions = tuple(
@@ -273,13 +302,23 @@ def blocking_constraint_applies(
         return False
     if block.solver_result != "unsat":
         return False
-    if block.kind == "exact":
-        return block.canonical_structure_id == skeleton.canonical_id
-    if not set(block.rf_relation_ids) <= set(obligations.selected_rf_relation_ids):
+    if block.kind != "exact_full_window_query":
         return False
-    if not set(block.fr_relation_ids) <= set(obligations.required_fr_relation_ids):
+    if block.proof_scope != "full-window-exact-query-v2":
         return False
-    return set(block.co_relation_ids) <= set(obligations.required_co_relation_ids)
+    if block.canonical_structure_id != skeleton.canonical_id:
+        return False
+    if block.source_query_digest != _local_query_digest(
+        candidate, obligations, "unsat"
+    ):
+        return False
+    return (
+        block.source_candidate_id == candidate.cycle_id
+        and block.candidate_digest == _candidate_digest(candidate)
+        and block.obligation_digest == _obligation_digest(obligations)
+        and block.semantic_context_digest
+        == _semantic_context_digest(skeleton, obligations)
+    )
 
 
 def replay_blocking_constraint(
@@ -288,10 +327,10 @@ def replay_blocking_constraint(
     skeleton: CanonicalCycleSkeleton,
     obligations: LocalCycleObligationSet,
 ) -> bool:
-    """独立重放 producer 产生的 UNSAT block。
+    """独立重放 block 的输入绑定和精确查询范围。
 
-    这里不调用 producer 的 solver 状态，只用候选、obligation 和记录的
-    query digest 重新构造期望 block；字段或 provenance 被篡改时拒绝。
+    这里不重跑 Z3，也不验证 Z3 proof；solver_result 是同一实验流程记录的
+    查询结果。当前只允许把它用于完全相同的全窗口候选查询，不推广到别的候选。
     """
 
     return replay_blocking_constraint_detail(
@@ -305,12 +344,13 @@ def replay_blocking_constraint_detail(
     skeleton: CanonicalCycleSkeleton,
     obligations: LocalCycleObligationSet,
 ) -> BlockingReplayReport:
-    """独立返回 block 的绑定/范围检查，供 P13 统计无效剪枝。"""
+    """返回 block 的绑定/范围检查；不把 solver 的 UNSAT 声明当成 proof 重放。"""
 
     reasons: list[str] = []
     query_binding_valid = bool(block.source_query_digest)
     assumption_scope_valid = _replay_blocking_assumptions(candidate, obligations)
     semantic_context_valid = True
+    # 这里只核对记录状态；block 的 exact-query 限定禁止把该声明推广到其他候选。
     solver_status_valid = block.solver_result == "unsat" and block.verified_unsat
     if not query_binding_valid:
         reasons.append("missing source query digest")
@@ -318,6 +358,8 @@ def replay_blocking_constraint_detail(
         reasons.append("blocking assumptions are outside the local RF/FR/CO domain")
     if not solver_status_valid:
         reasons.append("block is not backed by an UNSAT solver result")
+    if block.proof_scope != "full-window-exact-query-v2":
+        reasons.append("unsupported or generalized blocking proof scope")
     expected = build_blocking_constraint(
         candidate,
         skeleton,
@@ -329,6 +371,7 @@ def replay_blocking_constraint_detail(
         reasons.append("producer block cannot be reconstructed from the bound query")
     else:
         fields = (
+            "schema_version",
             "block_id",
             "kind",
             "assumptions",
@@ -662,7 +705,9 @@ def characterize_cegar_window(
                 (
                     block
                     for block in blocks
-                    if blocking_constraint_applies(block, skeleton, obligations)
+                    if blocking_constraint_applies(
+                        block, candidate, skeleton, obligations
+                    )
                 ),
                 None,
             )

@@ -7,6 +7,7 @@ from bmo_check_dynamic.analysis import (
     characterize_cegar_window,
 )
 from bmo_check_dynamic.analysis.cegar import (
+    _local_query_digest,
     blocking_constraint_applies,
     build_blocking_constraint,
     replay_blocking_constraint,
@@ -120,6 +121,9 @@ def test_semantic_block_preserves_rf_identity() -> None:
     skeleton = canonicalize_cycle_skeleton(candidate)
     obligations = LocalCycleObligationSet(
         cycle_id="a",
+        query_event_ids=("r0", "w0", "r1", "w1"),
+        window_event_ids=("r0", "w0", "r1", "w1"),
+        query_context_digest="full-query-context",
         selected_rf_relation_ids=candidate.rf_dependencies,
         rf_candidate_domain_ids=candidate.rf_dependencies,
         rf_exclusivity_preserved=True,
@@ -129,7 +133,7 @@ def test_semantic_block_preserves_rf_identity() -> None:
         skeleton,
         obligations,
         solver_result="unsat",
-        query_digest="query-a",
+        query_digest=_local_query_digest(candidate, obligations, "unsat"),
     )
     assert block is not None
     assert block.verified_unsat is True
@@ -137,9 +141,13 @@ def test_semantic_block_preserves_rf_identity() -> None:
     assert replay_blocking_constraint_detail(
         block, candidate, skeleton, obligations
     ).accepted
-    assert blocking_constraint_applies(block, skeleton, obligations)
+    assert blocking_constraint_applies(block, candidate, skeleton, obligations)
     different = obligations.model_copy(update={"selected_rf_relation_ids": ("rf:other",)})
-    assert not blocking_constraint_applies(block, skeleton, different)
+    assert not blocking_constraint_applies(block, candidate, skeleton, different)
+    changed_context = obligations.model_copy(
+        update={"query_context_digest": "different-full-window-context"}
+    )
+    assert not blocking_constraint_applies(block, candidate, skeleton, changed_context)
     tampered = block.model_copy(update={"assumptions": ("rf:other",)})
     assert not replay_blocking_constraint(tampered, candidate, skeleton, obligations)
     tampered_digest = block.model_copy(update={"candidate_digest": "wrong"})
