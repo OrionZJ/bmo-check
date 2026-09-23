@@ -77,6 +77,7 @@ from .global_constraint_validation import (
     run_global_constraint_validation,
     run_progressive_candidate_validation,
 )
+from .fixed_cycle_shadow import run_fixed_candidate_cycle_shadow
 from .solver_benchmark import run_isolated_solver_benchmark
 from .window_diagnostics import (
     WindowCharacterizationReport,
@@ -152,6 +153,7 @@ __all__ = [
     "run_global_constraint_validation",
     "find_frozen_p15_mode",
     "run_progressive_candidate_validation",
+    "run_fixed_candidate_cycle_shadow",
     "build_trace_coverage",
     "coverage_state",
     "digest_edges",

@@ -539,6 +539,34 @@ def _valid_coherence_orders(writes: tuple[TraceEvent, ...]):
             yield order
 
 
+def _is_single_cycle(edges: frozenset[Edge], universe: set[str]) -> bool:
+    """只接受覆盖给定边集的单个简单有向环。"""
+
+    if not edges or any(
+        source not in universe or target not in universe for source, target in edges
+    ):
+        return False
+    nodes = {endpoint for edge in edges for endpoint in edge}
+    outgoing: dict[str, str] = {}
+    incoming: dict[str, str] = {}
+    for source, target in edges:
+        if source in outgoing or target in incoming:
+            return False
+        outgoing[source] = target
+        incoming[target] = source
+    if set(outgoing) != nodes or set(incoming) != nodes:
+        return False
+    start = min(nodes)
+    visited = {start}
+    current = outgoing[start]
+    while current != start:
+        if current in visited or current not in outgoing:
+            return False
+        visited.add(current)
+        current = outgoing[current]
+    return visited == nodes
+
+
 def _communication_relations(
     rf: tuple[tuple[TraceEvent, TraceEvent | None], ...],
     selected_orders: tuple[tuple[TraceEvent, ...], ...],
@@ -702,6 +730,7 @@ def _check_symbolic(
     required_source_cycle_relations: tuple[
         tuple[str, str, str, tuple[str, ...]], ...
     ] = (),
+    fixed_source_cycle_edges: frozenset[Edge] | None = None,
     capture_model: bool = False,
     incremental_session_sink: list[IncrementalShadowSession] | None = None,
 ) -> WindowResult:
@@ -1055,6 +1084,39 @@ def _check_symbolic(
         edge: z3.Bool(f"cycle_edge_{index}")
         for index, edge in enumerate(sorted(source_conditions))
     }
+    if fixed_source_cycle_edges is not None:
+        if (
+            not _is_single_cycle(fixed_source_cycle_edges, set(nodes))
+            or fixed_source_cycle_edges != frozenset(required_source_cycle_edges or ())
+        ):
+            return finish(
+                WindowResult(
+                    window_id=window.window_id,
+                    event_ids=nodes,
+                    status="unknown",
+                    reason=(
+                        "fixed-cycle shadow query requires one simple closed cycle "
+                        "identical to its required source-edge set"
+                    ),
+                ),
+                solver_result="unknown",
+                solver=solver,
+            )
+        missing_fixed = set(fixed_source_cycle_edges) - set(selected_edges)
+        if missing_fixed:
+            return finish(
+                WindowResult(
+                    window_id=window.window_id,
+                    event_ids=nodes,
+                    status="unknown",
+                    reason="fixed candidate cycle contains an edge absent from the full source relation graph",
+                ),
+                solver_result="unknown",
+                solver=solver,
+            )
+        fixed_cycle_nodes = frozenset(
+            endpoint for edge in fixed_source_cycle_edges for endpoint in edge
+        )
     variable_counts.update(
         {
             "target_rank": len(topological),
@@ -1064,7 +1126,8 @@ def _check_symbolic(
             "cycle_edge": len(selected_edges),
         }
     )
-    add_constraint("cycle", z3.Or(*selected_nodes.values()))
+    if fixed_source_cycle_edges is None:
+        add_constraint("cycle", z3.Or(*selected_nodes.values()))
     for source, target, relation_kind, relation_ids in required_source_cycle_relations:
         exact_conditions: list[z3.BoolRef] = []
         for relation_id in relation_ids:
@@ -1121,31 +1184,53 @@ def _check_symbolic(
                 solver_result="unknown",
                 solver=solver,
             )
-        # graph-first 只把候选环作为局部查询的必要条件；该约束不会进入
-        # 正式 check_window，因此不能把一个局部可满足性结果当成全窗 verdict。
+        # 普通 graph-first 查询只把候选环作为必要条件；固定环 shadow 查询
+        # 则由已核验的结构直接提供闭环，二者都不进入正式 check_window。
         for edge in required_source_cycle_edges:
-            add_constraint("cycle_candidate", selected_edges[edge])
+            if fixed_source_cycle_edges is None:
+                add_constraint("cycle_candidate", selected_edges[edge])
+    if fixed_source_cycle_edges is not None:
+        add_constraint(
+            "cycle_fixed_selection",
+            *(
+                selected_nodes[node] == z3.BoolVal(node in fixed_cycle_nodes)
+                for node in nodes
+            ),
+            *(
+                selected_edges[edge]
+                == z3.BoolVal(edge in fixed_source_cycle_edges)
+                for edge in selected_edges
+            ),
+        )
+        add_constraint(
+            "cycle_fixed_activation",
+            *(
+                source_conditions[edge]
+                for edge in sorted(fixed_source_cycle_edges)
+            ),
+        )
     incoming_by_node: dict[str, list[z3.BoolRef]] = {node: [] for node in nodes}
     outgoing_by_node: dict[str, list[z3.BoolRef]] = {node: [] for node in nodes}
-    for edge, selected in selected_edges.items():
-        add_constraint("cycle", z3.Implies(selected, source_conditions[edge]))
-        outgoing_by_node[edge[0]].append(selected)
-        incoming_by_node[edge[1]].append(selected)
-    for node in nodes:
-        if monotonic() >= deadline:
-            return finish(timed_out(), solver_result="timeout", solver=solver)
-        incoming = incoming_by_node[node]
-        outgoing = outgoing_by_node[node]
-        add_constraint(
-            "cycle",
-            z3.Sum(*[z3.If(item, 1, 0) for item in incoming])
-            == z3.If(selected_nodes[node], 1, 0),
-        )
-        add_constraint(
-            "cycle",
-            z3.Sum(*[z3.If(item, 1, 0) for item in outgoing])
-            == z3.If(selected_nodes[node], 1, 0),
-        )
+    if fixed_source_cycle_edges is None:
+        for edge, selected in selected_edges.items():
+            add_constraint("cycle", z3.Implies(selected, source_conditions[edge]))
+            outgoing_by_node[edge[0]].append(selected)
+            incoming_by_node[edge[1]].append(selected)
+        for node in nodes:
+            if monotonic() >= deadline:
+                return finish(timed_out(), solver_result="timeout", solver=solver)
+            incoming = incoming_by_node[node]
+            outgoing = outgoing_by_node[node]
+            add_constraint(
+                "cycle",
+                z3.Sum(*[z3.If(item, 1, 0) for item in incoming])
+                == z3.If(selected_nodes[node], 1, 0),
+            )
+            add_constraint(
+                "cycle",
+                z3.Sum(*[z3.If(item, 1, 0) for item in outgoing])
+                == z3.If(selected_nodes[node], 1, 0),
+            )
 
     if incremental_session_sink is not None:
         if required_source_cycle_edges or required_source_cycle_relations:
@@ -1390,6 +1475,7 @@ def run_symbolic_shadow(
     required_source_cycle_relations: tuple[
         tuple[str, str, str, tuple[str, ...]], ...
     ] = (),
+    fixed_source_cycle_edges: frozenset[Edge] | None = None,
     capture_model: bool = False,
 ) -> tuple[WindowResult, SymbolicSolverObservation]:
     """用正式 symbolic encoder 跑一侧 shadow，不进入 ``check_window``。
@@ -1429,6 +1515,7 @@ def run_symbolic_shadow(
         profile=profile,
         required_source_cycle_edges=required_source_cycle_edges,
         required_source_cycle_relations=required_source_cycle_relations,
+        fixed_source_cycle_edges=fixed_source_cycle_edges,
         capture_model=capture_model,
     )
     return result, observation.freeze()

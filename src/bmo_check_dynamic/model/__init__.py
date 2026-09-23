@@ -164,6 +164,12 @@ from .incremental_validation import (
     ProgressiveCandidateValidation,
     ProgressiveValidationRound,
 )
+from .p18 import (
+    FixedCycleRelationRequirement,
+    FixedCycleShadowQuery,
+    P17CandidateComparison,
+    P18FixedCycleReport,
+)
 
 __all__ = [
     "BinaryFingerprint",
@@ -315,4 +321,8 @@ __all__ = [
     "GlobalConstraintValidationReport",
     "IndependentFullWindowQuery",
     "IncrementalSessionBuild",
+    "FixedCycleRelationRequirement",
+    "FixedCycleShadowQuery",
+    "P17CandidateComparison",
+    "P18FixedCycleReport",
 ]
