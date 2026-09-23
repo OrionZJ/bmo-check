@@ -21,6 +21,7 @@ from bmo_check_dynamic.model import (
 )
 from bmo_check_dynamic.model import CegarExperimentMode
 from bmo_check_dynamic.model import CandidateDiscoveryResourcePolicy
+from bmo_check_dynamic.model import LocalWitnessClosureKind
 from bmo_check_dynamic.analysis.ppo_reduction import (
     build_ppo_graph_input,
     build_ppo_reduction_certificate,
@@ -431,6 +432,39 @@ def test_p15_complete_candidate_set_matches_p14_on_small_fixture() -> None:
     assert coverage.complete is True
     assert coverage.missing_candidate_ids == ()
     assert coverage.unexpected_candidate_ids == ()
+
+
+def test_p16_synthetic_lb_full_window_closure_is_replayable() -> None:
+    report = compare_cegar_modes(
+        _lb_window(),
+        fixture="synthetic-lb-p16-full-closure",
+        max_cycle_length=6,
+        max_search_states=100,
+        max_local_queries=1,
+        local_timeout_ms=500,
+        local_max_symbolic_terms=10_000,
+        only_mode=CegarExperimentMode.STRUCTURED_P15,
+        discovery_resource_policy=CandidateDiscoveryResourcePolicy(
+            max_in_memory_frontier=100,
+            max_search_states=100,
+        ),
+        capture_model=True,
+        close_feasible_candidates=True,
+        closure_timeout_ms=1_000,
+        closure_max_symbolic_terms=10_000,
+    )
+
+    assert len(report.modes) == 1
+    closures = report.modes[0].witness_closures
+    assert len(closures) == 1
+    closure = closures[0]
+    assert closure.classification is LocalWitnessClosureKind.VALID_COMPLETE_WITNESS
+    assert closure.closure_witness is not None
+    assert closure.closure_witness.model_snapshot is not None
+    assert closure.replay is not None
+    assert closure.replay.model_snapshot_valid is True
+    assert closure.replay.full_window_closed is True
+    assert closure.replay.status.value == "accepted"
 
 
 def test_p15_checkpoint_binding_rejects_other_window(tmp_path) -> None:

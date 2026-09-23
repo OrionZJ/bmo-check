@@ -361,6 +361,10 @@ def _close_local_feasible_candidates(
                 cycle_edges=cycle_edges,
                 local_result=result,
             )
+        witness_build_ms = max(
+            0, int((time.perf_counter() - witness_started) * 1000)
+        )
+        obligations_started = time.perf_counter()
         obligations = _build_local_obligations(
             candidate,
             cycle_edges=cycle_edges,
@@ -368,8 +372,8 @@ def _close_local_feasible_candidates(
             witness=witness,
             query_event_ids=tuple(event.event_id for event in window.events),
         )
-        witness_build_ms = max(
-            0, int((time.perf_counter() - witness_started) * 1000)
+        obligations_build_ms = max(
+            0, int((time.perf_counter() - obligations_started) * 1000)
         )
         replay_ms = 0
         if witness is not None:
@@ -405,6 +409,7 @@ def _close_local_feasible_candidates(
                 encoding_ms=observation.build_time_ms,
                 solver_ms=observation.solver_time_ms,
                 witness_build_ms=witness_build_ms,
+                obligations_build_ms=obligations_build_ms,
                 replay_ms=replay_ms,
                 reasons=(
                     replay.reasons

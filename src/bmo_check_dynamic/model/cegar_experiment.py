@@ -77,6 +77,7 @@ class LocalWitnessClosureRecord(StrictModel):
     encoding_ms: int = 0
     solver_ms: int | None = None
     witness_build_ms: int = 0
+    obligations_build_ms: int = 0
     replay_ms: int = 0
     reasons: tuple[str, ...] = ()
     diagnostic_only: bool = True
