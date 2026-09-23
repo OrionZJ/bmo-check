@@ -2027,9 +2027,7 @@ def _build_candidate_violation_cycle(
                 ),
             )
         )
-    nodes = tuple(edge.source for edge in cycle_edges) + (
-        cycle_edges[0].source,
-    )
+    nodes = tuple(edge.source for edge in skeleton) + (skeleton[0].source,)
     return CandidateViolationCycle(
         cycle_id=cycle_id,
         cycle_nodes=nodes,
@@ -2735,16 +2733,19 @@ def _replay_local_symbolic_model(
     )
 
 
-def _expand_candidate_cycle_nodes(
+def _candidate_cycle_skeleton_nodes(
     candidate: CandidateViolationCycle,
 ) -> tuple[str, ...]:
-    """Rebuild declared cycle nodes from ordered edges and PPO witnesses."""
+    """重建候选环骨架节点；PPO witness 的内部事件不属于骨架。"""
 
     if not candidate.ordered_edges:
         return ()
-    nodes = [candidate.ordered_edges[0].source_event]
-    for edge in candidate.ordered_edges:
-        if nodes[-1] != edge.source_event:
+    nodes = tuple(edge.source_event for edge in candidate.ordered_edges) + (
+        candidate.ordered_edges[0].source_event,
+    )
+    for index, edge in enumerate(candidate.ordered_edges):
+        following = candidate.ordered_edges[(index + 1) % len(candidate.ordered_edges)]
+        if edge.target_event != following.source_event:
             return ()
         if edge.relation_type == "ppo_reachability":
             path = edge.ppo_reachability_path
@@ -2754,12 +2755,9 @@ def _expand_candidate_cycle_nodes(
                 or path[-1] != edge.target_event
             ):
                 return ()
-            nodes.extend(path[1:])
-        else:
-            if edge.ppo_reachability_path:
-                return ()
-            nodes.append(edge.target_event)
-    return tuple(nodes)
+        elif edge.ppo_reachability_path:
+            return ()
+    return nodes
 
 
 def replay_candidate_cycle(
@@ -2819,18 +2817,18 @@ def replay_candidate_cycle(
             "candidate-obligation-identity",
             "candidate cycle_id does not match its obligation set",
         )
-    expanded_cycle_nodes = _expand_candidate_cycle_nodes(candidate)
+    skeleton_nodes = _candidate_cycle_skeleton_nodes(candidate)
     cycle_closed = (
-        len(expanded_cycle_nodes) > 1
-        and expanded_cycle_nodes[0] == expanded_cycle_nodes[-1]
-        and expanded_cycle_nodes == candidate.cycle_nodes
+        len(skeleton_nodes) > 1
+        and skeleton_nodes[0] == skeleton_nodes[-1]
+        and skeleton_nodes == candidate.cycle_nodes
     )
     if not cycle_closed:
         reject(
             CandidateReplayFailureKind.BINDING_MISMATCH,
             candidate.cycle_id,
             "candidate-edge-cycle-identity",
-            "declared cycle nodes do not exactly match the ordered edges and PPO paths",
+            "declared cycle nodes do not exactly match the ordered relation-edge skeleton",
         )
     edge_pairs = [(edge.source_event, edge.target_event) for edge in candidate.ordered_edges]
     if edge_pairs and any(

@@ -228,6 +228,48 @@ def test_replay_rejects_cycle_nodes_not_matching_ordered_edges() -> None:
     )
 
 
+def test_replay_accepts_ppo_witness_intermediates_outside_cycle_skeleton() -> None:
+    # The candidate stores the endpoints of a summarized PPO edge in cycle_nodes.
+    # Its reachability witness can still pass through other events in the window.
+    window = AnalysisWindow(
+        "ppo-witness-intermediate-fixture",
+        (
+            TraceEvent(1, 1, 0, 0x10, EventKind.LOAD, 0x1000, 4),
+            TraceEvent(1, 2, 0, 0x11, EventKind.LOAD, 0x3000, 4),
+            TraceEvent(1, 3, 0, 0x12, EventKind.STORE, 0x2000, 4),
+            TraceEvent(2, 1, 0, 0x20, EventKind.LOAD, 0x2000, 4),
+            TraceEvent(2, 2, 0, 0x21, EventKind.STORE, 0x1000, 4),
+        ),
+        (),
+    )
+    report = characterize_graph_first_window(
+        window,
+        max_cycle_length=8,
+        max_cycles=20,
+        max_search_states=1_000,
+        local_timeout_ms=1_000,
+        local_max_symbolic_terms=20_000,
+        execute_local_solver=True,
+        capture_model=True,
+    )
+
+    candidates = [
+        item
+        for item in report.candidates
+        if item.candidate_violation_cycle is not None
+        and any(
+            edge.relation_type == "ppo_reachability"
+            and len(edge.ppo_reachability_path) > 2
+            for edge in item.candidate_violation_cycle.ordered_edges
+        )
+    ]
+    assert candidates, "fixture must produce a PPO witness with an interior event"
+    assert any(
+        item.replay is not None and item.replay.status.value != "rejected"
+        for item in candidates
+    ), [item.replay for item in candidates]
+
+
 def test_replay_rejects_ppo_dependency_summary_not_matching_edges() -> None:
     window = _lb_window()
     report = characterize_graph_first_window(

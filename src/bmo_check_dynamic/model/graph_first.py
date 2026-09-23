@@ -109,6 +109,7 @@ class CandidateViolationCycle(StrictModel):
 
     schema_version: str = "candidate-violation-cycle-v1"
     cycle_id: str
+    # 环骨架只列 ordered_edges 的端点；PPO 摘要路径的中间事件留在 edge witness 中。
     cycle_nodes: tuple[str, ...]
     ordered_edges: tuple[CandidateViolationEdge, ...]
     source_side: str = "source"
