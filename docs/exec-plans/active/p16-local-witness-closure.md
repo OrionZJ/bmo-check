@@ -139,5 +139,5 @@ Experiment JSON and captured models are kept locally at
 - Full tests and diff review pass before an isolated P16 commit. No P16 result
   is wired into official SAFE/TRACE_SAFE/COUNTEREXAMPLE verdicts.
 
-The final full regression on this implementation passed: 672 passed, 10
+The final full regression on this implementation passed: 673 passed, 10
 environment/opt-in skips.
