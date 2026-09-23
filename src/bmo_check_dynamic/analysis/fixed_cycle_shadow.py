@@ -3,6 +3,7 @@ from __future__ import annotations
 from time import monotonic
 
 from bmo_check_dynamic.model import (
+    CandidateCycleReplay,
     CandidateCycleReplayStatus,
     FixedCycleRelationRequirement,
     FixedCycleShadowQuery,
@@ -90,6 +91,7 @@ def run_fixed_candidate_cycle_shadow(
     local_witness: LocalCycleWitness | None = None
     replay_status = CandidateCycleReplayStatus.NOT_RUN
     replay_reasons: tuple[str, ...] = ()
+    independent_replay: CandidateCycleReplay | None = None
     if observation.result == "sat":
         local_witness = _build_local_witness(
             semantic,
@@ -121,6 +123,7 @@ def run_fixed_candidate_cycle_shadow(
             )
             replay_status = replay.status
             replay_reasons = replay.reasons
+            independent_replay = replay
 
     return FixedCycleShadowQuery(
         candidate_id=candidate.cycle_id,
@@ -168,5 +171,6 @@ def run_fixed_candidate_cycle_shadow(
         variable_counts=observation.variable_counts,
         replay_status=replay_status,
         replay_reasons=replay_reasons,
+        independent_replay=independent_replay,
         witness=local_witness,
     )

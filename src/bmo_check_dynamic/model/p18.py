@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from pydantic import Field
 
-from .graph_first import CandidateCycleReplayStatus, LocalCycleWitness
+from .graph_first import (
+    CandidateCycleReplay,
+    CandidateCycleReplayStatus,
+    LocalCycleWitness,
+)
 from .manifest import StrictModel
 
 
@@ -131,6 +135,10 @@ class FixedCycleShadowQuery(StrictModel):
     )
     replay_reasons: tuple[str, ...] = Field(
         default=(), description="独立 replay 拒绝或限制结论的原因"
+    )
+    independent_replay: CandidateCycleReplay | None = Field(
+        default=None,
+        description="独立重放的完整检查项；符号模型不等于真实执行反例",
     )
     witness: LocalCycleWitness | None = Field(
         default=None, description="SAT 时保存的完整模型和可独立重放 witness"

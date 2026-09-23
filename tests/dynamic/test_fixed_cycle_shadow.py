@@ -160,3 +160,10 @@ def test_fixed_cycle_candidate_replays_complete_window_model() -> None:
     assert query.solver_result == "sat"
     assert query.witness is not None
     assert query.replay_status.value == "full_window_model_validated"
+    assert query.independent_replay is not None
+    assert query.independent_replay.model_snapshot_valid is True
+    assert query.independent_replay.full_window_closed is True
+    assert query.independent_replay.trace_completeness_validated is False
+    assert query.independent_replay.control_flow_closure_validated is False
+    assert query.independent_replay.read_values_validated is False
+    assert query.independent_replay.execution_counterexample_validated is False

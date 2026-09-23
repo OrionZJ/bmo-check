@@ -36,6 +36,7 @@ from bmo_check_dynamic.model import (
     CegarExperimentReport,
     CegarExperimentMode,
     GlobalConstraintValidationReport,
+    P18FixedCycleReport,
 )
 from bmo_check_dynamic.pipeline import (
     analyze_trace,
@@ -53,6 +54,7 @@ from bmo_check_dynamic.pipeline import (
     cegar_trace,
     cegar_mode_comparison_trace,
     p17_global_validation_trace,
+    p18_fixed_cycle_shadow_trace,
     slice_plan_trace,
 )
 
@@ -419,6 +421,39 @@ def p17_global_validation(
     )
 
 
+def p18_fixed_cycle_shadow(
+    request: AnalyzeRequest,
+    fixed_candidate_report: CegarExperimentReport,
+    p17_report: GlobalConstraintValidationReport,
+    reduction_certificate: TracePpoReductionCertificate,
+    *,
+    p17_report_sha256: str,
+    timeout_ms: int = 30_000,
+    max_symbolic_terms: int = 100_000,
+    process_wall_limit_seconds: int = 1_800,
+    process_memory_limit_mb: int = 8_192,
+    expected_candidate_count: int = 10,
+    progress_path: Path | None = None,
+) -> P18FixedCycleReport:
+    """运行 P18 固定候选环 shadow 查询并独立 replay。"""
+
+    return p18_fixed_cycle_shadow_trace(
+        request.trace_dir,
+        dbt_contract=request.dbt_contract,
+        config=request.config,
+        fixed_candidate_report=fixed_candidate_report,
+        p17_report=p17_report,
+        reduction_certificate=reduction_certificate,
+        p17_report_sha256=p17_report_sha256,
+        timeout_ms=timeout_ms,
+        max_symbolic_terms=max_symbolic_terms,
+        process_wall_limit_seconds=process_wall_limit_seconds,
+        process_memory_limit_mb=process_memory_limit_mb,
+        expected_candidate_count=expected_candidate_count,
+        progress_path=progress_path,
+    )
+
+
 __all__ = [
     "AnalyzeRequest",
     "CaptureRequest",
@@ -438,6 +473,7 @@ __all__ = [
     "cegar_prototype",
     "cegar_ab",
     "p17_global_validation",
+    "p18_fixed_cycle_shadow",
     "characterize",
     "capture",
 ]

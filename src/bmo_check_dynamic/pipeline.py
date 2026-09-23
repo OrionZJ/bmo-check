@@ -88,6 +88,8 @@ from bmo_check_dynamic.model import (
     CegarExperimentMode,
     CandidateDiscoveryResourcePolicy,
     GlobalConstraintValidationReport,
+    P18FixedCycleReport,
+    P17CandidateComparison,
 )
 from bmo_check_dynamic.proof import (
     characterize_symbolic_encoding,
@@ -98,12 +100,24 @@ from bmo_check_dynamic.storage import TraceStore, TraceStoreError
 from bmo_check_dynamic.trace import TraceReader, trace_digest, validate_trace
 from bmo_check_dynamic.trace import build_dynamic_certificate_binding
 from bmo_check_dynamic.trace.format import event_files
+from bmo_check_dynamic.analysis.fixed_cycle_shadow import (
+    run_fixed_candidate_cycle_shadow,
+)
 
 
 def _write_global_constraint_progress(
     path: Path, snapshot: GlobalConstraintValidationReport
 ) -> None:
     """保存已完成的 shadow 单元，崩溃后不把半份 JSON 当成检查点。"""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f"{path.name}.{os.getpid()}.writing")
+    temporary.write_text(snapshot.model_dump_json(indent=2), encoding="utf-8")
+    temporary.replace(path)
+
+
+def _write_p18_progress(path: Path, snapshot: P18FixedCycleReport) -> None:
+    """保留已完成候选，避免 worker 中断后误用半份结果。"""
 
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f"{path.name}.{os.getpid()}.writing")
@@ -233,6 +247,14 @@ class _GlobalConstraintValidationComplete(Exception):
 
     def __init__(self, report: GlobalConstraintValidationReport) -> None:
         super().__init__("P17 global-constraint validation completed")
+        self.report = report
+
+
+class _P18FixedCycleComplete(Exception):
+    """P18 固定候选 source-cycle shadow 查询完成后跳过正式 proof。"""
+
+    def __init__(self, report: P18FixedCycleReport) -> None:
+        super().__init__("P18 fixed-cycle shadow completed")
         self.report = report
 
 
@@ -1881,6 +1903,288 @@ def p17_global_validation_trace(
         limitations=(
             "The ordinary trace pipeline did not produce the frozen analysis window.",
         ),
+    )
+
+
+def p18_fixed_cycle_shadow_trace(
+    trace_dir: Path,
+    *,
+    dbt_contract: Path,
+    fixed_candidate_report: CegarExperimentReport,
+    p17_report: GlobalConstraintValidationReport,
+    reduction_certificate: TracePpoReductionCertificate,
+    p17_report_sha256: str,
+    config: DynamicConfig | None = None,
+    timeout_ms: int = 30_000,
+    max_symbolic_terms: int = 100_000,
+    process_wall_limit_seconds: int = 1_800,
+    process_memory_limit_mb: int = 8_192,
+    expected_candidate_count: int = 10,
+    progress_path: Path | None = None,
+) -> P18FixedCycleReport:
+    """在 P17 冻结候选上固定 source cycle；只执行 shadow solver。"""
+
+    config = config or DynamicConfig()
+    if timeout_ms <= 0 or max_symbolic_terms <= 0:
+        raise ValueError("P18 query timeout and formula budget must be positive")
+    if process_wall_limit_seconds <= 0 or process_memory_limit_mb <= 0:
+        raise ValueError("P18 worker limits must be positive")
+    if progress_path is not None and progress_path.exists():
+        raise ValueError(f"refusing to overwrite P18 progress file: {progress_path}")
+    frozen_comparison, frozen = find_frozen_p15_mode(fixed_candidate_report)
+    baseline_digest = hashlib.sha256(
+        json.dumps(
+            p17_report.model_dump(mode="json"),
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+    ).hexdigest()
+    candidate_report_digest = hashlib.sha256(
+        json.dumps(
+            fixed_candidate_report.model_dump(mode="json"),
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+    ).hexdigest()
+    candidates = tuple(frozen.candidate_records)
+    candidate_ids = tuple(item.cycle_id for item in candidates)
+
+    def empty_report(
+        *,
+        termination_reason: str,
+        trace_id: str | None = None,
+        trace_sha256: str | None = None,
+        contract_sha256: str | None = None,
+        event_count: int | None = None,
+        ppo_digest: str | None = None,
+        limitations: tuple[str, ...] = (),
+    ) -> P18FixedCycleReport:
+        return P18FixedCycleReport(
+            trace_id=trace_id or fixed_candidate_report.trace_id or "unknown",
+            trace_sha256=trace_sha256 or fixed_candidate_report.trace_sha256 or "unknown",
+            contract_sha256=contract_sha256 or fixed_candidate_report.contract_sha256 or "unknown",
+            window_id=frozen_comparison.window_id,
+            event_count=event_count if event_count is not None else frozen_comparison.event_count,
+            ppo_certificate_digest=ppo_digest or frozen_comparison.certificate_digest or "unknown",
+            fixed_candidate_report_sha256=candidate_report_digest,
+            p17_report_sha256=p17_report_sha256 or baseline_digest,
+            candidate_ids=candidate_ids,
+            timeout_ms=timeout_ms,
+            max_symbolic_terms=max_symbolic_terms,
+            process_wall_limit_seconds=process_wall_limit_seconds,
+            process_memory_limit_mb=process_memory_limit_mb,
+            termination_reason=termination_reason,
+            limitations=limitations,
+        )
+
+    expected_skeletons = {
+        item.cycle_id: canonicalize_cycle_skeleton(
+            item.candidate_violation_cycle
+        ).canonical_id
+        for item in candidates
+        if item.candidate_violation_cycle is not None
+    }
+    if len(candidates) != expected_candidate_count or len(expected_skeletons) != len(candidates):
+        raise ValueError("P18 requires the exact frozen candidate set with semantic cycles")
+    if set(expected_skeletons.values()) != set(frozen.candidate_skeleton_ids):
+        raise ValueError("P18 candidate records differ from the frozen skeleton inventory")
+    baseline_independent = {
+        item.candidate_id: item for item in p17_report.independent_full_queries
+    }
+    baseline_shared_by_candidate = {
+        item.candidate_id: item for item in p17_report.shared_incremental_queries
+    }
+    if (
+        p17_report.termination_reason != "completed"
+        or set(baseline_independent) != set(candidate_ids)
+        or set(baseline_shared_by_candidate) != set(candidate_ids)
+    ):
+        raise ValueError("P17 comparison report is incomplete for the frozen candidate set")
+    if (
+        p17_report.trace_id != fixed_candidate_report.trace_id
+        or p17_report.trace_sha256 != fixed_candidate_report.trace_sha256
+        or p17_report.contract_sha256 != fixed_candidate_report.contract_sha256
+        or p17_report.window_id != frozen_comparison.window_id
+        or p17_report.event_count != frozen_comparison.event_count
+        or p17_report.ppo_certificate_digest != frozen_comparison.certificate_digest
+        or p17_report.fixed_candidate_report_sha256 != candidate_report_digest
+        or set(p17_report.candidate_skeleton_ids) != set(frozen.candidate_skeleton_ids)
+    ):
+        raise ValueError("P17 results do not bind the exact P16 frozen inputs")
+
+    def inspect(
+        manifest,
+        validation,
+        _stored_event_count,
+        _scan_stats,
+        _edges,
+        windows,
+        window_unknowns,
+    ) -> None:
+        if not validation.structurally_complete:
+            raise _P18FixedCycleComplete(
+                empty_report(
+                    termination_reason="trace_incomplete",
+                    limitations=validation.reasons,
+                )
+            )
+        actual_trace_digest = trace_digest(trace_dir)
+        actual_contract_digest = _file_digest(dbt_contract)
+        if (
+            manifest.trace_id != fixed_candidate_report.trace_id
+            or manifest.trace_id != p17_report.trace_id
+            or actual_trace_digest != fixed_candidate_report.trace_sha256
+            or actual_trace_digest != p17_report.trace_sha256
+            or actual_contract_digest != fixed_candidate_report.contract_sha256
+            or actual_contract_digest != p17_report.contract_sha256
+        ):
+            raise ValueError("P18 frozen trace or DBT contract binding changed")
+        if reduction_certificate.trace_id != manifest.trace_id:
+            raise ValueError("P18 PPO certificate trace_id differs from the frozen trace")
+        if window_unknowns:
+            raise _P18FixedCycleComplete(
+                empty_report(
+                    termination_reason="window_reconstruction_incomplete",
+                    limitations=tuple(window_unknowns),
+                )
+            )
+        matches = tuple(
+            window for window in windows
+            if window.window_id == frozen_comparison.window_id
+        )
+        if len(matches) != 1:
+            raise _P18FixedCycleComplete(
+                empty_report(
+                    termination_reason="frozen_window_missing_or_ambiguous",
+                    limitations=(
+                        f"expected one {frozen_comparison.window_id}; found {len(matches)}",
+                    ),
+                )
+            )
+        window = matches[0]
+        if len(window.events) != frozen_comparison.event_count:
+            raise ValueError("P18 frozen window event count changed")
+        certificate_by_window = {
+            item.window_id: item for item in reduction_certificate.windows
+        }
+        certificate = certificate_by_window.get(window.window_id)
+        if certificate is None:
+            raise ValueError("P18 PPO certificate has no frozen window entry")
+        from .analysis.ppo_reduction import ppo_certificate_digest
+
+        certificate_digest = ppo_certificate_digest(certificate)
+        if certificate_digest != frozen_comparison.certificate_digest:
+            raise ValueError("P18 PPO certificate digest differs from P16/P17 baseline")
+        graph = build_ppo_graph_input(window)
+        certificate_replay = replay_ppo_reduction(graph, certificate)
+        if not certificate_replay.accepted:
+            raise ValueError(
+                "P18 refuses to solve with a rejected PPO certificate: "
+                + "; ".join(certificate_replay.reasons)
+            )
+
+        queries = []
+        for candidate in candidates:
+            baseline_full = baseline_independent[candidate.cycle_id]
+            shared_baseline = baseline_shared_by_candidate[candidate.cycle_id]
+            query = run_fixed_candidate_cycle_shadow(
+                window,
+                graph=graph,
+                certificate=certificate,
+                candidate=candidate,
+                candidate_skeleton_id=expected_skeletons[candidate.cycle_id],
+                p17_independent_result=baseline_full.solver_result,
+                p17_shared_result=shared_baseline.solver_result,
+                control_flow_closed=manifest.control_flow_closed,
+                timeout_ms=timeout_ms,
+                max_symbolic_terms=max_symbolic_terms,
+            )
+            query = query.model_copy(
+                update={
+                    "p17_baseline": P17CandidateComparison(
+                        independent_result=baseline_full.solver_result,
+                        independent_formula_terms=baseline_full.formula_terms,
+                        independent_assertion_count=baseline_full.assertion_count,
+                        independent_ast_node_count=baseline_full.ast_node_count,
+                        independent_build_time_ms=baseline_full.encode_ms,
+                        independent_solver_time_ms=baseline_full.solver_ms,
+                        independent_replay_status=baseline_full.replay_status,
+                        shared_result=shared_baseline.solver_result,
+                        shared_base_formula_terms=shared_baseline.base_formula_terms,
+                        shared_base_assertion_count=shared_baseline.base_assertion_count,
+                        shared_base_ast_node_count=shared_baseline.base_ast_node_count,
+                        shared_base_build_time_ms=shared_baseline.base_encode_ms,
+                        shared_candidate_build_time_ms=shared_baseline.candidate_constraint_build_ms,
+                        shared_push_pop_time_ms=shared_baseline.candidate_push_pop_ms,
+                        shared_solver_time_ms=shared_baseline.solver_ms,
+                        shared_peak_rss_mb=shared_baseline.peak_rss_mb,
+                        p17_results_match=shared_baseline.result_matches_independent_full,
+                    )
+                }
+            )
+            queries.append(query)
+            snapshot = P18FixedCycleReport(
+                trace_id=manifest.trace_id,
+                trace_sha256=actual_trace_digest,
+                contract_sha256=actual_contract_digest,
+                window_id=window.window_id,
+                event_count=len(window.events),
+                ppo_certificate_digest=certificate_digest,
+                fixed_candidate_report_sha256=candidate_report_digest,
+                p17_report_sha256=p17_report_sha256 or baseline_digest,
+                candidate_ids=candidate_ids,
+                queries=tuple(queries),
+                timeout_ms=timeout_ms,
+                max_symbolic_terms=max_symbolic_terms,
+                process_wall_limit_seconds=process_wall_limit_seconds,
+                process_memory_limit_mb=process_memory_limit_mb,
+                termination_reason="in_progress",
+                limitations=(
+                    "Fixed-cycle results are shadow diagnostics and do not change formal verdicts.",
+                    "Any UNKNOWN or timeout remains unresolved; no candidate is pruned.",
+                ),
+            )
+            if progress_path is not None:
+                _write_p18_progress(progress_path, snapshot)
+
+        raise _P18FixedCycleComplete(
+            P18FixedCycleReport(
+                trace_id=manifest.trace_id,
+                trace_sha256=actual_trace_digest,
+                contract_sha256=actual_contract_digest,
+                window_id=window.window_id,
+                event_count=len(window.events),
+                ppo_certificate_digest=certificate_digest,
+                fixed_candidate_report_sha256=candidate_report_digest,
+                p17_report_sha256=p17_report_sha256 or baseline_digest,
+                candidate_ids=candidate_ids,
+                queries=tuple(queries),
+                timeout_ms=timeout_ms,
+                max_symbolic_terms=max_symbolic_terms,
+                process_wall_limit_seconds=process_wall_limit_seconds,
+                process_memory_limit_mb=process_memory_limit_mb,
+                limitations=(
+                    "Fixed-cycle results are shadow diagnostics and do not change formal verdicts.",
+                    "A fixed source cycle does not fix any RF choice; all full-window RF/FR/CO, target PPO, fence, and RMW constraints remain active.",
+                    "FULL_WINDOW_MODEL_VALIDATED is a symbolic model result, not a trace-bound execution counterexample.",
+                ),
+            )
+        )
+
+    try:
+        analyze_trace(
+            trace_dir,
+            dbt_contract=dbt_contract,
+            config=config,
+            _window_observer=inspect,
+        )
+    except _P18FixedCycleComplete as complete:
+        return complete.report
+    return empty_report(
+        termination_reason="window_inspection_not_reached",
+        limitations=("The ordinary trace pipeline did not produce the frozen analysis window.",),
     )
 
 
