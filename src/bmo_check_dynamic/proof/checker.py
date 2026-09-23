@@ -30,6 +30,7 @@ from bmo_check_dynamic.model import (
 )
 
 from .relations import Edge, find_cycle, source_preserved_order, target_preserved_order
+from .incremental_shadow import IncrementalShadowSession
 
 
 @dataclass(frozen=True, slots=True)
@@ -702,6 +703,7 @@ def _check_symbolic(
         tuple[str, str, str, tuple[str, ...]], ...
     ] = (),
     capture_model: bool = False,
+    incremental_session_sink: list[IncrementalShadowSession] | None = None,
 ) -> WindowResult:
     deadline = monotonic() + timeout_ms / 1000
     build_started_at = (
@@ -1145,6 +1147,52 @@ def _check_symbolic(
             == z3.If(selected_nodes[node], 1, 0),
         )
 
+    if incremental_session_sink is not None:
+        if required_source_cycle_edges or required_source_cycle_relations:
+            raise ValueError(
+                "incremental base formula must not contain candidate-specific constraints"
+            )
+        build_time_ms = max(0, int((monotonic() - build_started_at) * 1000))
+        counted_solver = solver if isinstance(solver, _CountingSolver) else None
+        native_solver = (
+            counted_solver._solver if counted_solver is not None else solver
+        )
+        remaining_ms = max(1, int((deadline - monotonic()) * 1000))
+        native_solver.set(timeout=remaining_ms)
+        incremental_session_sink.append(
+            IncrementalShadowSession(
+                solver=native_solver,
+                relation_conditions=relation_conditions,
+                selected_edges=selected_edges,
+                window_event_ids=nodes,
+                base_formula_terms=formula_terms,
+                base_assertions=(
+                    counted_solver.assertion_count
+                    if counted_solver is not None
+                    else len(native_solver.assertions())
+                ),
+                base_ast_nodes=(
+                    counted_solver.ast_count
+                    if counted_solver is not None
+                    else sum(_ast_size(item) for item in native_solver.assertions())
+                ),
+                base_build_ms=build_time_ms,
+                source_ppo_edge_count=len(source_ppo),
+                target_ppo_edge_count=len(target_ppo),
+            )
+        )
+        return finish(
+            WindowResult(
+                window_id=window.window_id,
+                event_ids=nodes,
+                status="unknown",
+                reason="shadow full-window base formula is ready for candidate assumptions",
+            ),
+            solver_result="base_ready",
+            solver=solver,
+            build_time_ms=build_time_ms,
+        )
+
     if not execute_solver:
         build_time_ms = max(0, int((monotonic() - build_started_at) * 1000))
         return finish(
@@ -1384,6 +1432,54 @@ def run_symbolic_shadow(
         capture_model=capture_model,
     )
     return result, observation.freeze()
+
+
+def build_incremental_shadow_session(
+    window: AnalysisWindow,
+    *,
+    source_ppo: set[Edge],
+    target_ppo: set[Edge],
+    control_flow_closed: bool,
+    timeout_ms: int,
+    max_symbolic_terms: int,
+    profile: SolverDiagnosticProfile = SolverDiagnosticProfile.FULL,
+) -> tuple[IncrementalShadowSession | None, SymbolicSolverObservation]:
+    """用正式 symbolic encoder 构造一次完整 shadow 基础公式，供候选批量查询。"""
+
+    memory = tuple(event for event in window.events if event.kind.is_memory)
+    reads = tuple(event for event in memory if event.kind.is_read)
+    writes = tuple(event for event in memory if event.kind.is_write)
+    writes_by_location = {
+        location: tuple(
+            event for event in writes if _location(event) == location
+        )
+        for location in {_location(event) for event in writes}
+    }
+    observation = _MutableSymbolicObservation(
+        started_at=monotonic(),
+        source_ppo_edge_count=len(source_ppo),
+        target_ppo_edge_count=len(target_ppo),
+        profile=profile,
+    )
+    sessions: list[IncrementalShadowSession] = []
+    result = _check_symbolic(
+        window,
+        reads,
+        writes,
+        writes_by_location,
+        set(source_ppo),
+        set(target_ppo),
+        control_flow_closed=control_flow_closed,
+        timeout_ms=timeout_ms,
+        max_symbolic_terms=max_symbolic_terms,
+        runtime_observation=observation,
+        execute_solver=False,
+        profile=profile,
+        incremental_session_sink=sessions,
+    )
+    if result.reason != "shadow full-window base formula is ready for candidate assumptions":
+        return None, observation.freeze()
+    return sessions[0], observation.freeze()
 
 
 def _overlap_components(

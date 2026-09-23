@@ -72,6 +72,11 @@ from .cegar import (
     replay_blocking_constraint_detail,
 )
 from .cegar_experiments import compare_candidate_coverage, compare_cegar_modes
+from .global_constraint_validation import (
+    find_frozen_p15_mode,
+    run_global_constraint_validation,
+    run_progressive_candidate_validation,
+)
 from .solver_benchmark import run_isolated_solver_benchmark
 from .window_diagnostics import (
     WindowCharacterizationReport,
@@ -144,6 +149,9 @@ __all__ = [
     "replay_blocking_constraint_detail",
     "compare_cegar_modes",
     "compare_candidate_coverage",
+    "run_global_constraint_validation",
+    "find_frozen_p15_mode",
+    "run_progressive_candidate_validation",
     "build_trace_coverage",
     "coverage_state",
     "digest_edges",

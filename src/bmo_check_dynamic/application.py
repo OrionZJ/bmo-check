@@ -35,6 +35,7 @@ from bmo_check_dynamic.model import (
     TraceCegarReport,
     CegarExperimentReport,
     CegarExperimentMode,
+    GlobalConstraintValidationReport,
 )
 from bmo_check_dynamic.pipeline import (
     analyze_trace,
@@ -51,6 +52,7 @@ from bmo_check_dynamic.pipeline import (
     graph_first_trace,
     cegar_trace,
     cegar_mode_comparison_trace,
+    p17_global_validation_trace,
     slice_plan_trace,
 )
 
@@ -384,6 +386,39 @@ def cegar_ab(
     )
 
 
+def p17_global_validation(
+    request: AnalyzeRequest,
+    fixed_candidate_report: CegarExperimentReport,
+    reduction_certificate: TracePpoReductionCertificate,
+    *,
+    partial_timeout_ms: int = 1_000,
+    full_timeout_ms: int = 30_000,
+    max_symbolic_terms: int = 100_000,
+    max_queries_per_solver_session: int = 2,
+    process_wall_limit_seconds: int = 1_800,
+    process_memory_limit_mb: int | None = 8_192,
+    expected_candidate_count: int = 10,
+    progress_path: Path | None = None,
+) -> GlobalConstraintValidationReport:
+    """在冻结 P16 候选上运行 shadow-only 的 P17 实验。"""
+
+    return p17_global_validation_trace(
+        request.trace_dir,
+        dbt_contract=request.dbt_contract,
+        config=request.config,
+        fixed_candidate_report=fixed_candidate_report,
+        reduction_certificate=reduction_certificate,
+        partial_timeout_ms=partial_timeout_ms,
+        full_timeout_ms=full_timeout_ms,
+        max_symbolic_terms=max_symbolic_terms,
+        max_queries_per_solver_session=max_queries_per_solver_session,
+        process_wall_limit_seconds=process_wall_limit_seconds,
+        process_memory_limit_mb=process_memory_limit_mb,
+        expected_candidate_count=expected_candidate_count,
+        progress_path=progress_path,
+    )
+
+
 __all__ = [
     "AnalyzeRequest",
     "CaptureRequest",
@@ -402,6 +437,7 @@ __all__ = [
     "graph_first",
     "cegar_prototype",
     "cegar_ab",
+    "p17_global_validation",
     "characterize",
     "capture",
 ]

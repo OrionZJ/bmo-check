@@ -150,6 +150,20 @@ from .cegar_experiment import (
     LocalWitnessClosureKind,
     LocalWitnessClosureRecord,
 )
+from .incremental_validation import (
+    CandidateReadPartDomain,
+    CandidateReadSourceDomain,
+    DependencyCoverage,
+    DependencyCoverageStatus,
+    DependencyFamily,
+    GlobalConstraintValidationReport,
+    FixedCandidateBaseline,
+    IndependentFullWindowQuery,
+    IncrementalSessionBuild,
+    IncrementalCandidateCheck,
+    ProgressiveCandidateValidation,
+    ProgressiveValidationRound,
+)
 
 __all__ = [
     "BinaryFingerprint",
@@ -289,4 +303,16 @@ __all__ = [
     "LocalWitnessClosureRecord",
     "CegarModeComparisonReport",
     "CegarExperimentReport",
+    "DependencyCoverageStatus",
+    "DependencyFamily",
+    "CandidateReadPartDomain",
+    "CandidateReadSourceDomain",
+    "FixedCandidateBaseline",
+    "DependencyCoverage",
+    "ProgressiveValidationRound",
+    "ProgressiveCandidateValidation",
+    "IncrementalCandidateCheck",
+    "GlobalConstraintValidationReport",
+    "IndependentFullWindowQuery",
+    "IncrementalSessionBuild",
 ]

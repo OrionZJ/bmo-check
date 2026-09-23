@@ -8,11 +8,13 @@ import pytest
 
 import bmo_check_dynamic.cli as dynamic_cli
 from bmo_check_dynamic.cli import main
+from bmo_check_dynamic.pipeline import _write_global_constraint_progress
 from bmo_check_dynamic.capture import CaptureError
 from bmo_check_dynamic.model import (
     BinaryFingerprint,
     DynamicCertificate,
     EventKind,
+    GlobalConstraintValidationReport,
     TraceEvent,
     TraceManifest,
     TraceScope,
@@ -55,6 +57,51 @@ def test_analyze_and_explain_trace_safe(
 
     assert main(["explain", str(certificate)]) == 0
     assert "TRACE_SAFE" in capsys.readouterr().out
+
+
+def test_p17_cli_defaults_to_bounded_full_window_experiment() -> None:
+    args = dynamic_cli.build_parser().parse_args(
+        [
+            "p17-global-validation",
+            "trace-dir",
+            "--fixed-candidate-report",
+            "candidates.json",
+            "--reduction-certificate",
+            "ppo.json",
+            "--output",
+            "p17.json",
+        ]
+    )
+
+    assert args.max_window_events == 10_000
+    assert args.expected_candidate_count == 10
+    assert args.process_wall_limit_seconds == 1_800
+    assert args.process_memory_limit_mb == 8_192
+    assert args.p17_max_symbolic_terms == 100_000
+
+
+def test_p17_progress_checkpoint_is_atomically_serialized(tmp_path: Path) -> None:
+    path = tmp_path / "p17.progress.json"
+    snapshot = GlobalConstraintValidationReport(
+        trace_id="trace",
+        trace_sha256="trace-digest",
+        contract_sha256="contract-digest",
+        window_id="window",
+        event_count=4,
+        ppo_certificate_digest="ppo-digest",
+        candidate_skeleton_ids=(),
+        max_partial_timeout_ms=1_000,
+        max_full_timeout_ms=30_000,
+        max_symbolic_terms=10_000,
+        max_queries_per_solver_session=2,
+        process_wall_limit_seconds=60,
+        termination_reason="in_progress",
+    )
+
+    _write_global_constraint_progress(path, snapshot)
+
+    assert json.loads(path.read_text(encoding="utf-8"))["termination_reason"] == "in_progress"
+    assert not tuple(tmp_path.glob("*.writing"))
 
 
 def test_characterize_scans_windows_without_running_proof(

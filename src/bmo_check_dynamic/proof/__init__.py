@@ -2,6 +2,7 @@ from .checker import (
     SymbolicEncodingStats,
     SymbolicSolverObservation,
     characterize_symbolic_encoding,
+    build_incremental_shadow_session,
     run_symbolic_shadow,
     symbolic_candidate_digest,
     check_window,
@@ -14,6 +15,7 @@ from .characterization import (
     canonicalize_fixed_relations,
     check_fixed_execution,
 )
+from .incremental_shadow import IncrementalShadowCheck, IncrementalShadowSession
 
 __all__ = [
     "DbtContract",
@@ -26,6 +28,9 @@ __all__ = [
     "SymbolicEncodingStats",
     "SymbolicSolverObservation",
     "characterize_symbolic_encoding",
+    "build_incremental_shadow_session",
+    "IncrementalShadowCheck",
+    "IncrementalShadowSession",
     "run_symbolic_shadow",
     "symbolic_candidate_digest",
     "load_supported_contract",

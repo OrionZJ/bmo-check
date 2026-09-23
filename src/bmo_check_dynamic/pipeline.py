@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import tempfile
 import time
 from datetime import datetime, timezone
@@ -45,6 +46,9 @@ from bmo_check_dynamic.analysis import (
     characterize_graph_first_window,
     characterize_cegar_window,
     compare_cegar_modes,
+    canonicalize_cycle_skeleton,
+    find_frozen_p15_mode,
+    run_global_constraint_validation,
     window_digest,
 )
 from bmo_check_dynamic.analysis.coverage import build_trace_coverage
@@ -83,6 +87,7 @@ from bmo_check_dynamic.model import (
     CegarExperimentReport,
     CegarExperimentMode,
     CandidateDiscoveryResourcePolicy,
+    GlobalConstraintValidationReport,
 )
 from bmo_check_dynamic.proof import (
     characterize_symbolic_encoding,
@@ -93,6 +98,17 @@ from bmo_check_dynamic.storage import TraceStore, TraceStoreError
 from bmo_check_dynamic.trace import TraceReader, trace_digest, validate_trace
 from bmo_check_dynamic.trace import build_dynamic_certificate_binding
 from bmo_check_dynamic.trace.format import event_files
+
+
+def _write_global_constraint_progress(
+    path: Path, snapshot: GlobalConstraintValidationReport
+) -> None:
+    """保存已完成的 shadow 单元，崩溃后不把半份 JSON 当成检查点。"""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f"{path.name}.{os.getpid()}.writing")
+    temporary.write_text(snapshot.model_dump_json(indent=2), encoding="utf-8")
+    temporary.replace(path)
 
 
 class _WindowInspectionComplete(Exception):
@@ -209,6 +225,14 @@ class _CegarExperimentInspectionComplete(Exception):
 
     def __init__(self, report: CegarExperimentReport) -> None:
         super().__init__("P13 CEGAR comparison completed")
+        self.report = report
+
+
+class _GlobalConstraintValidationComplete(Exception):
+    """P17 shadow validation completed before the formal trace checker ran."""
+
+    def __init__(self, report: GlobalConstraintValidationReport) -> None:
+        super().__init__("P17 global-constraint validation completed")
         self.report = report
 
 
@@ -1657,6 +1681,206 @@ def cegar_mode_comparison_trace(
         trace_complete=analyzed.trace_complete,
         analysis_reached_windows=False,
         reasons=analyzed.unknown_reasons,
+    )
+
+
+def p17_global_validation_trace(
+    trace_dir: Path,
+    *,
+    dbt_contract: Path,
+    fixed_candidate_report: CegarExperimentReport,
+    reduction_certificate: TracePpoReductionCertificate,
+    config: DynamicConfig | None = None,
+    partial_timeout_ms: int = 1_000,
+    full_timeout_ms: int = 30_000,
+    max_symbolic_terms: int = 100_000,
+    max_queries_per_solver_session: int = 2,
+    process_wall_limit_seconds: int = 1_800,
+    process_memory_limit_mb: int | None = 8_192,
+    expected_candidate_count: int = 10,
+    progress_path: Path | None = None,
+) -> GlobalConstraintValidationReport:
+    """在冻结 P16 候选上运行 P17 shadow 实验，不进入正式 trace verdict。"""
+
+    config = config or DynamicConfig()
+    if progress_path is not None and progress_path.exists():
+        raise ValueError(f"refusing to overwrite P17 progress file: {progress_path}")
+    frozen_comparison, frozen = find_frozen_p15_mode(fixed_candidate_report)
+
+    def empty_report(
+        window_id: str,
+        event_count: int,
+        *,
+        termination_reason: str,
+        limitations: tuple[str, ...] = (),
+    ) -> GlobalConstraintValidationReport:
+        return GlobalConstraintValidationReport(
+            trace_id=fixed_candidate_report.trace_id or "unknown",
+            trace_sha256=fixed_candidate_report.trace_sha256 or "unknown",
+            contract_sha256=fixed_candidate_report.contract_sha256 or "unknown",
+            window_id=window_id,
+            event_count=event_count,
+            ppo_certificate_digest=frozen_comparison.certificate_digest or "unknown",
+            candidate_skeleton_ids=frozen.candidate_skeleton_ids,
+            max_partial_timeout_ms=partial_timeout_ms,
+            max_full_timeout_ms=full_timeout_ms,
+            max_symbolic_terms=max_symbolic_terms,
+            max_queries_per_solver_session=max_queries_per_solver_session,
+            process_wall_limit_seconds=process_wall_limit_seconds,
+            process_memory_limit_mb=process_memory_limit_mb,
+            termination_reason=termination_reason,
+            limitations=limitations,
+        )
+
+    def inspect(
+        manifest,
+        validation,
+        _stored_event_count,
+        _scan_stats,
+        _edges,
+        windows,
+        window_unknowns,
+    ) -> None:
+        if not validation.structurally_complete:
+            raise _GlobalConstraintValidationComplete(
+                empty_report(
+                    frozen_comparison.window_id,
+                    frozen_comparison.event_count,
+                    termination_reason="trace_incomplete",
+                    limitations=validation.reasons,
+                )
+            )
+        actual_trace_digest = trace_digest(trace_dir)
+        actual_contract_digest = _file_digest(dbt_contract)
+        if (
+            manifest.trace_id != fixed_candidate_report.trace_id
+            or actual_trace_digest != fixed_candidate_report.trace_sha256
+            or actual_contract_digest != fixed_candidate_report.contract_sha256
+        ):
+            raise ValueError(
+                "frozen P16 candidate report does not match this trace and DBT contract"
+            )
+        if reduction_certificate.trace_id != manifest.trace_id:
+            raise ValueError("PPO certificate trace_id does not match frozen trace")
+        if window_unknowns:
+            raise _GlobalConstraintValidationComplete(
+                empty_report(
+                    frozen_comparison.window_id,
+                    frozen_comparison.event_count,
+                    termination_reason="window_reconstruction_incomplete",
+                    limitations=tuple(window_unknowns),
+                )
+            )
+        matches = tuple(
+            window
+            for window in windows
+            if window.window_id == frozen_comparison.window_id
+        )
+        if len(matches) != 1:
+            raise _GlobalConstraintValidationComplete(
+                empty_report(
+                    frozen_comparison.window_id,
+                    frozen_comparison.event_count,
+                    termination_reason="frozen_window_missing_or_ambiguous",
+                    limitations=(
+                        f"expected one {frozen_comparison.window_id}; found {len(matches)}",
+                    ),
+                )
+            )
+        window = matches[0]
+        if len(window.events) != frozen_comparison.event_count:
+            raise ValueError("frozen P16 candidate event count differs from current window")
+        certificates = {
+            item.window_id: item for item in reduction_certificate.windows
+        }
+        certificate = certificates.get(window.window_id)
+        if certificate is None:
+            raise ValueError("PPO certificate does not contain the frozen window")
+        from .analysis.ppo_reduction import ppo_certificate_digest
+
+        if ppo_certificate_digest(certificate) != frozen_comparison.certificate_digest:
+            raise ValueError("PPO certificate digest differs from frozen P16 report")
+
+        records = frozen.candidate_records
+        if len(records) != frozen.unique_candidates:
+            raise ValueError(
+                "frozen candidate report does not include every unique P15 candidate"
+            )
+        if len(records) != expected_candidate_count:
+            raise ValueError(
+                "fixed candidate baseline count differs from the requested exact set: "
+                f"expected {expected_candidate_count}, found {len(records)}"
+            )
+        skeleton_by_cycle_id = {
+            record.cycle_id: canonicalize_cycle_skeleton(
+                record.candidate_violation_cycle
+            ).canonical_id
+            for record in records
+            if record.candidate_violation_cycle is not None
+        }
+        if set(skeleton_by_cycle_id.values()) != set(frozen.candidate_skeleton_ids):
+            raise ValueError("P15 candidate records differ from their frozen skeleton IDs")
+        candidates = tuple(records)
+        if any(
+            record.candidate_violation_cycle is None or record.local_query is None
+            for record in candidates
+        ):
+            raise ValueError(
+                "the re-run fixed set must preserve a semantic cycle and local result "
+                "for all candidates, including local UNSAT/UNKNOWN"
+            )
+        if any(record.cycle_id not in skeleton_by_cycle_id for record in candidates):
+            raise ValueError("a fixed candidate has no stable skeleton ID")
+        report_digest = hashlib.sha256(
+            json.dumps(
+                fixed_candidate_report.model_dump(mode="json"),
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            ).encode("utf-8")
+        ).hexdigest()
+
+        def save_progress(snapshot: GlobalConstraintValidationReport) -> None:
+            if progress_path is None:
+                return
+            _write_global_constraint_progress(progress_path, snapshot)
+
+        report = run_global_constraint_validation(
+            window,
+            certificate,
+            candidates,
+            candidate_skeleton_ids=skeleton_by_cycle_id,
+            trace_id=manifest.trace_id,
+            trace_sha256=actual_trace_digest,
+            contract_sha256=actual_contract_digest,
+            fixed_candidate_report_sha256=report_digest,
+            control_flow_closed=manifest.control_flow_closed,
+            partial_timeout_ms=partial_timeout_ms,
+            full_timeout_ms=full_timeout_ms,
+            max_symbolic_terms=max_symbolic_terms,
+            max_queries_per_solver_session=max_queries_per_solver_session,
+            process_wall_limit_seconds=process_wall_limit_seconds,
+            process_memory_limit_mb=process_memory_limit_mb,
+            progress_callback=save_progress if progress_path is not None else None,
+        )
+        raise _GlobalConstraintValidationComplete(report)
+
+    try:
+        analyze_trace(
+            trace_dir,
+            dbt_contract=dbt_contract,
+            config=config,
+            _window_observer=inspect,
+        )
+    except _GlobalConstraintValidationComplete as complete:
+        return complete.report
+    return empty_report(
+        frozen_comparison.window_id,
+        frozen_comparison.event_count,
+        termination_reason="window_inspection_not_reached",
+        limitations=(
+            "The ordinary trace pipeline did not produce the frozen analysis window.",
+        ),
     )
 
 

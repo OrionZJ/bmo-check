@@ -4,6 +4,8 @@ import argparse
 import hashlib
 import json
 import os
+import signal
+import subprocess
 import time
 import sys
 try:
@@ -32,6 +34,7 @@ from bmo_check_dynamic.application import (
     graph_first as graph_first_request,
     cegar_prototype as cegar_request,
     cegar_ab as cegar_ab_request,
+    p17_global_validation as p17_global_validation_request,
     capture as capture_request,
 )
 from bmo_check_dynamic.capture import CaptureError
@@ -39,7 +42,7 @@ from bmo_check_dynamic.adapters import (
     DynamicTraceBindingError,
     replay_dynamic_certificate,
 )
-from bmo_check_dynamic.analysis import locate_instruction_site
+from bmo_check_dynamic.analysis import find_frozen_p15_mode, locate_instruction_site
 from bmo_check_dynamic.analysis import run_isolated_solver_benchmark
 from bmo_check_dynamic.config import DynamicConfig
 from bmo_check_dynamic.model import (
@@ -50,6 +53,8 @@ from bmo_check_dynamic.model import (
     CegarExperimentMode,
     CandidateDiscoveryResourcePolicy,
     TraceReducedSolverRunCertificate,
+    CegarExperimentReport,
+    GlobalConstraintValidationReport,
     TraceVerdict,
     BenchmarkSide,
     SolverBenchmarkChildReport,
@@ -363,6 +368,244 @@ def _cegar_ab(args: argparse.Namespace) -> int:
     args.output.write_text(report.model_dump_json(indent=2), encoding="utf-8")
     print(report.model_dump_json(indent=2))
     return 0
+
+
+def _write_json_atomically(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f"{path.name}.{os.getpid()}.writing")
+    temporary.write_text(content, encoding="utf-8")
+    temporary.replace(path)
+
+
+def _p17_global_validation_worker(args: argparse.Namespace) -> int:
+    if os.environ.get("BMO_P17_LIMITED_WORKER") != "1":
+        raise ValueError("P17 worker must be launched by the bounded parent command")
+    if resource is None or os.name != "posix":
+        raise ValueError("bounded P17 worker requires POSIX resource limits")
+    address_space_limit = args.process_memory_limit_mb * 1024 * 1024
+    soft_limit, hard_limit = resource.getrlimit(resource.RLIMIT_AS)
+    if (
+        soft_limit == resource.RLIM_INFINITY
+        or hard_limit == resource.RLIM_INFINITY
+        or soft_limit > address_space_limit
+        or hard_limit > address_space_limit
+    ):
+        raise ValueError("P17 worker address-space limit was not installed by its parent")
+    candidate_report = CegarExperimentReport.model_validate_json(
+        args.fixed_candidate_report.read_text(encoding="utf-8")
+    )
+    reduction_certificate = TracePpoReductionCertificate.model_validate_json(
+        args.reduction_certificate.read_text(encoding="utf-8")
+    )
+    report = p17_global_validation_request(
+        AnalyzeRequest(
+            trace_dir=args.trace,
+            dbt_contract=args.dbt_contract,
+            config=_analysis_config(args),
+        ),
+        candidate_report,
+        reduction_certificate,
+        partial_timeout_ms=args.partial_timeout_ms,
+        full_timeout_ms=args.full_timeout_ms,
+        max_symbolic_terms=args.p17_max_symbolic_terms,
+        max_queries_per_solver_session=args.max_queries_per_solver_session,
+        process_wall_limit_seconds=args.process_wall_limit_seconds,
+        process_memory_limit_mb=args.process_memory_limit_mb,
+        expected_candidate_count=args.expected_candidate_count,
+        progress_path=args.progress,
+    )
+    report = report.model_copy(
+        update={"resource_enforcement": "posix_rlimit_as+parent_wall_timeout"}
+    )
+    _write_json_atomically(args.output, report.model_dump_json(indent=2))
+    return 0
+
+
+def _p17_global_validation(args: argparse.Namespace) -> int:
+    if resource is None or os.name != "posix":
+        raise ValueError("bounded P17 execution requires WSL/Linux resource limits")
+    if args.process_wall_limit_seconds <= 0 or args.process_memory_limit_mb <= 0:
+        raise ValueError("P17 wall and address-space limits must be positive")
+    progress_path = args.progress or args.output.with_name(
+        f"{args.output.stem}.progress{args.output.suffix}"
+    )
+    if args.output.resolve() == progress_path.resolve():
+        raise ValueError("P17 final report and progress checkpoint paths must differ")
+    stdout_path = args.output.with_name(f"{args.output.name}.stdout.log")
+    stderr_path = args.output.with_name(f"{args.output.name}.stderr.log")
+    occupied = tuple(
+        path
+        for path in (args.output, progress_path, stdout_path, stderr_path)
+        if path.exists()
+    )
+    if occupied:
+        raise ValueError(
+            "refusing to overwrite P17 outputs: "
+            + ", ".join(str(path) for path in occupied)
+        )
+    candidate_report = CegarExperimentReport.model_validate_json(
+        args.fixed_candidate_report.read_text(encoding="utf-8")
+    )
+    comparison, frozen = find_frozen_p15_mode(candidate_report)
+    command = [
+        sys.executable,
+        "-m",
+        "bmo_check_dynamic.cli",
+        "_p17-global-validation-worker",
+        str(args.trace.resolve()),
+        "--fixed-candidate-report",
+        str(args.fixed_candidate_report.resolve()),
+        "--reduction-certificate",
+        str(args.reduction_certificate.resolve()),
+        "--output",
+        str(args.output.resolve()),
+        "--progress",
+        str(progress_path.resolve()),
+        "--partial-timeout-ms",
+        str(args.partial_timeout_ms),
+        "--full-timeout-ms",
+        str(args.full_timeout_ms),
+        "--p17-max-symbolic-terms",
+        str(args.p17_max_symbolic_terms),
+        "--max-queries-per-solver-session",
+        str(args.max_queries_per_solver_session),
+        "--process-wall-limit-seconds",
+        str(args.process_wall_limit_seconds),
+        "--process-memory-limit-mb",
+        str(args.process_memory_limit_mb),
+        "--expected-candidate-count",
+        str(args.expected_candidate_count),
+        "--dbt-contract",
+        str(args.dbt_contract.resolve()),
+        "--max-window-events",
+        str(args.max_window_events),
+        "--max-executions",
+        str(args.max_executions),
+        "--max-communication-edges",
+        str(args.max_communication_edges),
+        "--max-communication-active-events",
+        str(args.max_communication_active_events),
+        "--max-object-events",
+        str(args.max_object_events),
+        "--max-pages-per-access",
+        str(args.max_pages_per_access),
+        "--batch-size",
+        str(args.batch_size),
+        "--solver-timeout-ms",
+        str(args.solver_timeout_ms),
+        "--max-symbolic-terms",
+        str(args.max_symbolic_terms),
+        "--database-memory-limit-mb",
+        str(args.database_memory_limit_mb),
+    ]
+    if args.database is not None:
+        command.extend(("--database", str(args.database.resolve())))
+    if args.application_only:
+        command.append("--application-only")
+
+    limit_bytes = args.process_memory_limit_mb * 1024 * 1024
+
+    def impose_address_space_limit() -> None:
+        resource.setrlimit(resource.RLIMIT_AS, (limit_bytes, limit_bytes))
+
+    environment = os.environ.copy()
+    environment["BMO_P17_LIMITED_WORKER"] = "1"
+    started = time.monotonic()
+    timed_out = False
+    return_code: int | None = None
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    with stdout_path.open("wb") as stdout_file, stderr_path.open("wb") as stderr_file:
+        worker = subprocess.Popen(
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=stdout_file,
+            stderr=stderr_file,
+            env=environment,
+            start_new_session=True,
+            preexec_fn=impose_address_space_limit,
+        )
+        try:
+            return_code = worker.wait(timeout=args.process_wall_limit_seconds)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            try:
+                os.killpg(worker.pid, signal.SIGTERM)
+                worker.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                os.killpg(worker.pid, signal.SIGKILL)
+                return_code = worker.wait()
+            except ProcessLookupError:
+                return_code = worker.poll()
+            if return_code is None:
+                return_code = worker.poll()
+    wall_ms = max(0, int((time.monotonic() - started) * 1000))
+    peak_rss_mb = None
+    if resource is not None:
+        peak_rss_mb = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss / 1024
+
+    source = args.output if args.output.is_file() else progress_path
+    if source.is_file():
+        report = GlobalConstraintValidationReport.model_validate_json(
+            source.read_text(encoding="utf-8")
+        )
+    else:
+        report = GlobalConstraintValidationReport(
+            trace_id=candidate_report.trace_id or "unknown",
+            trace_sha256=candidate_report.trace_sha256 or "unknown",
+            contract_sha256=candidate_report.contract_sha256 or "unknown",
+            window_id=comparison.window_id,
+            event_count=comparison.event_count,
+            ppo_certificate_digest=comparison.certificate_digest or "unknown",
+            candidate_skeleton_ids=frozen.candidate_skeleton_ids,
+            max_partial_timeout_ms=args.partial_timeout_ms,
+            max_full_timeout_ms=args.full_timeout_ms,
+            max_symbolic_terms=args.p17_max_symbolic_terms,
+            max_queries_per_solver_session=args.max_queries_per_solver_session,
+            process_wall_limit_seconds=args.process_wall_limit_seconds,
+            process_memory_limit_mb=args.process_memory_limit_mb,
+            limitations=("Worker exited before writing its first progress checkpoint.",),
+        )
+    if timed_out:
+        termination_reason = "process_wall_limit_exceeded"
+    elif return_code == 0 and args.output.is_file():
+        termination_reason = "completed"
+    elif return_code is not None and return_code < 0:
+        termination_reason = f"worker_terminated_by_signal_{-return_code}"
+    else:
+        termination_reason = "worker_failed"
+    report = report.model_copy(
+        update={
+            "termination_reason": termination_reason,
+            "resource_enforcement": "posix_rlimit_as+parent_wall_timeout",
+            "process_peak_rss_mb": peak_rss_mb,
+            "worker_wall_time_ms": wall_ms,
+            "worker_exit_code": return_code,
+            "limitations": tuple(
+                dict.fromkeys(
+                    report.limitations
+                    + (
+                        f"Worker outcome: {termination_reason}; the latest durable progress checkpoint is retained.",
+                        "Address-space cap is RLIMIT_AS; peak RSS is measured separately.",
+                    )
+                )
+            ),
+        }
+    )
+    _write_json_atomically(args.output, report.model_dump_json(indent=2))
+    print(
+        json.dumps(
+            {
+                "output": str(args.output),
+                "termination_reason": report.termination_reason,
+                "completed_progressive_candidates": len(report.progressive_runs),
+                "completed_incremental_sessions": len(report.incremental_session_builds),
+                "worker_wall_time_ms": report.worker_wall_time_ms,
+                "process_peak_rss_mb": report.process_peak_rss_mb,
+            },
+            ensure_ascii=False,
+        )
+    )
+    return 0 if termination_reason == "completed" else 2
 
 
 def _ppo_replay(args: argparse.Namespace) -> int:
@@ -1147,6 +1390,47 @@ def build_parser() -> argparse.ArgumentParser:
     cegar_ab.add_argument("--progress", type=Path, default=None)
     _add_analysis_options(cegar_ab)
     cegar_ab.set_defaults(handler=_cegar_ab)
+
+    p17 = subparsers.add_parser(
+        "p17-global-validation",
+        help="run bounded, shadow-only P17 candidate closure and shared-solver study",
+    )
+    p17.add_argument("trace", type=Path)
+    p17.add_argument("--fixed-candidate-report", type=Path, required=True)
+    p17.add_argument("--reduction-certificate", type=Path, required=True)
+    p17.add_argument("--output", type=Path, required=True)
+    p17.add_argument("--progress", type=Path)
+    p17.add_argument("--partial-timeout-ms", type=int, default=1_000)
+    p17.add_argument("--full-timeout-ms", type=int, default=30_000)
+    p17.add_argument("--p17-max-symbolic-terms", type=int, default=100_000)
+    p17.add_argument("--max-queries-per-solver-session", type=int, default=2)
+    p17.add_argument("--process-wall-limit-seconds", type=int, default=1_800)
+    p17.add_argument("--process-memory-limit-mb", type=int, default=8_192)
+    p17.add_argument("--expected-candidate-count", type=int, default=10)
+    _add_analysis_options(p17)
+    p17.set_defaults(
+        handler=_p17_global_validation,
+        max_window_events=10_000,
+    )
+
+    p17_worker = subparsers.add_parser(
+        "_p17-global-validation-worker",
+        help=argparse.SUPPRESS,
+    )
+    p17_worker.add_argument("trace", type=Path)
+    p17_worker.add_argument("--fixed-candidate-report", type=Path, required=True)
+    p17_worker.add_argument("--reduction-certificate", type=Path, required=True)
+    p17_worker.add_argument("--output", type=Path, required=True)
+    p17_worker.add_argument("--progress", type=Path, required=True)
+    p17_worker.add_argument("--partial-timeout-ms", type=int, required=True)
+    p17_worker.add_argument("--full-timeout-ms", type=int, required=True)
+    p17_worker.add_argument("--p17-max-symbolic-terms", type=int, required=True)
+    p17_worker.add_argument("--max-queries-per-solver-session", type=int, required=True)
+    p17_worker.add_argument("--process-wall-limit-seconds", type=int, required=True)
+    p17_worker.add_argument("--process-memory-limit-mb", type=int, required=True)
+    p17_worker.add_argument("--expected-candidate-count", type=int, required=True)
+    _add_analysis_options(p17_worker)
+    p17_worker.set_defaults(handler=_p17_global_validation_worker)
 
     ppo_replay = subparsers.add_parser(
         "ppo-replay",
