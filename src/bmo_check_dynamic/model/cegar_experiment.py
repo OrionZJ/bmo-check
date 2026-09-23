@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from enum import StrEnum
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from .manifest import StrictModel
 from .graph_first import (
     CandidateCycleReplay,
+    CandidateCycleReplayStatus,
     CandidateDiscoveryProfile,
     GraphFirstCandidateCycle,
     GraphFirstLocalQuery,
@@ -25,13 +26,14 @@ class CegarExperimentMode(StrEnum):
 
 
 class BlockingReplayReport(StrictModel):
-    """一条 blocking constraint 的独立字段检查结果。"""
+    """一条 blocking constraint 的 query/范围字段检查结果。"""
 
     block_id: str
     accepted: bool
     query_binding_valid: bool
     assumption_scope_valid: bool
     semantic_context_valid: bool
+    # 检查记录是否声称 solver 返回 UNSAT；不表示独立重跑或校验了 Z3 proof。
     solver_status_valid: bool
     reasons: tuple[str, ...] = ()
     diagnostic_only: bool = True
@@ -57,7 +59,9 @@ class CandidateCoverageReport(StrictModel):
 class LocalWitnessClosureKind(StrEnum):
     """全窗口闭包查询对局部 FEASIBLE 的诊断分类。"""
 
-    VALID_COMPLETE_WITNESS = "VALID_COMPLETE_WITNESS"
+    FULL_WINDOW_MODEL_VALIDATED = "FULL_WINDOW_MODEL_VALIDATED"
+    EXECUTION_WITNESS_VALIDATED = "EXECUTION_WITNESS_VALIDATED"
+    LEGACY_UNVERIFIED = "LEGACY_UNVERIFIED"
     SPURIOUS_LOCAL_SAT = "SPURIOUS_LOCAL_SAT"
     CLOSURE_QUERY_UNKNOWN = "CLOSURE_QUERY_UNKNOWN"
     WITNESS_REPLAY_REJECTED = "WITNESS_REPLAY_REJECTED"
@@ -67,7 +71,11 @@ class LocalWitnessClosureKind(StrEnum):
 class LocalWitnessClosureRecord(StrictModel):
     """把局部候选扩展到完整窗口后得到的可独立审核结果。"""
 
+    schema_version: str = "local-witness-closure-v2"
     candidate_id: str
+    # 当前闭包会在全窗中重求同一候选 relation set，不会固定局部 RF assignment。
+    closure_mode: str = "full_window_candidate_relation_set_recheck"
+    local_assignment_preserved: bool = False
     local_event_count: int
     full_window_event_count: int
     classification: LocalWitnessClosureKind
@@ -81,6 +89,55 @@ class LocalWitnessClosureRecord(StrictModel):
     replay_ms: int = 0
     reasons: tuple[str, ...] = ()
     diagnostic_only: bool = True
+
+    @model_validator(mode="before")
+    @classmethod
+    def _downgrade_legacy_witness_label(cls, value: object) -> object:
+        """旧 VALID_COMPLETE_WITNESS 没区分符号模型和真实执行。"""
+
+        if isinstance(value, dict) and value.get("classification") == "VALID_COMPLETE_WITNESS":
+            migrated = dict(value)
+            migrated["classification"] = LocalWitnessClosureKind.LEGACY_UNVERIFIED.value
+            migrated.setdefault("schema_version", "local-witness-closure-legacy")
+            return migrated
+        return value
+
+    @model_validator(mode="after")
+    def _check_closure_evidence(self) -> "LocalWitnessClosureRecord":
+        """闭包标签必须与查询、模型快照和独立 replay 的等级相符。"""
+
+        if self.classification in {
+            LocalWitnessClosureKind.FULL_WINDOW_MODEL_VALIDATED,
+            LocalWitnessClosureKind.EXECUTION_WITNESS_VALIDATED,
+        }:
+            snapshot = (
+                self.closure_witness.model_snapshot
+                if self.closure_witness is not None
+                else None
+            )
+            if not (
+                self.closure_mode == "full_window_candidate_relation_set_recheck"
+                and self.local_assignment_preserved is False
+                and self.closure_query.solver_result == "sat"
+                and self.closure_query.feasibility_status.value == "FEASIBLE"
+                and snapshot is not None
+                and snapshot.complete
+                and self.replay is not None
+                and self.replay.model_snapshot_valid is True
+                and self.replay.full_window_closed is True
+            ):
+                raise ValueError("positive closure classification lacks complete full-window model evidence")
+            if self.classification is LocalWitnessClosureKind.FULL_WINDOW_MODEL_VALIDATED and (
+                self.replay.status is not CandidateCycleReplayStatus.FULL_WINDOW_MODEL_VALIDATED
+                or self.replay.execution_counterexample_validated
+            ):
+                raise ValueError("model-validated closure cannot claim or imply execution validation")
+            if self.classification is LocalWitnessClosureKind.EXECUTION_WITNESS_VALIDATED and (
+                self.replay.status is not CandidateCycleReplayStatus.EXECUTION_WITNESS_VALIDATED
+                or not self.replay.execution_counterexample_validated
+            ):
+                raise ValueError("execution closure requires an execution-witness replay")
+        return self
 
 
 class CegarModeMetrics(StrictModel):
@@ -111,7 +168,12 @@ class CegarModeMetrics(StrictModel):
     infeasible: int = 0
     unknown: int = 0
     not_run: int = 0
-    replay_accepted: int = 0
+    replay_structure_validated: int = 0
+    replay_local_model_validated: int = 0
+    replay_full_window_model_validated: int = 0
+    replay_execution_witness_validated: int = 0
+    # 只为读取旧报告保留；新生产者永远不会填这个字段。
+    legacy_replay_accepted_unverified: int = 0
     replay_rejected: int = 0
     replay_reasons: tuple[str, ...] = ()
     blocked: int = 0
@@ -120,6 +182,18 @@ class CegarModeMetrics(StrictModel):
     query_truncated: bool = False
     status: str = "INCOMPLETE"
     reasons: tuple[str, ...] = ()
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_legacy_replay_count(cls, value: object) -> object:
+        """旧汇总里的 replay_accepted 没记录其证据等级，降级保存。"""
+
+        if isinstance(value, dict) and "replay_accepted" in value:
+            migrated = dict(value)
+            legacy_count = migrated.pop("replay_accepted")
+            migrated.setdefault("legacy_replay_accepted_unverified", legacy_count)
+            return migrated
+        return value
     diagnostic_only: bool = True
 
 

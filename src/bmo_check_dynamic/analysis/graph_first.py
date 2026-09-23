@@ -63,6 +63,14 @@ class _LabeledEdge:
 
 
 @dataclass(frozen=True, slots=True)
+class _RequiredSourceEdges:
+    """候选环要求的 endpoint edge 与精确 conditional relation labels。"""
+
+    endpoints: frozenset[Edge]
+    relation_groups: tuple[tuple[str, str, str, tuple[str, ...]], ...]
+
+
+@dataclass(frozen=True, slots=True)
 class _LazyPathNode:
     """共享父链，避免每个兄弟状态复制整条 path tuple。"""
 
@@ -263,13 +271,8 @@ def characterize_graph_first_window(
     for index, cycle in enumerate(candidates):
         cycle_event_ids = tuple(cycle[0])
         cycle_edges = tuple(cycle[1])
-        local_ids = _cycle_local_ids(cycle_edges)
-        local_events = tuple(
-            sorted(
-                (event_by_id[event_id] for event_id in local_ids),
-                key=lambda event: (event.thread_id, event.sequence, event.event_id),
-            )
-        )
+        local_events = _candidate_query_events(window.events, cycle_edges)
+        local_ids = {event.event_id for event in local_events}
         local_window = AnalysisWindow(
             window_id=f"{window.window_id}:cycle-{index:04d}",
             events=local_events,
@@ -292,7 +295,7 @@ def characterize_graph_first_window(
             event_by_id=event_by_id,
         )
         if evaluate_candidates:
-            required = frozenset(_required_local_source_edges(cycle_edges))
+            required = _required_local_source_edges(cycle_edges)
             local_result, observation = run_symbolic_shadow(
                 local_window,
                 source_ppo=local_source,
@@ -301,7 +304,8 @@ def characterize_graph_first_window(
                 timeout_ms=local_timeout_ms,
                 max_symbolic_terms=local_max_symbolic_terms,
                 execute_solver=execute_local_solver,
-                required_source_cycle_edges=required,
+                required_source_cycle_edges=required.endpoints,
+                required_source_cycle_relations=required.relation_groups,
                 capture_model=capture_model,
             )
             query = GraphFirstLocalQuery(
@@ -334,9 +338,10 @@ def characterize_graph_first_window(
             obligations = _build_local_obligations(
                 candidate,
                 cycle_edges=cycle_edges,
-                events=window.events,
+                events=local_events,
                 witness=local_witness,
                 query_event_ids=tuple(event.event_id for event in local_events),
+                window_event_ids=tuple(event.event_id for event in window.events),
             )
             obligations_build_ms = max(
                 0, int((time.perf_counter() - obligations_started) * 1000)
@@ -1819,10 +1824,34 @@ def _cycle_local_ids(cycle_edges: tuple[_LabeledEdge, ...]) -> set[str]:
     return ids
 
 
+def _candidate_query_events(
+    events: tuple[TraceEvent, ...],
+    cycle_edges: tuple[_LabeledEdge, ...],
+) -> tuple[TraceEvent, ...]:
+    """Keep every overlapping write that can define a candidate read's byte parts."""
+
+    event_by_id = {event.event_id: event for event in events}
+    selected = _cycle_local_ids(cycle_edges)
+    candidate_reads = {
+        edge.target for edge in cycle_edges if edge.kind == "rf"
+    } | {edge.source for edge in cycle_edges if edge.kind == "fr"}
+    reads = tuple(
+        event_by_id[event_id]
+        for event_id in candidate_reads
+        if event_id in event_by_id and event_by_id[event_id].kind.is_read
+    )
+    for event in events:
+        if event.kind.is_write and any(event.overlaps(read) for read in reads):
+            selected.add(event.event_id)
+    # Preserve window order because RF candidate indices are part of identity.
+    return tuple(event for event in events if event.event_id in selected)
+
+
 def _required_local_source_edges(
     cycle_edges: tuple[_LabeledEdge, ...],
-) -> set[Edge]:
+) -> _RequiredSourceEdges:
     required: set[Edge] = set()
+    relation_groups: list[tuple[str, str, str, tuple[str, ...]]] = []
     for edge in cycle_edges:
         if edge.kind in {"source_ppo", "ppo_reachability"}:
             if edge.witness_path:
@@ -1830,11 +1859,19 @@ def _required_local_source_edges(
             else:
                 required.add((edge.source, edge.target))
         elif edge.kind in {"rf", "fr", "coherence"}:
-            # source_conditions 将同端点的候选标签合并成一个条件；要求
-            # 端点边被选中即可，同时由 LocalCycleObligationSet 保留该
-            # read 的完整 RF domain，避免把“选中一条”误写成“只有一条”。
             required.add((edge.source, edge.target))
-    return required
+            relation_groups.append(
+                (
+                    edge.source,
+                    edge.target,
+                    edge.kind,
+                    tuple(sorted(edge.relation_ids or (edge.relation_id,))),
+                )
+            )
+    return _RequiredSourceEdges(
+        endpoints=frozenset(required),
+        relation_groups=tuple(relation_groups),
+    )
 
 
 def _component_nodes(components: dict[str, int]) -> dict[int, set[str]]:
@@ -2059,6 +2096,8 @@ def _build_local_obligations(
     events: tuple[TraceEvent, ...],
     witness: LocalCycleWitness | None,
     query_event_ids: tuple[str, ...] = (),
+    window_event_ids: tuple[str, ...] = (),
+    query_context_digest: str = "",
 ) -> LocalCycleObligationSet:
     values = _candidate_relations(events)
     by_id = {item.relation_id: item for item in values}
@@ -2098,6 +2137,8 @@ def _build_local_obligations(
     return LocalCycleObligationSet(
         cycle_id=candidate.cycle_id,
         query_event_ids=tuple(sorted(query_event_ids)),
+        window_event_ids=tuple(sorted(window_event_ids)),
+        query_context_digest=query_context_digest,
         selected_rf_relation_ids=selected_rf,
         rf_candidate_domain_ids=rf_domain,
         required_fr_relation_ids=required_fr,
@@ -2110,7 +2151,7 @@ def _build_local_obligations(
         boundary_event_ids=candidate.fence_rmw_futex_dependencies,
         unresolved_dependencies=candidate.unresolved_dependencies,
         rf_exclusivity_preserved=(
-            selected_reads <= {item.owner_event_id for item in values if item.kind == "rf"}
+            selected_reads <= {event.event_id for event in events if event.kind.is_read}
             and set(selected_rf) <= set(rf_domain)
         ),
     )
@@ -2337,10 +2378,13 @@ def _replay_local_symbolic_model(
         )
     )
     query_set = set(query_ids)
+    declared_window_ids = set(obligations.window_event_ids)
     full_window_closed = (
         bool(query_ids)
         and len(query_set) == len(query_ids)
         and query_set == set(event_by_id)
+        and len(declared_window_ids) == len(obligations.window_event_ids)
+        and declared_window_ids == set(event_by_id)
         and len(query_events) == len(events)
     )
     if len(query_events) != len(query_ids):
@@ -2691,6 +2735,33 @@ def _replay_local_symbolic_model(
     )
 
 
+def _expand_candidate_cycle_nodes(
+    candidate: CandidateViolationCycle,
+) -> tuple[str, ...]:
+    """Rebuild declared cycle nodes from ordered edges and PPO witnesses."""
+
+    if not candidate.ordered_edges:
+        return ()
+    nodes = [candidate.ordered_edges[0].source_event]
+    for edge in candidate.ordered_edges:
+        if nodes[-1] != edge.source_event:
+            return ()
+        if edge.relation_type == "ppo_reachability":
+            path = edge.ppo_reachability_path
+            if (
+                len(path) < 2
+                or path[0] != edge.source_event
+                or path[-1] != edge.target_event
+            ):
+                return ()
+            nodes.extend(path[1:])
+        else:
+            if edge.ppo_reachability_path:
+                return ()
+            nodes.append(edge.target_event)
+    return tuple(nodes)
+
+
 def replay_candidate_cycle(
     graph,
     certificate,
@@ -2741,9 +2812,26 @@ def replay_candidate_cycle(
         reject(CandidateReplayFailureKind.BINDING_MISMATCH, candidate.cycle_id, "source-ppo-binding", "source PPO input does not match certificate replay")
     if expected_target != target_reduced:
         reject(CandidateReplayFailureKind.BINDING_MISMATCH, candidate.cycle_id, "target-ppo-binding", "target PPO input does not match certificate replay")
-    cycle_closed = bool(candidate.cycle_nodes) and candidate.cycle_nodes[0] == candidate.cycle_nodes[-1]
+    if obligations.cycle_id != candidate.cycle_id:
+        reject(
+            CandidateReplayFailureKind.BINDING_MISMATCH,
+            candidate.cycle_id,
+            "candidate-obligation-identity",
+            "candidate cycle_id does not match its obligation set",
+        )
+    expanded_cycle_nodes = _expand_candidate_cycle_nodes(candidate)
+    cycle_closed = (
+        len(expanded_cycle_nodes) > 1
+        and expanded_cycle_nodes[0] == expanded_cycle_nodes[-1]
+        and expanded_cycle_nodes == candidate.cycle_nodes
+    )
     if not cycle_closed:
-        reject(CandidateReplayFailureKind.SOURCE_TARGET_SEMANTIC_CONFLICT, candidate.cycle_id, "cycle-closure", "candidate cycle nodes are not closed")
+        reject(
+            CandidateReplayFailureKind.BINDING_MISMATCH,
+            candidate.cycle_id,
+            "candidate-edge-cycle-identity",
+            "declared cycle nodes do not exactly match the ordered edges and PPO paths",
+        )
     edge_pairs = [(edge.source_event, edge.target_event) for edge in candidate.ordered_edges]
     if edge_pairs and any(
         left[1] != right[0] for left, right in zip(edge_pairs, edge_pairs[1:])
@@ -2763,14 +2851,218 @@ def replay_candidate_cycle(
     event_by_id = {event.event_id: event for event in events}
     relations = {item.relation_id: item for item in _candidate_relations(events)}
     rf_valid = True
+    fr_valid = True
+    co_valid = True
+    boundary_valid = True
+    candidate_policy_valid = True
+    edge_rf_ids = {
+        relation_id
+        for edge in candidate.ordered_edges
+        if edge.relation_type == "rf"
+        for relation_id in (edge.rf_candidate_ids or edge.relation_ids)
+    }
+    edge_fr_ids = {
+        relation_id
+        for edge in candidate.ordered_edges
+        if edge.relation_type == "fr"
+        for relation_id in (edge.fr_consequence_ids or edge.relation_ids)
+    }
+    edge_co_ids = {
+        relation_id
+        for edge in candidate.ordered_edges
+        if edge.relation_type == "coherence"
+        for relation_id in (edge.co_dependency_ids or edge.relation_ids)
+    }
+    if set(candidate.rf_dependencies) != edge_rf_ids:
+        rf_valid = False
+        reject(
+            CandidateReplayFailureKind.BINDING_MISMATCH,
+            candidate.cycle_id,
+            "candidate-rf-inventory",
+            "candidate RF dependency inventory differs from its ordered RF edges",
+        )
+    if set(candidate.fr_dependencies) != edge_fr_ids:
+        fr_valid = False
+        reject(
+            CandidateReplayFailureKind.BINDING_MISMATCH,
+            candidate.cycle_id,
+            "candidate-fr-inventory",
+            "candidate FR dependency inventory differs from its ordered FR edges",
+        )
+    if set(candidate.co_dependencies) != edge_co_ids:
+        co_valid = False
+        reject(
+            CandidateReplayFailureKind.BINDING_MISMATCH,
+            candidate.cycle_id,
+            "candidate-co-inventory",
+            "candidate CO dependency inventory differs from its ordered coherence edges",
+        )
+    expected_ppo_paths = tuple(
+        edge.ppo_reachability_path
+        for edge in candidate.ordered_edges
+        if edge.relation_type == "ppo_reachability"
+    )
+    if candidate.ppo_reachability_dependencies != expected_ppo_paths:
+        ppo_valid = False
+        reject(
+            CandidateReplayFailureKind.BINDING_MISMATCH,
+            candidate.cycle_id,
+            "candidate-ppo-inventory",
+            "candidate PPO dependency summary differs from its ordered edges",
+        )
+    if obligations.ppo_witness_paths != expected_ppo_paths:
+        ppo_valid = False
+        reject(
+            CandidateReplayFailureKind.BINDING_MISMATCH,
+            candidate.cycle_id,
+            "ppo-obligation-inventory",
+            "PPO witness paths in the obligation set differ from the candidate",
+        )
+    if set(obligations.required_fr_relation_ids) != set(candidate.fr_dependencies):
+        fr_valid = False
+        reject(
+            CandidateReplayFailureKind.BINDING_MISMATCH,
+            candidate.cycle_id,
+            "fr-obligation-inventory",
+            "required FR obligations differ from the candidate relation identities",
+        )
+    if set(obligations.required_co_relation_ids) != set(candidate.co_dependencies):
+        co_valid = False
+        reject(
+            CandidateReplayFailureKind.BINDING_MISMATCH,
+            candidate.cycle_id,
+            "co-obligation-inventory",
+            "required CO obligations differ from the candidate relation identities",
+        )
+    if set(obligations.boundary_event_ids) != set(candidate.fence_rmw_futex_dependencies):
+        boundary_valid = False
+        reject(
+            CandidateReplayFailureKind.BINDING_MISMATCH,
+            candidate.cycle_id,
+            "boundary-obligation-inventory",
+            "Fence/RMW/FUTEX obligation events differ from the candidate",
+        )
+    edge_boundary_ids = {
+        event_id
+        for edge in candidate.ordered_edges
+        for event_id in edge.boundary_dependency_ids
+    }
+    if set(candidate.fence_rmw_futex_dependencies) != edge_boundary_ids:
+        boundary_valid = False
+        reject(
+            CandidateReplayFailureKind.BINDING_MISMATCH,
+            candidate.cycle_id,
+            "candidate-boundary-inventory",
+            "candidate boundary dependency summary differs from its ordered edges",
+        )
+    if candidate.source_side != "source" or candidate.target_side_condition != "target_acyclic":
+        candidate_policy_valid = False
+        reject(
+            CandidateReplayFailureKind.BINDING_MISMATCH,
+            candidate.cycle_id,
+            "candidate-source-target-policy",
+            "candidate policy is not source-side cycle versus target acyclicity",
+        )
     for relation_id in obligations.selected_rf_relation_ids:
         relation = relations.get(relation_id)
         if relation is None or relation.kind != "rf":
             rf_valid = False
             reject(CandidateReplayFailureKind.RF_ASSIGNMENT_INCOMPLETE, relation_id, "candidate-domain-membership", f"RF candidate is absent: {relation_id}")
-        elif event_by_id[relation.event_ids[0]].thread_id == event_by_id[relation.event_ids[1]].thread_id:
+    for edge in candidate.ordered_edges:
+        if (
+            edge.side != "source"
+            or edge.relation_type not in {"ppo_reachability", "rf", "fr", "coherence"}
+            or edge.conditional != (edge.relation_type != "ppo_reachability")
+        ):
+            reject(
+                CandidateReplayFailureKind.BINDING_MISMATCH,
+                f"{edge.source_event}->{edge.target_event}",
+                "candidate-edge-kind-side",
+                "candidate edge side, relation kind, or conditional flag is inconsistent with source-cycle semantics",
+            )
+            if edge.relation_type == "rf":
+                rf_valid = False
+            elif edge.relation_type == "fr":
+                fr_valid = False
+            elif edge.relation_type == "coherence":
+                co_valid = False
+            else:
+                ppo_valid = False
+        if edge.relation_type == "ppo_reachability":
+            continue
+        if edge.relation_type not in {"rf", "fr", "coherence"}:
+            continue
+        typed_ids = {
+            "rf": edge.rf_candidate_ids,
+            "fr": edge.fr_consequence_ids,
+            "coherence": edge.co_dependency_ids,
+        }[edge.relation_type]
+        edge_ids = tuple(typed_ids or edge.relation_ids)
+        if not edge_ids:
+            reject(
+                CandidateReplayFailureKind.BINDING_MISMATCH,
+                f"{edge.source_event}->{edge.target_event}",
+                "candidate-edge-relation-identity",
+                "conditional candidate edge has no concrete relation identity",
+            )
+            if edge.relation_type == "rf":
+                rf_valid = False
+            elif edge.relation_type == "fr":
+                fr_valid = False
+            else:
+                co_valid = False
+        if typed_ids and edge.relation_ids and set(typed_ids) != set(edge.relation_ids):
+            reject(
+                CandidateReplayFailureKind.BINDING_MISMATCH,
+                f"{edge.source_event}->{edge.target_event}",
+                "candidate-edge-relation-labels",
+                "generic and typed relation labels differ",
+            )
+            if edge.relation_type == "rf":
+                rf_valid = False
+            elif edge.relation_type == "fr":
+                fr_valid = False
+            else:
+                co_valid = False
+        for relation_id in edge_ids:
+            relation = relations.get(relation_id)
+            if (
+                relation is None
+                or relation.kind != edge.relation_type
+                or relation.event_ids != (edge.source_event, edge.target_event)
+            ):
+                reject(
+                    CandidateReplayFailureKind.BINDING_MISMATCH,
+                    relation_id,
+                    "candidate-edge-relation-identity",
+                    "candidate relation ID is absent or does not identify this exact edge and relation kind",
+                )
+                if edge.relation_type == "rf":
+                    rf_valid = False
+                elif edge.relation_type == "fr":
+                    fr_valid = False
+                else:
+                    co_valid = False
+    if witness is not None:
+        witness_selected_rf = {
+            relation.relation_id
+            for read, write, address, size in witness.rf_assignments
+            if write is not None
+            for relation in relations.values()
+            if relation.kind == "rf"
+            and relation.owner_event_id == read
+            and relation.event_ids[0] == write
+            and relation.address == address
+            and relation.size == size
+        }
+        if witness_selected_rf != set(obligations.selected_rf_relation_ids):
             rf_valid = False
-            reject(CandidateReplayFailureKind.RF_ASSIGNMENT_INCOMPLETE, relation_id, "cross-thread-rf", f"RF candidate is not cross-thread: {relation_id}")
+            reject(
+                CandidateReplayFailureKind.RF_ASSIGNMENT_INCOMPLETE,
+                candidate.cycle_id,
+                "rf-obligation-assignment-binding",
+                "selected RF relation IDs do not match the witness read-part assignments",
+            )
     if candidate.rf_dependencies and not obligations.selected_rf_relation_ids:
         rf_valid = False
         reject(CandidateReplayFailureKind.RF_ASSIGNMENT_INCOMPLETE, candidate.cycle_id, "candidate-rf-assignment", "candidate RF edge has no witness assignment")
@@ -2788,10 +3080,14 @@ def replay_candidate_cycle(
         reject(CandidateReplayFailureKind.RF_ASSIGNMENT_INCOMPLETE, candidate.cycle_id, "solver-model-witness", "local solver did not provide an RF witness")
     assigned_reads = {read for read, _, _, _ in assignments}
     selected_reads = {read for read, _, _, _ in assignments}
+    query_scope = set(obligations.query_event_ids) or set(event_by_id)
     expected_domain = {
         item.relation_id
         for item in relations.values()
-        if item.kind == "rf" and item.owner_event_id in selected_reads
+        if item.kind == "rf"
+        and item.owner_event_id in selected_reads
+        and item.owner_event_id in query_scope
+        and item.event_ids[0] in query_scope
     }
     if set(obligations.rf_candidate_domain_ids) != expected_domain:
         rf_exclusive = False
@@ -2805,6 +3101,23 @@ def replay_candidate_cycle(
         if edge.relation_type != "rf":
             continue
         edge_ids = set(edge.rf_candidate_ids or edge.relation_ids)
+        valid_candidate_labels = {
+            relation_id
+            for relation_id in edge_ids
+            if (relation := relations.get(relation_id)) is not None
+            and relation.kind == "rf"
+            and relation.event_ids == (edge.source_event, edge.target_event)
+            and event_by_id[relation.event_ids[0]].thread_id
+            != event_by_id[relation.event_ids[1]].thread_id
+        }
+        if valid_candidate_labels != edge_ids:
+            rf_valid = False
+            reject(
+                CandidateReplayFailureKind.RF_ASSIGNMENT_INCOMPLETE,
+                ",".join(sorted(edge_ids)) or candidate.cycle_id,
+                "candidate-rf-relation-identity",
+                "candidate RF labels are missing, have different endpoints, or are not cross-thread",
+            )
         realized = edge_ids & selected_cycle_rf
         if not realized:
             rf_valid = False
@@ -2819,7 +3132,6 @@ def replay_candidate_cycle(
             reject(CandidateReplayFailureKind.RF_ASSIGNMENT_INCOMPLETE, ",".join(sorted(realized)) or candidate.cycle_id, "rf-witness-source", "RF witness does not realize the candidate edge's selected source")
 
     co_pairs = witness.co_assignments if witness is not None else ()
-    fr_valid = True
     selected_writes = {
         (read, address, size): write
         for read, write, address, size in assignments
@@ -2859,7 +3171,6 @@ def replay_candidate_cycle(
                 fr_valid = False
                 reject(CandidateReplayFailureKind.FR_CO_INCONSISTENT, relation_id, "fr-co-order", f"FR witness lacks the required CO order: {relation_id}")
 
-    co_valid = True
     for left_id, right_id in co_pairs:
         left, right = event_by_id.get(left_id), event_by_id.get(right_id)
         # co_assignments 是 overlap-connected 写的 rank 顺序见证；相邻 rank
@@ -2878,7 +3189,9 @@ def replay_candidate_cycle(
         elif not _co_reaches(co_pairs, relation.event_ids[0], relation.event_ids[1]):
             co_valid = False
             reject(CandidateReplayFailureKind.FR_CO_INCONSISTENT, relation_id, "co-rank-order", f"CO witness lacks the required order: {relation_id}")
-    boundary_valid = all(item in event_by_id for item in candidate.fence_rmw_futex_dependencies)
+    boundary_valid = boundary_valid and all(
+        item in event_by_id for item in candidate.fence_rmw_futex_dependencies
+    )
     if not boundary_valid:
         reject(CandidateReplayFailureKind.FENCE_RMW_FUTEX_CONSTRAINT_MISSING, candidate.cycle_id, "boundary-event-presence", "boundary dependency references an unknown event")
 
@@ -2932,13 +3245,15 @@ def replay_candidate_cycle(
         )
         failures.extend(model_result.failures)
         reasons.extend(item.detail for item in model_result.failures)
-        rf_valid = model_result.rf_valid
-        rf_exclusive = model_result.rf_valid
-        fr_valid = model_result.fr_valid
-        co_valid = model_result.co_valid
-        boundary_valid = model_result.boundary_valid
-        source_valid = model_result.source_valid
-        target_valid = model_result.target_valid
+        # 模型重放只补充检查，不能抹掉候选、obligation 或 witness 的绑定错误。
+        # 同线程 RF 不在上面的 candidate RF edge 检查里；它仍是合法的读写来源。
+        rf_valid = rf_valid and model_result.rf_valid
+        rf_exclusive = rf_exclusive and model_result.rf_valid
+        fr_valid = fr_valid and model_result.fr_valid
+        co_valid = co_valid and model_result.co_valid
+        boundary_valid = boundary_valid and model_result.boundary_valid
+        source_valid = source_valid and model_result.source_valid
+        target_valid = target_valid and model_result.target_valid
     if candidate.unresolved_dependencies:
         reject(
             CandidateReplayFailureKind.FENCE_RMW_FUTEX_CONSTRAINT_MISSING,
@@ -2948,7 +3263,17 @@ def replay_candidate_cycle(
             + ", ".join(candidate.unresolved_dependencies),
         )
 
-    accepted = (
+    # 只有 scope 未闭合本身可以成为“模型已验证但范围较窄”的结果；
+    # 其他 replay failure 都代表绑定冲突或语义条件未满足。
+    fatal_failures = tuple(
+        item
+        for item in failures
+        if not (
+            item.kind is CandidateReplayFailureKind.LOCAL_MODEL_INCOMPLETE
+            and item.predicate == "full-window-event-closure"
+        )
+    )
+    structure_valid = (
         witness is not None
         and cycle_closed
         and ppo_valid
@@ -2957,21 +3282,24 @@ def replay_candidate_cycle(
         and fr_valid
         and co_valid
         and boundary_valid
+        and candidate_policy_valid
         and source_valid
         and target_valid
-        and (
-            model_result is None
-            or (model_result.model_valid and model_result.full_window_closed)
-        )
         and not candidate.unresolved_dependencies
+        and not fatal_failures
     )
-    status = (
-        CandidateCycleReplayStatus.ACCEPTED
-        if accepted
-        else CandidateCycleReplayStatus.REJECTED
-        if witness is not None
-        else CandidateCycleReplayStatus.NOT_RUN
-    )
+    if witness is None:
+        status = CandidateCycleReplayStatus.NOT_RUN
+    elif not structure_valid:
+        status = CandidateCycleReplayStatus.REJECTED
+    elif model_result is None:
+        status = CandidateCycleReplayStatus.STRUCTURE_VALIDATED
+    elif not model_result.model_valid:
+        status = CandidateCycleReplayStatus.REJECTED
+    elif model_result.full_window_closed:
+        status = CandidateCycleReplayStatus.FULL_WINDOW_MODEL_VALIDATED
+    else:
+        status = CandidateCycleReplayStatus.LOCAL_MODEL_VALIDATED
     return CandidateCycleReplay(
         cycle_id=candidate.cycle_id,
         status=status,
@@ -2986,6 +3314,10 @@ def replay_candidate_cycle(
         target_condition_valid=target_valid,
         model_snapshot_valid=(model_result.model_valid if model_result is not None else None),
         full_window_closed=(model_result.full_window_closed if model_result is not None else None),
+        trace_completeness_validated=False,
+        control_flow_closure_validated=False,
+        read_values_validated=False,
+        execution_counterexample_validated=False,
         failures=tuple(dict.fromkeys(failures)),
         reasons=tuple(dict.fromkeys(reasons)),
     )

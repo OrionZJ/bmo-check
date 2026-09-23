@@ -19,6 +19,7 @@ except ImportError:  # pragma: no cover - Windows development environment.
     resource = None
 
 from bmo_check_dynamic.model import (
+    CandidateCycleReplayStatus,
     CandidateCoverageReport,
     CandidateDiscoveryResourcePolicy,
     CegarModeComparisonReport,
@@ -129,9 +130,10 @@ def _p11_metrics(report, prepared: _PreparedCertificate, started: float) -> Cega
         if query.status.value == "not_run":
             not_run += 1
     ledger = report.search_ledger
-    replay_accepted = sum(
-        record.replay is not None and record.replay.status.value == "accepted"
+    replay_statuses = tuple(
+        record.replay.status
         for record in records
+        if record.replay is not None
     )
     replay_rejected = sum(
         record.replay is not None and record.replay.status.value == "rejected"
@@ -173,7 +175,22 @@ def _p11_metrics(report, prepared: _PreparedCertificate, started: float) -> Cega
         infeasible=infeasible,
         unknown=unknown,
         not_run=not_run,
-        replay_accepted=replay_accepted,
+        replay_structure_validated=sum(
+            status is CandidateCycleReplayStatus.STRUCTURE_VALIDATED
+            for status in replay_statuses
+        ),
+        replay_local_model_validated=sum(
+            status is CandidateCycleReplayStatus.LOCAL_MODEL_VALIDATED
+            for status in replay_statuses
+        ),
+        replay_full_window_model_validated=sum(
+            status is CandidateCycleReplayStatus.FULL_WINDOW_MODEL_VALIDATED
+            for status in replay_statuses
+        ),
+        replay_execution_witness_validated=sum(
+            status is CandidateCycleReplayStatus.EXECUTION_WITNESS_VALIDATED
+            for status in replay_statuses
+        ),
         replay_rejected=replay_rejected,
         replay_reasons=replay_reasons,
         blocked=0,
@@ -203,9 +220,10 @@ def _p12_metrics(report, mode: CegarExperimentMode, prepared: _PreparedCertifica
         if not replay.accepted:
             invalid_blocks += 1
     search_ms = int((time.perf_counter() - started) * 1000)
-    replay_accepted = sum(
-        record.replay is not None and record.replay.status.value == "accepted"
+    replay_statuses = tuple(
+        record.replay.status
         for record in records
+        if record.replay is not None
     )
     replay_rejected = sum(
         record.replay is not None and record.replay.status.value == "rejected"
@@ -248,7 +266,22 @@ def _p12_metrics(report, mode: CegarExperimentMode, prepared: _PreparedCertifica
         infeasible=infeasible,
         unknown=unknown,
         not_run=not_run,
-        replay_accepted=replay_accepted,
+        replay_structure_validated=sum(
+            status is CandidateCycleReplayStatus.STRUCTURE_VALIDATED
+            for status in replay_statuses
+        ),
+        replay_local_model_validated=sum(
+            status is CandidateCycleReplayStatus.LOCAL_MODEL_VALIDATED
+            for status in replay_statuses
+        ),
+        replay_full_window_model_validated=sum(
+            status is CandidateCycleReplayStatus.FULL_WINDOW_MODEL_VALIDATED
+            for status in replay_statuses
+        ),
+        replay_execution_witness_validated=sum(
+            status is CandidateCycleReplayStatus.EXECUTION_WITNESS_VALIDATED
+            for status in replay_statuses
+        ),
         replay_rejected=replay_rejected,
         replay_reasons=replay_reasons,
         blocked=ledger.pruned_by_block_count if ledger else 0,
@@ -318,7 +351,7 @@ def _close_local_feasible_candidates(
             )
             for edge in candidate.ordered_edges
         )
-        required = frozenset(_required_local_source_edges(cycle_edges))
+        required = _required_local_source_edges(cycle_edges)
         result, observation = run_symbolic_shadow(
             window,
             source_ppo=set(source_reduced),
@@ -327,7 +360,8 @@ def _close_local_feasible_candidates(
             timeout_ms=timeout_ms,
             max_symbolic_terms=max_symbolic_terms,
             execute_solver=True,
-            required_source_cycle_edges=required,
+            required_source_cycle_edges=required.endpoints,
+            required_source_cycle_relations=required.relation_groups,
             capture_model=True,
         )
         status = {
@@ -371,6 +405,7 @@ def _close_local_feasible_candidates(
             events=window.events,
             witness=witness,
             query_event_ids=tuple(event.event_id for event in window.events),
+            window_event_ids=tuple(event.event_id for event in window.events),
         )
         obligations_build_ms = max(
             0, int((time.perf_counter() - obligations_started) * 1000)
@@ -393,8 +428,12 @@ def _close_local_feasible_candidates(
             classification = LocalWitnessClosureKind.SPURIOUS_LOCAL_SAT
         elif observation.result != "sat":
             classification = LocalWitnessClosureKind.CLOSURE_QUERY_UNKNOWN
-        elif replay is not None and replay.status.value == "accepted":
-            classification = LocalWitnessClosureKind.VALID_COMPLETE_WITNESS
+        elif (
+            replay is not None
+            and replay.status
+            is CandidateCycleReplayStatus.FULL_WINDOW_MODEL_VALIDATED
+        ):
+            classification = LocalWitnessClosureKind.FULL_WINDOW_MODEL_VALIDATED
         else:
             classification = LocalWitnessClosureKind.WITNESS_REPLAY_REJECTED
         records.append(

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import pytest
+from pydantic import ValidationError
+
 from bmo_check_dynamic.analysis import (
     canonicalize_cycle_skeleton,
     compare_candidate_coverage,
@@ -15,14 +18,17 @@ from bmo_check_dynamic.analysis.cegar import (
 )
 from bmo_check_dynamic.analysis.graph_first import characterize_graph_first_window
 from bmo_check_dynamic.model import (
+    CandidateCycleReplay,
     CandidateViolationCycle,
     CandidateViolationEdge,
+    CegarModeMetrics,
     LocalCycleObligationSet,
     LocalCycleStatus,
 )
 from bmo_check_dynamic.model import CegarExperimentMode
 from bmo_check_dynamic.model import CandidateDiscoveryResourcePolicy
-from bmo_check_dynamic.model import LocalWitnessClosureKind
+from bmo_check_dynamic.model import LocalWitnessClosureKind, LocalWitnessClosureRecord
+from bmo_check_dynamic.model import GraphFirstQueryStatus
 from bmo_check_dynamic.analysis.ppo_reduction import (
     build_ppo_graph_input,
     build_ppo_reduction_certificate,
@@ -154,6 +160,151 @@ def test_semantic_block_preserves_rf_identity() -> None:
     assert not replay_blocking_constraint_detail(
         tampered_digest, candidate, skeleton, obligations
     ).accepted
+    tampered_scope = block.model_copy(
+        update={"proof_scope": "local-cycle-obligations-v1"}
+    )
+    assert not blocking_constraint_applies(
+        tampered_scope, candidate, skeleton, obligations
+    )
+
+
+def test_unsat_block_is_not_generalized_to_candidate_with_extra_rf_condition() -> None:
+    candidate = _candidate(cycle_id="blocked", ppo_path=("r0", "p0", "w0"))
+    skeleton = canonicalize_cycle_skeleton(candidate)
+    obligations = LocalCycleObligationSet(
+        cycle_id="blocked",
+        query_event_ids=("r0", "w0", "r1", "w1"),
+        window_event_ids=("r0", "w0", "r1", "w1"),
+        query_context_digest="full-query-context",
+        selected_rf_relation_ids=candidate.rf_dependencies,
+        rf_candidate_domain_ids=candidate.rf_dependencies,
+        rf_exclusivity_preserved=True,
+    )
+    block = build_blocking_constraint(
+        candidate,
+        skeleton,
+        obligations,
+        solver_result="unsat",
+        query_digest=_local_query_digest(candidate, obligations, "unsat"),
+    )
+    assert block is not None
+
+    other = candidate.model_copy(
+        update={
+            "cycle_id": "different-feasibility",
+            "rf_dependencies": (*candidate.rf_dependencies, "rf:outside:w:r"),
+        }
+    )
+    other_skeleton = canonicalize_cycle_skeleton(other)
+    other_obligations = obligations.model_copy(
+        update={
+            "cycle_id": other.cycle_id,
+            "selected_rf_relation_ids": (
+                *obligations.selected_rf_relation_ids,
+                "rf:outside:w:r",
+            ),
+            "rf_candidate_domain_ids": (
+                *obligations.rf_candidate_domain_ids,
+                "rf:outside:w:r",
+            ),
+            "query_event_ids": (*obligations.query_event_ids, "outside-write"),
+            "window_event_ids": (*obligations.window_event_ids, "outside-write"),
+            "query_context_digest": "different-full-window-context",
+        }
+    )
+
+    assert not blocking_constraint_applies(
+        block, other, other_skeleton, other_obligations
+    )
+
+
+def test_local_unsat_block_does_not_cover_full_scope_with_extra_rf_source() -> None:
+    candidate = _candidate(cycle_id="partial-domain", ppo_path=("r0", "p0", "w0"))
+    skeleton = canonicalize_cycle_skeleton(candidate)
+    # The local query omits another in-window RF source for r0. Its UNSAT result
+    # cannot be reused against a full-scope query that includes that source.
+    obligations = LocalCycleObligationSet(
+        cycle_id="partial-domain",
+        query_event_ids=("r0", "w0", "r1", "w1"),
+        window_event_ids=("r0", "w0", "r1", "w1", "outside-write"),
+        query_context_digest="partial-query-context",
+        selected_rf_relation_ids=candidate.rf_dependencies,
+        rf_candidate_domain_ids=candidate.rf_dependencies,
+        rf_exclusivity_preserved=True,
+    )
+    local_block = build_blocking_constraint(
+        candidate,
+        skeleton,
+        obligations,
+        solver_result="unsat",
+        query_digest=_local_query_digest(candidate, obligations, "unsat"),
+    )
+    assert local_block is None
+    full_scope_obligations = obligations.model_copy(
+        update={
+            "rf_candidate_domain_ids": (
+                *obligations.rf_candidate_domain_ids,
+                "rf:outside-write:r0:0x2000:4",
+            ),
+            "query_event_ids": (*obligations.query_event_ids, "outside-write"),
+        }
+    )
+
+    assert full_scope_obligations.window_event_ids != obligations.query_event_ids
+
+
+def test_legacy_replay_success_labels_are_downgraded_on_report_load() -> None:
+    old_replay = CandidateCycleReplay.model_validate(
+        {
+            "cycle_id": "legacy-cycle",
+            "status": "accepted",
+            "cycle_closed": True,
+            "ppo_reachability_valid": True,
+            "rf_candidates_valid": True,
+            "rf_exclusivity_valid": True,
+            "fr_consequences_valid": True,
+            "co_valid": True,
+            "boundary_ordering_valid": True,
+            "source_violation_valid": True,
+            "target_condition_valid": True,
+        }
+    )
+    old_closure = LocalWitnessClosureRecord.model_validate(
+        {
+            "candidate_id": "legacy-cycle",
+            "local_event_count": 4,
+            "full_window_event_count": 4,
+            "classification": "VALID_COMPLETE_WITNESS",
+            "closure_query": {
+                "status": GraphFirstQueryStatus.SAT_CANDIDATE.value,
+                "solver_result": "sat",
+                "reason": "legacy report",
+                "event_count": 4,
+                "source_ppo_edge_count": 0,
+                "target_ppo_edge_count": 0,
+                "feasibility_status": LocalCycleStatus.FEASIBLE.value,
+            },
+        }
+    )
+    old_metrics = CegarModeMetrics.model_validate(
+        {"mode": CegarExperimentMode.STRUCTURED_P15.value, "replay_accepted": 6}
+    )
+
+    assert old_replay.status.value == "legacy_unverified"
+    assert old_closure.classification is LocalWitnessClosureKind.LEGACY_UNVERIFIED
+    assert old_closure.schema_version == "local-witness-closure-legacy"
+    assert old_metrics.legacy_replay_accepted_unverified == 6
+
+    forged_replay = old_replay.model_dump(mode="json")
+    forged_replay["status"] = "full_window_model_validated"
+    with pytest.raises(ValidationError):
+        CandidateCycleReplay.model_validate(forged_replay)
+
+    forged_closure = old_closure.model_dump(mode="json")
+    forged_closure["classification"] = "FULL_WINDOW_MODEL_VALIDATED"
+    forged_closure["schema_version"] = "local-witness-closure-v2"
+    with pytest.raises(ValidationError):
+        LocalWitnessClosureRecord.model_validate(forged_closure)
 
 
 def test_cegar_shadow_is_bounded_and_never_a_verdict() -> None:
@@ -205,7 +356,8 @@ def test_cegar_finds_replay_valid_candidate_without_formal_verdict() -> None:
     ]
     assert feasible
     assert any(
-        item.replay is not None and item.replay.status.value == "accepted"
+        item.replay is not None
+        and item.replay.status.value == "structure_validated"
         for item in feasible
     )
     assert report.diagnostic_only is True
@@ -466,13 +618,16 @@ def test_p16_synthetic_lb_full_window_closure_is_replayable() -> None:
     closures = report.modes[0].witness_closures
     assert len(closures) == 1
     closure = closures[0]
-    assert closure.classification is LocalWitnessClosureKind.VALID_COMPLETE_WITNESS
+    assert closure.classification is LocalWitnessClosureKind.FULL_WINDOW_MODEL_VALIDATED
+    assert closure.closure_mode == "full_window_candidate_relation_set_recheck"
+    assert closure.local_assignment_preserved is False
     assert closure.closure_witness is not None
     assert closure.closure_witness.model_snapshot is not None
     assert closure.replay is not None
     assert closure.replay.model_snapshot_valid is True
     assert closure.replay.full_window_closed is True
-    assert closure.replay.status.value == "accepted"
+    assert closure.replay.status.value == "full_window_model_validated"
+    assert closure.replay.execution_counterexample_validated is False
 
 
 def test_p15_checkpoint_binding_rejects_other_window(tmp_path) -> None:

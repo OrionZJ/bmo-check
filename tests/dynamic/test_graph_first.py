@@ -7,12 +7,25 @@ from bmo_check_dynamic.analysis import (
     characterize_graph_first_window,
     replay_candidate_cycle,
 )
+from bmo_check_dynamic.analysis.cycle_relevance import _candidate_relations
+from bmo_check_dynamic.analysis.graph_first import (
+    _LabeledEdge,
+    _build_local_obligations,
+    _build_local_witness,
+    _candidate_query_events,
+    _required_local_source_edges,
+)
 from bmo_check_dynamic.model import (
+    CandidateViolationCycle,
+    CandidateViolationEdge,
     CandidateReplayFailureKind,
     EventKind,
     GraphFirstQueryStatus,
+    LocalCycleObligationSet,
+    LocalCycleWitness,
     TraceEvent,
 )
+from bmo_check_dynamic.proof import run_symbolic_shadow
 
 
 def _lb_window() -> AnalysisWindow:
@@ -77,8 +90,662 @@ def test_graph_first_local_query_never_becomes_a_verdict() -> None:
         GraphFirstQueryStatus.UNKNOWN_LOCAL,
     }
     assert report.candidates[0].replay is not None
-    assert report.candidates[0].replay.status.value == "accepted"
+    # A local witness can validate its candidate structure, but it cannot be
+    # reported as an accepted complete model or an execution counterexample.
+    assert report.candidates[0].replay.status.value == "structure_validated"
     assert not hasattr(report, "verdict")
+
+
+def test_replay_does_not_accept_unbound_rf_obligations_after_model_check() -> None:
+    window = _lb_window()
+    report = characterize_graph_first_window(
+        window,
+        max_cycle_length=6,
+        max_cycles=1,
+        max_search_states=100,
+        local_timeout_ms=500,
+        local_max_symbolic_terms=10_000,
+        execute_local_solver=True,
+        capture_model=True,
+    )
+    item = report.candidates[0]
+    assert item.candidate_violation_cycle is not None
+    assert item.local_obligations is not None
+    assert item.local_witness is not None
+    graph = build_ppo_graph_input(window)
+    certificate, replay = build_ppo_reduction_certificate(graph)
+    assert replay.accepted
+
+    forged_obligations = item.local_obligations.model_copy(
+        update={
+            "selected_rf_relation_ids": (
+                *item.local_obligations.selected_rf_relation_ids,
+                "rf:absent-write:read:0x2000:4",
+            )
+        }
+    )
+    result = replay_candidate_cycle(
+        graph,
+        certificate,
+        item.candidate_violation_cycle,
+        forged_obligations,
+        item.local_witness,
+        source_reduced=frozenset(graph.source_edges),
+        target_reduced=frozenset(graph.target_edges),
+        events=window.events,
+    )
+
+    assert result.status.value == "rejected"
+    assert any(
+        failure.predicate == "candidate-domain-membership"
+        for failure in result.failures
+    )
+
+
+def test_replay_does_not_accept_candidate_declaration_mismatch() -> None:
+    window = _lb_window()
+    report = characterize_graph_first_window(
+        window,
+        max_cycle_length=6,
+        max_cycles=1,
+        max_search_states=100,
+        local_timeout_ms=500,
+        local_max_symbolic_terms=10_000,
+        execute_local_solver=True,
+        capture_model=True,
+    )
+    item = report.candidates[0]
+    assert item.candidate_violation_cycle is not None
+    assert item.local_obligations is not None
+    assert item.local_witness is not None
+    graph = build_ppo_graph_input(window)
+    certificate, replay = build_ppo_reduction_certificate(graph)
+    assert replay.accepted
+
+    forged_candidate = item.candidate_violation_cycle.model_copy(
+        update={
+            "rf_dependencies": (
+                *item.candidate_violation_cycle.rf_dependencies,
+                "rf:absent-write:read:0x2000:4",
+            )
+        }
+    )
+    result = replay_candidate_cycle(
+        graph,
+        certificate,
+        forged_candidate,
+        item.local_obligations,
+        item.local_witness,
+        source_reduced=frozenset(graph.source_edges),
+        target_reduced=frozenset(graph.target_edges),
+        events=window.events,
+    )
+
+    assert result.status.value == "rejected"
+    assert result.failures
+
+
+def test_replay_rejects_cycle_nodes_not_matching_ordered_edges() -> None:
+    window = _lb_window()
+    report = characterize_graph_first_window(
+        window,
+        max_cycle_length=6,
+        max_cycles=1,
+        max_search_states=100,
+        local_timeout_ms=500,
+        local_max_symbolic_terms=10_000,
+        execute_local_solver=True,
+        capture_model=True,
+    )
+    item = report.candidates[0]
+    assert item.candidate_violation_cycle is not None
+    assert item.local_obligations is not None
+    assert item.local_witness is not None
+    graph = build_ppo_graph_input(window)
+    certificate, replay = build_ppo_reduction_certificate(graph)
+    assert replay.accepted
+
+    forged_candidate = item.candidate_violation_cycle.model_copy(
+        update={"cycle_nodes": ("forged-node", "forged-node")}
+    )
+    result = replay_candidate_cycle(
+        graph,
+        certificate,
+        forged_candidate,
+        item.local_obligations,
+        item.local_witness,
+        source_reduced=frozenset(graph.source_edges),
+        target_reduced=frozenset(graph.target_edges),
+        events=window.events,
+    )
+
+    assert result.status.value == "rejected"
+    assert any(
+        failure.predicate == "candidate-edge-cycle-identity"
+        for failure in result.failures
+    )
+
+
+def test_replay_rejects_ppo_dependency_summary_not_matching_edges() -> None:
+    window = _lb_window()
+    report = characterize_graph_first_window(
+        window,
+        max_cycle_length=6,
+        max_cycles=1,
+        max_search_states=100,
+        local_timeout_ms=500,
+        local_max_symbolic_terms=10_000,
+        execute_local_solver=True,
+        capture_model=True,
+    )
+    item = report.candidates[0]
+    assert item.candidate_violation_cycle is not None
+    assert item.local_obligations is not None
+    assert item.local_witness is not None
+    graph = build_ppo_graph_input(window)
+    certificate, replay = build_ppo_reduction_certificate(graph)
+    assert replay.accepted
+
+    forged_candidate = item.candidate_violation_cycle.model_copy(
+        update={"ppo_reachability_dependencies": (("forged", "path"),)}
+    )
+    result = replay_candidate_cycle(
+        graph,
+        certificate,
+        forged_candidate,
+        item.local_obligations,
+        item.local_witness,
+        source_reduced=frozenset(graph.source_edges),
+        target_reduced=frozenset(graph.target_edges),
+        events=window.events,
+    )
+
+    assert result.status.value == "rejected"
+    assert any(
+        failure.predicate == "candidate-ppo-inventory"
+        for failure in result.failures
+    )
+
+
+def test_structure_replay_rejects_unlabeled_coherence_candidate_edges() -> None:
+    events = (
+        TraceEvent(1, 1, 0, 0x10, EventKind.STORE, 0x1000, 4),
+        TraceEvent(1, 2, 0, 0x11, EventKind.STORE, 0x2000, 4),
+        TraceEvent(2, 1, 0, 0x20, EventKind.STORE, 0x2000, 4),
+        TraceEvent(2, 2, 0, 0x21, EventKind.STORE, 0x1000, 4),
+    )
+    window = AnalysisWindow("unlabeled-co", events, ())
+    graph = build_ppo_graph_input(window)
+    certificate, certificate_replay = build_ppo_reduction_certificate(graph)
+    assert certificate_replay.accepted
+
+    candidate = CandidateViolationCycle(
+        cycle_id="unlabeled-co-cycle",
+        cycle_nodes=(
+            events[0].event_id,
+            events[1].event_id,
+            events[2].event_id,
+            events[3].event_id,
+            events[0].event_id,
+        ),
+        ordered_edges=(
+            CandidateViolationEdge(
+                source_event=events[0].event_id,
+                target_event=events[1].event_id,
+                relation_type="ppo_reachability",
+                side="source",
+                conditional=False,
+                ppo_reachability_path=(events[0].event_id, events[1].event_id),
+            ),
+            CandidateViolationEdge(
+                source_event=events[1].event_id,
+                target_event=events[2].event_id,
+                relation_type="coherence",
+                side="source",
+                conditional=True,
+                # Adversary removed the concrete CO identity from both fields.
+                relation_ids=(),
+                co_dependency_ids=(),
+            ),
+            CandidateViolationEdge(
+                source_event=events[2].event_id,
+                target_event=events[3].event_id,
+                relation_type="ppo_reachability",
+                side="source",
+                conditional=False,
+                ppo_reachability_path=(events[2].event_id, events[3].event_id),
+            ),
+            CandidateViolationEdge(
+                source_event=events[3].event_id,
+                target_event=events[0].event_id,
+                relation_type="coherence",
+                side="source",
+                conditional=True,
+                relation_ids=(),
+                co_dependency_ids=(),
+            ),
+        ),
+        # The declarations were weakened together, so the old endpoint-only
+        # replay could see a cycle without checking the two CO propositions.
+        co_dependencies=(),
+        ppo_reachability_dependencies=(
+            (events[0].event_id, events[1].event_id),
+            (events[2].event_id, events[3].event_id),
+        ),
+    )
+    witness = LocalCycleWitness(
+        cycle_id=candidate.cycle_id,
+        co_assignments=(
+            (events[1].event_id, events[2].event_id),
+            (events[3].event_id, events[0].event_id),
+        ),
+    )
+    obligations = LocalCycleObligationSet(
+        cycle_id=candidate.cycle_id,
+        selected_rf_relation_ids=(),
+        rf_candidate_domain_ids=(),
+        required_co_relation_ids=(),
+        ppo_witness_paths=candidate.ppo_reachability_dependencies,
+        rf_exclusivity_preserved=True,
+    )
+
+    result = replay_candidate_cycle(
+        graph,
+        certificate,
+        candidate,
+        obligations,
+        witness,
+        source_reduced=frozenset(graph.source_edges),
+        target_reduced=frozenset(graph.target_edges),
+        events=events,
+    )
+
+    assert result.status.value == "rejected"
+    assert any(
+        failure.predicate == "candidate-edge-relation-identity"
+        for failure in result.failures
+    )
+
+
+def test_replay_does_not_accept_unbound_fr_obligation_after_model_check() -> None:
+    window = _lb_window()
+    report = characterize_graph_first_window(
+        window,
+        max_cycle_length=6,
+        max_cycles=1,
+        max_search_states=100,
+        local_timeout_ms=500,
+        local_max_symbolic_terms=10_000,
+        execute_local_solver=True,
+        capture_model=True,
+    )
+    item = report.candidates[0]
+    assert item.candidate_violation_cycle is not None
+    assert item.local_obligations is not None
+    assert item.local_witness is not None
+    graph = build_ppo_graph_input(window)
+    certificate, replay = build_ppo_reduction_certificate(graph)
+    assert replay.accepted
+
+    forged_obligations = item.local_obligations.model_copy(
+        update={
+            "required_fr_relation_ids": (
+                *item.local_obligations.required_fr_relation_ids,
+                "fr:absent-read:0:absent-write:0x1000:4",
+            )
+        }
+    )
+    result = replay_candidate_cycle(
+        graph,
+        certificate,
+        item.candidate_violation_cycle,
+        forged_obligations,
+        item.local_witness,
+        source_reduced=frozenset(graph.source_edges),
+        target_reduced=frozenset(graph.target_edges),
+        events=window.events,
+    )
+
+    assert result.status.value == "rejected"
+    assert any(
+        failure.predicate == "fr-relation-inventory"
+        for failure in result.failures
+    )
+
+
+def test_replay_does_not_accept_unbound_co_obligation_after_model_check() -> None:
+    window = _lb_window()
+    report = characterize_graph_first_window(
+        window,
+        max_cycle_length=6,
+        max_cycles=1,
+        max_search_states=100,
+        local_timeout_ms=500,
+        local_max_symbolic_terms=10_000,
+        execute_local_solver=True,
+        capture_model=True,
+    )
+    item = report.candidates[0]
+    assert item.candidate_violation_cycle is not None
+    assert item.local_obligations is not None
+    assert item.local_witness is not None
+    graph = build_ppo_graph_input(window)
+    certificate, replay = build_ppo_reduction_certificate(graph)
+    assert replay.accepted
+
+    forged_obligations = item.local_obligations.model_copy(
+        update={"required_co_relation_ids": ("co:absent-write:other-write",)}
+    )
+    result = replay_candidate_cycle(
+        graph,
+        certificate,
+        item.candidate_violation_cycle,
+        forged_obligations,
+        item.local_witness,
+        source_reduced=frozenset(graph.source_edges),
+        target_reduced=frozenset(graph.target_edges),
+        events=window.events,
+    )
+
+    assert result.status.value == "rejected"
+    assert any(
+        failure.predicate == "co-obligation-inventory"
+        for failure in result.failures
+    )
+
+
+def test_required_local_edge_projection_exposes_lost_relation_identity() -> None:
+    wide_store = TraceEvent(1, 1, 0, 0x40, EventKind.STORE, 0x4000, 8)
+    partial_store = TraceEvent(2, 1, 0, 0x41, EventKind.STORE, 0x4000, 4)
+    wide_read = TraceEvent(3, 1, 0, 0x42, EventKind.LOAD, 0x4000, 8)
+    relations = _candidate_relations((wide_store, partial_store, wide_read))
+    same_endpoint_rf = tuple(
+        relation
+        for relation in relations
+        if relation.kind == "rf"
+        and relation.event_ids == (wide_store.event_id, wide_read.event_id)
+    )
+    assert len(same_endpoint_rf) == 2
+    assert same_endpoint_rf[0].relation_id != same_endpoint_rf[1].relation_id
+
+    selected_relation = same_endpoint_rf[0]
+    graph_edge = _LabeledEdge(
+        source=selected_relation.event_ids[0],
+        target=selected_relation.event_ids[1],
+        kind="rf",
+        relation_id=selected_relation.relation_id,
+        relation_ids=(selected_relation.relation_id,),
+    )
+    required = _required_local_source_edges((graph_edge,))
+
+    # Endpoint-only requirements let the encoder satisfy this edge using the
+    # other byte-part RF relation with the same writer and reader.
+    assert (
+        selected_relation.event_ids[0],
+        selected_relation.event_ids[1],
+        "rf",
+        (selected_relation.relation_id,),
+    ) in required.relation_groups
+
+
+def test_candidate_query_keeps_all_byte_sources_and_replays_initial_read() -> None:
+    base = 0x5000
+    wide_write = TraceEvent(1, 1, 0, 0x50, EventKind.STORE, base, 8)
+    cycle_read = TraceEvent(2, 1, 0, 0x51, EventKind.LOAD, base, 4)
+    disjoint_write = TraceEvent(2, 2, 0, 0x52, EventKind.STORE, base + 4, 4)
+    low_write = TraceEvent(3, 1, 0, 0x53, EventKind.STORE, base, 4)
+    wide_read = TraceEvent(4, 1, 0, 0x54, EventKind.LOAD, base, 8)
+    initial_read = TraceEvent(5, 1, 0, 0x55, EventKind.LOAD, 0x9000, 4)
+    events = (
+        wide_write,
+        cycle_read,
+        disjoint_write,
+        low_write,
+        wide_read,
+        initial_read,
+    )
+    window = AnalysisWindow("p16-mixed-byte-rf", events, ())
+
+    relations = _candidate_relations(events)
+    cycle_rf = next(
+        item
+        for item in relations
+        if item.kind == "rf"
+        and item.event_ids == (wide_write.event_id, cycle_read.event_id)
+    )
+    wide_read_relations = tuple(
+        item
+        for item in relations
+        if item.kind == "rf" and item.owner_event_id == wide_read.event_id
+    )
+    low_fragment = next(
+        item
+        for item in wide_read_relations
+        if item.event_ids[0] == low_write.event_id and item.address == base
+    )
+    high_fragment = next(
+        item
+        for item in wide_read_relations
+        if item.event_ids[0] == disjoint_write.event_id
+        and item.address == base + 4
+    )
+    same_endpoint_wide_relations = tuple(
+        item
+        for item in wide_read_relations
+        if item.event_ids[0] == wide_write.event_id
+    )
+    assert len(same_endpoint_wide_relations) == 2
+    assert len({item.relation_id for item in same_endpoint_wide_relations}) == 2
+    coherence_id = f"co:{disjoint_write.event_id}:{wide_write.event_id}"
+    cycle_edges = (
+        _LabeledEdge(
+            wide_write.event_id,
+            cycle_read.event_id,
+            "rf",
+            cycle_rf.relation_id,
+            (cycle_rf.relation_id,),
+        ),
+        _LabeledEdge(
+            cycle_read.event_id,
+            disjoint_write.event_id,
+            "source_ppo",
+            f"ppo:{cycle_read.event_id}->{disjoint_write.event_id}",
+            witness_path=(cycle_read.event_id, disjoint_write.event_id),
+        ),
+        _LabeledEdge(
+            disjoint_write.event_id,
+            wide_write.event_id,
+            "coherence",
+            coherence_id,
+            (coherence_id,),
+        ),
+    )
+
+    wide_read_label = next(
+        item
+        for item in wide_read_relations
+        if item.event_ids[0] == low_write.event_id and item.address == base
+    )
+    query_edges = cycle_edges + (
+        _LabeledEdge(
+            low_write.event_id,
+            wide_read.event_id,
+            "rf",
+            wide_read_label.relation_id,
+            (wide_read_label.relation_id,),
+        ),
+    )
+    local_events = _candidate_query_events(events, query_edges)
+    local_relations = _candidate_relations(local_events)
+    assert {event.event_id for event in local_events} == {
+        event.event_id for event in events if event.event_id != initial_read.event_id
+    }
+    assert {
+        item.relation_id
+        for item in local_relations
+        if item.kind == "rf" and item.owner_event_id == wide_read.event_id
+    } == {
+        item.relation_id
+        for item in wide_read_relations
+    }
+
+    graph = build_ppo_graph_input(window)
+    assert (cycle_read.event_id, disjoint_write.event_id) in graph.source_edges
+    assert (cycle_read.event_id, disjoint_write.event_id) not in graph.target_edges
+    certificate, certificate_replay = build_ppo_reduction_certificate(graph)
+    assert certificate_replay.accepted
+    source_reduced = set(graph.source_edges) - {
+        (item.source_event, item.target_event)
+        for item in certificate.source.removed_edges
+    }
+    target_reduced = set(graph.target_edges) - {
+        (item.source_event, item.target_event)
+        for item in certificate.target.removed_edges
+    }
+    required = _required_local_source_edges(cycle_edges)
+    relation_groups = (
+        *required.relation_groups,
+        (low_write.event_id, wide_read.event_id, "rf", (low_fragment.relation_id,)),
+        (
+            disjoint_write.event_id,
+            wide_read.event_id,
+            "rf",
+            (high_fragment.relation_id,),
+        ),
+    )
+    result, observation = run_symbolic_shadow(
+        window,
+        source_ppo=source_reduced,
+        target_ppo=target_reduced,
+        control_flow_closed=False,
+        timeout_ms=1_000,
+        max_symbolic_terms=20_000,
+        execute_solver=True,
+        required_source_cycle_edges=required.endpoints,
+        required_source_cycle_relations=relation_groups,
+        capture_model=True,
+    )
+    assert observation.result == "sat"
+    assert result.witness is not None
+    assignments = {
+        (item.read_event, item.write_event, item.address, item.size)
+        for item in result.witness.read_from
+    }
+    assert (wide_read.event_id, low_write.event_id, base, 4) in assignments
+    assert (wide_read.event_id, disjoint_write.event_id, base + 4, 4) in assignments
+    assert (initial_read.event_id, None, 0x9000, 4) in assignments
+
+    candidate = CandidateViolationCycle(
+        cycle_id="mixed-byte-cycle",
+        cycle_nodes=(
+            wide_write.event_id,
+            cycle_read.event_id,
+            disjoint_write.event_id,
+            wide_write.event_id,
+        ),
+        ordered_edges=(
+            CandidateViolationEdge(
+                source_event=wide_write.event_id,
+                target_event=cycle_read.event_id,
+                relation_type="rf",
+                side="source",
+                conditional=True,
+                relation_ids=(cycle_rf.relation_id,),
+                rf_candidate_ids=(cycle_rf.relation_id,),
+            ),
+            CandidateViolationEdge(
+                source_event=cycle_read.event_id,
+                target_event=disjoint_write.event_id,
+                relation_type="ppo_reachability",
+                side="source",
+                conditional=False,
+                ppo_reachability_path=(
+                    cycle_read.event_id,
+                    disjoint_write.event_id,
+                ),
+            ),
+            CandidateViolationEdge(
+                source_event=disjoint_write.event_id,
+                target_event=wide_write.event_id,
+                relation_type="coherence",
+                side="source",
+                conditional=True,
+                relation_ids=(coherence_id,),
+                co_dependency_ids=(coherence_id,),
+            ),
+        ),
+        rf_dependencies=(cycle_rf.relation_id,),
+        co_dependencies=(coherence_id,),
+        ppo_reachability_dependencies=(
+            (cycle_read.event_id, disjoint_write.event_id),
+        ),
+    )
+    local_witness = _build_local_witness(
+        candidate,
+        cycle_edges=cycle_edges,
+        local_result=result,
+    )
+    assert local_witness is not None
+    obligations = _build_local_obligations(
+        candidate,
+        cycle_edges=cycle_edges,
+        events=events,
+        witness=local_witness,
+        query_event_ids=tuple(event.event_id for event in events),
+        window_event_ids=tuple(event.event_id for event in events),
+    )
+    assert obligations.rf_exclusivity_preserved
+    replay = replay_candidate_cycle(
+        graph,
+        certificate,
+        candidate,
+        obligations,
+        local_witness,
+        source_reduced=frozenset(source_reduced),
+        target_reduced=frozenset(target_reduced),
+        events=events,
+    )
+    assert replay.status.value == "full_window_model_validated"
+    assert replay.execution_counterexample_validated is False
+
+    # 两个 RF relation 可以有相同事件端点，但分别约束不同 read-part。
+    same_endpoint_groups = (
+        *required.relation_groups,
+        *(
+            (
+                wide_write.event_id,
+                wide_read.event_id,
+                "rf",
+                (item.relation_id,),
+            )
+            for item in same_endpoint_wide_relations
+        ),
+    )
+    same_endpoint_result, same_endpoint_observation = run_symbolic_shadow(
+        window,
+        source_ppo=source_reduced,
+        target_ppo=target_reduced,
+        control_flow_closed=False,
+        timeout_ms=1_000,
+        max_symbolic_terms=20_000,
+        execute_solver=True,
+        required_source_cycle_edges=required.endpoints,
+        required_source_cycle_relations=same_endpoint_groups,
+        capture_model=True,
+    )
+    assert same_endpoint_observation.result == "sat"
+    assert same_endpoint_result.witness is not None
+    same_endpoint_assignments = {
+        (item.read_event, item.write_event, item.address, item.size)
+        for item in same_endpoint_result.witness.read_from
+    }
+    assert (wide_read.event_id, wide_write.event_id, base, 4) in same_endpoint_assignments
+    assert (
+        wide_read.event_id,
+        wide_write.event_id,
+        base + 4,
+        4,
+    ) in same_endpoint_assignments
 
 
 def test_p16_complete_model_replays_synthetic_lb_witness() -> None:
@@ -100,7 +767,17 @@ def test_p16_complete_model_replays_synthetic_lb_witness() -> None:
     assert item.replay is not None
     assert item.replay.model_snapshot_valid is True
     assert item.replay.full_window_closed is True
-    assert item.replay.status.value == "accepted"
+    assert item.replay.status.value == "full_window_model_validated"
+    assert item.replay.execution_counterexample_validated is False
+    assert item.replay.trace_completeness_validated is False
+    assert item.replay.control_flow_closure_validated is False
+    assert item.replay.read_values_validated is False
+    assert {
+        "trace-completeness",
+        "control-flow-closure",
+        "read-value-validation",
+        "observed-execution-binding",
+    } <= set(item.replay.execution_evidence_gaps)
 
 
 def test_p16_local_model_does_not_claim_full_window_closure() -> None:
@@ -127,7 +804,7 @@ def test_p16_local_model_does_not_claim_full_window_closure() -> None:
     assert item.local_query.feasibility_status.value == "FEASIBLE"
     assert item.replay is not None
     assert item.replay.full_window_closed is False
-    assert item.replay.status.value == "rejected"
+    assert item.replay.status.value == "local_model_validated"
     assert any(
         failure.kind is CandidateReplayFailureKind.LOCAL_MODEL_INCOMPLETE
         and failure.predicate == "full-window-event-closure"

@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections import Counter
+from dataclasses import asdict
 from typing import Iterable
 
 from bmo_check_dynamic.model import (
@@ -37,6 +38,7 @@ from .graph_first import (
     _build_candidate_violation_cycle,
     _build_local_obligations,
     _build_local_witness,
+    _candidate_query_events,
     _component_nodes,
     _cycle_local_ids,
     _enumerate_skeleton_cycles,
@@ -59,6 +61,41 @@ from .windows import AnalysisWindow
 def _digest(value: object) -> str:
     payload = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _query_context_digest(
+    *,
+    events: tuple[TraceEvent, ...],
+    source_ppo: set[tuple[str, str]],
+    target_ppo: set[tuple[str, str]],
+    certificate_digest: str,
+    control_flow_closed: bool,
+    timeout_ms: int,
+    max_symbolic_terms: int,
+) -> str:
+    """Bind exact shadow inputs so an UNSAT result cannot migrate to another scope."""
+
+    ordered_events = [
+        asdict(event)
+        for event in sorted(
+            events,
+            key=lambda event: (event.thread_id, event.sequence, event.event_id),
+        )
+    ]
+    return _digest(
+        {
+            "schema": "shadow-query-context-v2",
+            "encoder": "dynamic-checker-symbolic-v1",
+            "profile": "full",
+            "certificate_digest": certificate_digest,
+            "events": ordered_events,
+            "source_ppo": sorted(source_ppo),
+            "target_ppo": sorted(target_ppo),
+            "control_flow_closed": control_flow_closed,
+            "timeout_ms": timeout_ms,
+            "max_symbolic_terms": max_symbolic_terms,
+        }
+    )
 
 
 def _rotations(values: tuple[tuple[str, ...], ...]) -> Iterable[tuple[tuple[str, ...], ...]]:
@@ -428,13 +465,8 @@ def _local_query_for_candidate(
         event_by_id=event_by_id,
     )
     skeleton = canonicalize_cycle_skeleton(candidate)
-    local_ids = _cycle_local_ids(cycle_edges)
-    local_events = tuple(
-        sorted(
-            (event_by_id[event_id] for event_id in local_ids),
-            key=lambda event: (event.thread_id, event.sequence, event.event_id),
-        )
-    )
+    local_events = _candidate_query_events(window.events, cycle_edges)
+    local_ids = {event.event_id for event in local_events}
     local_window = AnalysisWindow(
         window_id=f"{window.window_id}:cegar:{candidate_id.rsplit(':', 1)[-1]}",
         events=local_events,
@@ -455,7 +487,7 @@ def _local_query_for_candidate(
     local_target = {
         edge for edge in target_reduced if edge[0] in local_ids and edge[1] in local_ids
     }
-    required = frozenset(_required_local_source_edges(cycle_edges))
+    required = _required_local_source_edges(cycle_edges)
     local_result, observation = run_symbolic_shadow(
         local_window,
         source_ppo=local_source,
@@ -464,7 +496,8 @@ def _local_query_for_candidate(
         timeout_ms=local_timeout_ms,
         max_symbolic_terms=local_max_symbolic_terms,
         execute_solver=execute_local_solver,
-        required_source_cycle_edges=required,
+        required_source_cycle_edges=required.endpoints,
+        required_source_cycle_relations=required.relation_groups,
     )
     query = GraphFirstLocalQuery(
         status=_local_status(observation.result, execute_local_solver),
@@ -481,11 +514,23 @@ def _local_query_for_candidate(
         solver_time_ms=observation.solver_time_ms,
     )
     witness = _build_local_witness(candidate, cycle_edges=cycle_edges, local_result=local_result)
+    query_context = _query_context_digest(
+        events=local_events,
+        source_ppo=local_source,
+        target_ppo=local_target,
+        certificate_digest=ppo_certificate_digest(certificate),
+        control_flow_closed=control_flow_closed,
+        timeout_ms=local_timeout_ms,
+        max_symbolic_terms=local_max_symbolic_terms,
+    )
     obligations = _build_local_obligations(
         candidate,
         cycle_edges=cycle_edges,
-        events=window.events,
+        events=local_events,
         witness=witness,
+        query_event_ids=tuple(event.event_id for event in local_events),
+        window_event_ids=tuple(event.event_id for event in window.events),
+        query_context_digest=query_context,
     )
     replay = replay_candidate_cycle(
         graph,
@@ -497,13 +542,7 @@ def _local_query_for_candidate(
         target_reduced=target_reduced,
         events=window.events,
     )
-    query_digest = _digest(
-        {
-            "candidate": candidate.model_dump(mode="json"),
-            "obligations": obligations.model_dump(mode="json"),
-            "solver_result": observation.result,
-        }
-    )
+    query_digest = _local_query_digest(candidate, obligations, observation.result)
     block = None
     if enable_blocking:
         block = build_blocking_constraint(
@@ -693,11 +732,38 @@ def characterize_cegar_window(
             )
             continue
         canonical_ids.add(skeleton.canonical_id)
+        candidate_local_events = _candidate_query_events(
+            window.events, tuple(cycle[1])
+        )
+        candidate_local_ids = {
+            event.event_id for event in candidate_local_events
+        }
+        candidate_local_source = {
+            edge
+            for edge in source_reduced
+            if edge[0] in candidate_local_ids and edge[1] in candidate_local_ids
+        }
+        candidate_local_target = {
+            edge
+            for edge in target_reduced
+            if edge[0] in candidate_local_ids and edge[1] in candidate_local_ids
+        }
         obligations = _build_local_obligations(
             candidate,
             cycle_edges=tuple(cycle[1]),
-            events=window.events,
+            events=candidate_local_events,
             witness=None,
+            query_event_ids=tuple(event.event_id for event in candidate_local_events),
+            window_event_ids=tuple(event.event_id for event in window.events),
+            query_context_digest=_query_context_digest(
+                events=candidate_local_events,
+                source_ppo=candidate_local_source,
+                target_ppo=candidate_local_target,
+                certificate_digest=ppo_certificate_digest(certificate),
+                control_flow_closed=control_flow_closed,
+                timeout_ms=local_timeout_ms,
+                max_symbolic_terms=local_max_symbolic_terms,
+            ),
         )
         applicable = None
         if enable_blocking:

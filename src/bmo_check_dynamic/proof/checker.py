@@ -698,6 +698,9 @@ def _check_symbolic(
     execute_solver: bool = True,
     profile: SolverDiagnosticProfile = SolverDiagnosticProfile.FULL,
     required_source_cycle_edges: frozenset[Edge] | None = None,
+    required_source_cycle_relations: tuple[
+        tuple[str, str, str, tuple[str, ...]], ...
+    ] = (),
     capture_model: bool = False,
 ) -> WindowResult:
     deadline = monotonic() + timeout_ms / 1000
@@ -785,6 +788,7 @@ def _check_symbolic(
     nodes = tuple(sorted(event_by_id))
     conditional_edges: dict[Edge, list[z3.BoolRef]] = {}
     conditional_categories: dict[Edge, set[str]] = {}
+    relation_conditions: dict[str, list[tuple[Edge, str, z3.BoolRef]]] = {}
     rf_choice: dict[
         tuple[str, int], tuple[_ReadPart, z3.ArithRef, tuple[TraceEvent, ...]]
     ] = {}
@@ -853,6 +857,7 @@ def _check_symbolic(
         *,
         category: str,
         weight: int = 4,
+        relation_id: str | None = None,
     ) -> bool:
         nonlocal formula_terms
         formula_terms += weight
@@ -861,6 +866,10 @@ def _check_symbolic(
             return False
         conditional_edges.setdefault(edge, []).append(condition)
         conditional_categories.setdefault(edge, set()).add(category)
+        if relation_id is not None:
+            relation_conditions.setdefault(relation_id, []).append(
+                (edge, category, condition)
+            )
         return True
 
     if include_co:
@@ -874,6 +883,7 @@ def _check_symbolic(
                             (left.event_id, right.event_id),
                             co_rank[left.event_id] < co_rank[right.event_id],
                             category="coherence",
+                            relation_id=f"co:{left.event_id}:{right.event_id}",
                         ):
                             return finish(
                                 formula_limited(),
@@ -899,10 +909,19 @@ def _check_symbolic(
             return True
         fixed_rf_assigned += 1
         fixed_rf_ambiguous += int(ambiguous)
+        candidate_index = next(
+            index
+            for index, candidate in enumerate(candidates)
+            if candidate.event_id == write.event_id
+        )
         return add_edge(
             (write.event_id, read.event_id),
             z3.BoolVal(True),
             category="rf_fixed",
+            relation_id=(
+                f"rf:{read.event_id}:{part_index}:{candidate_index}:"
+                f"{write.event_id}:{part.address}:{part.size}"
+            ),
         )
 
     choice_index = 0
@@ -951,6 +970,10 @@ def _check_symbolic(
                             (write.event_id, read.event_id),
                             choice == index,
                             category="rf",
+                            relation_id=(
+                                f"rf:{read.event_id}:{part_index}:{index}:"
+                                f"{write.event_id}:{part.address}:{part.size}"
+                            ),
                         )):
                     return finish(
                         formula_limited(),
@@ -979,6 +1002,10 @@ def _check_symbolic(
                     z3.Or(*conditions),
                     category="fr",
                     weight=3 + len(conditions),
+                    relation_id=(
+                        f"fr:{read.event_id}:{part_index}:{later.event_id}:"
+                        f"{part.address}:{part.size}"
+                    ),
                 ):
                     return finish(
                         formula_limited(),
@@ -1036,6 +1063,46 @@ def _check_symbolic(
         }
     )
     add_constraint("cycle", z3.Or(*selected_nodes.values()))
+    for source, target, relation_kind, relation_ids in required_source_cycle_relations:
+        exact_conditions: list[z3.BoolRef] = []
+        for relation_id in relation_ids:
+            matches = relation_conditions.get(relation_id, ())
+            exact_matches = tuple(
+                condition
+                for edge, kind, condition in matches
+                if edge == (source, target)
+                and {"rf_fixed": "rf"}.get(kind, kind) == relation_kind
+            )
+            if not exact_matches:
+                return finish(
+                    WindowResult(
+                        window_id=window.window_id,
+                        event_ids=nodes,
+                        status="unknown",
+                        reason=(
+                            "shadow candidate relation identity is absent or has "
+                            f"different endpoints/kind: {relation_id}"
+                        ),
+                    ),
+                    solver_result="unknown",
+                    solver=solver,
+                )
+            exact_conditions.extend(exact_matches)
+        if not exact_conditions:
+            return finish(
+                WindowResult(
+                    window_id=window.window_id,
+                    event_ids=nodes,
+                    status="unknown",
+                    reason=(
+                        "shadow candidate relation group has no concrete relation "
+                        f"for {source}->{target} ({relation_kind})"
+                    ),
+                ),
+                solver_result="unknown",
+                solver=solver,
+            )
+        add_constraint("cycle_candidate_relation", z3.Or(*exact_conditions))
     if required_source_cycle_edges:
         missing_required = set(required_source_cycle_edges) - set(selected_edges)
         if missing_required:
@@ -1272,6 +1339,9 @@ def run_symbolic_shadow(
     execute_solver: bool = True,
     profile: SolverDiagnosticProfile = SolverDiagnosticProfile.FULL,
     required_source_cycle_edges: frozenset[Edge] | None = None,
+    required_source_cycle_relations: tuple[
+        tuple[str, str, str, tuple[str, ...]], ...
+    ] = (),
     capture_model: bool = False,
 ) -> tuple[WindowResult, SymbolicSolverObservation]:
     """用正式 symbolic encoder 跑一侧 shadow，不进入 ``check_window``。
@@ -1310,6 +1380,7 @@ def run_symbolic_shadow(
         execute_solver=execute_solver,
         profile=profile,
         required_source_cycle_edges=required_source_cycle_edges,
+        required_source_cycle_relations=required_source_cycle_relations,
         capture_model=capture_model,
     )
     return result, observation.freeze()

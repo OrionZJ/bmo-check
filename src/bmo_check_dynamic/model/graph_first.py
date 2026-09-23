@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from enum import StrEnum
 
-from pydantic import Field
+from pydantic import Field, field_validator, model_validator
 
 from .manifest import StrictModel
 from .certificate import SymbolicModelSnapshot
@@ -32,9 +32,14 @@ class LocalCycleStatus(StrEnum):
 
 
 class CandidateCycleReplayStatus(StrEnum):
-    """独立 replay 对候选环的接受状态。"""
+    """独立 replay 实际验证到的证据等级，不把模型等同于真实执行。"""
 
-    ACCEPTED = "accepted"
+    STRUCTURE_VALIDATED = "structure_validated"
+    LOCAL_MODEL_VALIDATED = "local_model_validated"
+    FULL_WINDOW_MODEL_VALIDATED = "full_window_model_validated"
+    EXECUTION_WITNESS_VALIDATED = "execution_witness_validated"
+    # 旧报告中的 accepted 没有记录它代表哪一级证据，只能按未验证处理。
+    LEGACY_UNVERIFIED = "legacy_unverified"
     REJECTED = "rejected"
     NOT_RUN = "not_run"
 
@@ -430,10 +435,60 @@ class CandidateCycleReplay(StrictModel):
     # None 表示旧实验没有保存模型，不能声称完成了模型闭包检查。
     model_snapshot_valid: bool | None = None
     full_window_closed: bool | None = None
+    # 符号模型重放不检查 trace 完整性、路径闭合或观察值，不能称为真实执行证据。
+    trace_completeness_validated: bool = False
+    control_flow_closure_validated: bool = False
+    read_values_validated: bool = False
+    execution_counterexample_validated: bool = False
+    execution_evidence_gaps: tuple[str, ...] = (
+        "trace-completeness",
+        "control-flow-closure",
+        "read-value-validation",
+        "observed-execution-binding",
+    )
     # failures 将聚合原因落到单项 obligation/predicate，便于回归审计。
     failures: tuple[CandidateReplayFailure, ...] = ()
     reasons: tuple[str, ...] = ()
     diagnostic_only: bool = True
+
+    @field_validator("status", mode="before")
+    @classmethod
+    def _map_legacy_accepted(cls, value: object) -> object:
+        """旧 accepted 缺少证据等级；读取时降为不可用于成功判断的状态。"""
+
+        return (
+            CandidateCycleReplayStatus.LEGACY_UNVERIFIED
+            if value == "accepted"
+            else value
+        )
+
+    @model_validator(mode="after")
+    def _check_evidence_tier(self) -> "CandidateCycleReplay":
+        """拒绝报告标签高于其显式保存的 replay 证据。"""
+
+        if self.status is CandidateCycleReplayStatus.STRUCTURE_VALIDATED and (
+            self.model_snapshot_valid is not None or self.full_window_closed is not None
+        ):
+            raise ValueError("structure-only replay cannot claim a model snapshot")
+        if self.status is CandidateCycleReplayStatus.LOCAL_MODEL_VALIDATED and not (
+            self.model_snapshot_valid is True and self.full_window_closed is False
+        ):
+            raise ValueError("local-model status requires a valid model with an open window")
+        if self.status is CandidateCycleReplayStatus.FULL_WINDOW_MODEL_VALIDATED and not (
+            self.model_snapshot_valid is True and self.full_window_closed is True
+        ):
+            raise ValueError("full-window status requires a valid model covering the window")
+        if self.status is CandidateCycleReplayStatus.EXECUTION_WITNESS_VALIDATED and not (
+            self.model_snapshot_valid is True
+            and self.full_window_closed is True
+            and self.trace_completeness_validated
+            and self.control_flow_closure_validated
+            and self.read_values_validated
+            and self.execution_counterexample_validated
+            and not self.execution_evidence_gaps
+        ):
+            raise ValueError("execution-witness status requires all trace-bound evidence")
+        return self
 
 
 class CandidateSearchLedger(StrictModel):
