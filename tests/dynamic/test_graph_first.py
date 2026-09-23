@@ -10,6 +10,8 @@ from bmo_check_dynamic.analysis import (
 from bmo_check_dynamic.analysis.cycle_relevance import _candidate_relations
 from bmo_check_dynamic.analysis.graph_first import (
     _LabeledEdge,
+    _build_candidate_graph,
+    _build_candidate_violation_cycle,
     _build_local_obligations,
     _build_local_witness,
     _candidate_query_events,
@@ -746,6 +748,364 @@ def test_candidate_query_keeps_all_byte_sources_and_replays_initial_read() -> No
         base + 4,
         4,
     ) in same_endpoint_assignments
+
+
+def test_merged_rf_edge_needs_only_one_selected_byte_relation() -> None:
+    """同端点 RF 的合并标签表示备选关系，不要求每个分片都选同一来源。"""
+
+    base = 0x6000
+    read = TraceEvent(1, 1, 0, 0x60, EventKind.LOAD, base, 8)
+    tail_write = TraceEvent(1, 2, 0, 0x61, EventKind.STORE, base + 8, 4)
+    wide_write = TraceEvent(2, 1, 0, 0x62, EventKind.STORE, base, 12)
+    high_write = TraceEvent(3, 1, 0, 0x63, EventKind.STORE, base + 4, 4)
+    events = (read, tail_write, wide_write, high_write)
+    window = AnalysisWindow("p16-rf-alternative-labels", events, ())
+
+    relations = _candidate_relations(events)
+    wide_read_ids = tuple(
+        item.relation_id
+        for item in relations
+        if item.kind == "rf" and item.event_ids == (wide_write.event_id, read.event_id)
+    )
+    high_read_id = next(
+        item.relation_id
+        for item in relations
+        if item.kind == "rf" and item.event_ids == (high_write.event_id, read.event_id)
+    )
+    assert len(wide_read_ids) == 2
+
+    graph = build_ppo_graph_input(window)
+    certificate, replay = build_ppo_reduction_certificate(graph)
+    assert replay.accepted
+    # 这条 Load→Store 只在 source PPO 中成立：写入落在读操作范围之外，
+    # 因此 target PPO 不会把候选 source cycle 变成 target cycle。
+    source_edge = (read.event_id, tail_write.event_id)
+    assert source_edge in graph.source_edges
+    assert source_edge not in graph.target_edges
+    source_reduced = frozenset(
+        set(graph.source_edges)
+        - {
+            (item.source_event, item.target_event)
+            for item in certificate.source.removed_edges
+        }
+    )
+    target_reduced = frozenset(
+        set(graph.target_edges)
+        - {
+            (item.source_event, item.target_event)
+            for item in certificate.target.removed_edges
+        }
+    )
+    all_graph_edges, _, _ = _build_candidate_graph(events, source_reduced)
+    rf_edge = next(
+        item
+        for item in all_graph_edges
+        if item.source == wide_write.event_id
+        and item.target == read.event_id
+        and item.kind == "rf"
+    )
+    assert set(rf_edge.relation_ids) == set(wide_read_ids)
+    tail_co_id = f"co:{tail_write.event_id}:{wide_write.event_id}"
+    cycle_edges = (
+        rf_edge,
+        _LabeledEdge(
+            read.event_id,
+            tail_write.event_id,
+            "source_ppo",
+            f"ppo:{read.event_id}->{tail_write.event_id}",
+            witness_path=(read.event_id, tail_write.event_id),
+        ),
+        _LabeledEdge(
+            tail_write.event_id,
+            wide_write.event_id,
+            "coherence",
+            tail_co_id,
+            (tail_co_id,),
+        ),
+    )
+    candidate = _build_candidate_violation_cycle(
+        cycle_id="p16-rf-alternative-labels",
+        cycle_edges=cycle_edges,
+        event_by_id={item.event_id: item for item in events},
+    )
+    required = _required_local_source_edges(cycle_edges)
+    extra_groups = (
+        # 强制低分片从 wide_write 读取，但高分片从 high_write 读取。
+        # candidate RF 合并边的两个标签中，只有低分片标签被真正选中。
+        (wide_write.event_id, read.event_id, "rf", (wide_read_ids[0],)),
+        (high_write.event_id, read.event_id, "rf", (high_read_id,)),
+        (
+            wide_write.event_id,
+            high_write.event_id,
+            "coherence",
+            (f"co:{wide_write.event_id}:{high_write.event_id}",),
+        ),
+    )
+    result, observation = run_symbolic_shadow(
+        window,
+        source_ppo=set(source_reduced),
+        target_ppo=set(target_reduced),
+        control_flow_closed=False,
+        timeout_ms=1_000,
+        max_symbolic_terms=20_000,
+        execute_solver=True,
+        required_source_cycle_edges=required.endpoints,
+        required_source_cycle_relations=(*required.relation_groups, *extra_groups),
+        capture_model=True,
+    )
+    assert observation.result == "sat"
+    assert result.witness is not None
+    assignments = {
+        (item.read_event, item.write_event, item.address, item.size)
+        for item in result.witness.read_from
+    }
+    assert (read.event_id, wide_write.event_id, base, 4) in assignments
+    assert (read.event_id, high_write.event_id, base + 4, 4) in assignments
+    assert not any(
+        (read.event_id, wide_write.event_id, address, size) in assignments
+        for address, size in ((base + 4, 4),)
+    )
+
+    witness = _build_local_witness(
+        candidate,
+        cycle_edges=cycle_edges,
+        local_result=result,
+    )
+    assert witness is not None
+    obligations = _build_local_obligations(
+        candidate,
+        cycle_edges=cycle_edges,
+        events=events,
+        witness=witness,
+        query_event_ids=tuple(item.event_id for item in events),
+        window_event_ids=tuple(item.event_id for item in events),
+    )
+    replayed = replay_candidate_cycle(
+        graph,
+        certificate,
+        candidate,
+        obligations,
+        witness,
+        source_reduced=source_reduced,
+        target_reduced=target_reduced,
+        events=events,
+    )
+    assert replayed.status.value == "full_window_model_validated"
+
+
+def test_merged_fr_labels_are_all_active_when_target_graph_is_acyclic() -> None:
+    """同端点 FR 的 OR 候选在 target-acyclic 模型中会蕴含每个分片都成立。"""
+
+    base = 0x7000
+    read = TraceEvent(1, 1, 0, 0x70, EventKind.LOAD, base, 8)
+    tail_write = TraceEvent(1, 2, 0, 0x71, EventKind.STORE, base + 8, 4)
+    later = TraceEvent(2, 1, 0, 0x72, EventKind.STORE, base, 12)
+    old_low = TraceEvent(6, 3, 0, 0x73, EventKind.STORE, base, 4)
+    old_high = TraceEvent(4, 1, 0, 0x74, EventKind.STORE, base + 4, 4)
+    new_high = TraceEvent(5, 1, 0, 0x75, EventKind.STORE, base + 4, 4)
+    tail_read = TraceEvent(6, 1, 0, 0x76, EventKind.LOAD, base + 8, 4)
+    ppo_store = TraceEvent(6, 2, 0, 0x77, EventKind.STORE, base, 4)
+    events = (
+        read,
+        tail_write,
+        later,
+        old_high,
+        new_high,
+        tail_read,
+        ppo_store,
+        old_low,
+    )
+    window = AnalysisWindow("p16-fr-alternative-labels", events, ())
+    relations = _candidate_relations(events)
+    fr_ids = tuple(
+        item.relation_id
+        for item in relations
+        if item.kind == "fr" and item.event_ids == (read.event_id, later.event_id)
+    )
+    low_rf_id = next(
+        item.relation_id
+        for item in relations
+        if item.kind == "rf"
+        and item.event_ids == (old_low.event_id, read.event_id)
+        and item.address == base
+    )
+    old_high_rf_id = next(
+        item.relation_id
+        for item in relations
+        if item.kind == "rf"
+        and item.event_ids == (old_high.event_id, read.event_id)
+        and item.address == base + 4
+    )
+    new_high_rf_id = next(
+        item.relation_id
+        for item in relations
+        if item.kind == "rf"
+        and item.event_ids == (new_high.event_id, read.event_id)
+        and item.address == base + 4
+    )
+    assert len(fr_ids) == 2
+
+    graph = build_ppo_graph_input(window)
+    certificate, certificate_replay = build_ppo_reduction_certificate(graph)
+    assert certificate_replay.accepted
+    source_reduced = frozenset(
+        set(graph.source_edges)
+        - {
+            (item.source_event, item.target_event)
+            for item in certificate.source.removed_edges
+        }
+    )
+    target_reduced = frozenset(
+        set(graph.target_edges)
+        - {
+            (item.source_event, item.target_event)
+            for item in certificate.target.removed_edges
+        }
+    )
+    assert (tail_read.event_id, ppo_store.event_id) in source_reduced
+    assert (tail_read.event_id, ppo_store.event_id) not in target_reduced
+
+    candidate_graph, _, _ = _build_candidate_graph(events, source_reduced)
+    merged_fr_edge = next(
+        item
+        for item in candidate_graph
+        if item.source == read.event_id
+        and item.target == later.event_id
+        and item.kind == "fr"
+    )
+    assert set(merged_fr_edge.relation_ids) == set(fr_ids)
+    cycle_edges = (
+        next(
+            item
+            for item in candidate_graph
+            if item.source == later.event_id
+            and item.target == tail_read.event_id
+            and item.kind == "rf"
+        ),
+        next(
+            item
+            for item in candidate_graph
+            if item.source == tail_read.event_id
+            and item.target == ppo_store.event_id
+            and item.kind == "source_ppo"
+        ),
+        next(
+            item
+            for item in candidate_graph
+            if item.source == ppo_store.event_id
+            and item.target == old_low.event_id
+            and item.kind == "source_ppo"
+        ),
+        next(
+            item
+            for item in candidate_graph
+            if item.source == old_low.event_id
+            and item.target == read.event_id
+            and item.kind == "rf"
+        ),
+        merged_fr_edge,
+    )
+    candidate = _build_candidate_violation_cycle(
+        cycle_id="p16-fr-alternative-labels",
+        cycle_edges=cycle_edges,
+        event_by_id={item.event_id: item for item in events},
+    )
+    required = _required_local_source_edges(cycle_edges)
+
+    def run_forced_sources(high_source: TraceEvent):
+        high_co_group = (
+            (
+                high_source.event_id
+                if high_source.event_id == old_high.event_id
+                else later.event_id
+            ),
+            (
+                later.event_id
+                if high_source.event_id == old_high.event_id
+                else high_source.event_id
+            ),
+            "coherence",
+            (
+                f"co:{high_source.event_id}:{later.event_id}"
+                if high_source.event_id == old_high.event_id
+                else f"co:{later.event_id}:{high_source.event_id}",
+            ),
+        )
+        return run_symbolic_shadow(
+            window,
+            source_ppo=set(source_reduced),
+            target_ppo=set(target_reduced),
+            control_flow_closed=False,
+            timeout_ms=1_000,
+            max_symbolic_terms=20_000,
+            execute_solver=True,
+            required_source_cycle_edges=required.endpoints,
+            required_source_cycle_relations=(
+                *required.relation_groups,
+                (
+                    high_source.event_id,
+                    read.event_id,
+                    "rf",
+                    (
+                        old_high_rf_id
+                        if high_source.event_id == old_high.event_id
+                        else new_high_rf_id,
+                    ),
+                ),
+                (
+                    old_low.event_id,
+                    later.event_id,
+                    "coherence",
+                    (f"co:{old_low.event_id}:{later.event_id}",),
+                ),
+                high_co_group,
+            ),
+            capture_model=True,
+        )
+
+    both_active, both_observation = run_forced_sources(old_high)
+    assert both_observation.result == "sat"
+    assert both_active.witness is not None
+    selected = {
+        (item.read_event, item.write_event, item.address, item.size)
+        for item in both_active.witness.read_from
+    }
+    assert (read.event_id, old_low.event_id, base, 4) in selected
+    assert (read.event_id, old_high.event_id, base + 4, 4) in selected
+    witness = _build_local_witness(
+        candidate,
+        cycle_edges=cycle_edges,
+        local_result=both_active,
+    )
+    assert witness is not None
+    obligations = _build_local_obligations(
+        candidate,
+        cycle_edges=cycle_edges,
+        events=events,
+        witness=witness,
+        query_event_ids=tuple(item.event_id for item in events),
+        window_event_ids=tuple(item.event_id for item in events),
+    )
+    replayed = replay_candidate_cycle(
+        graph,
+        certificate,
+        candidate,
+        obligations,
+        witness,
+        source_reduced=source_reduced,
+        target_reduced=target_reduced,
+        events=events,
+    )
+    assert replayed.status.value == "full_window_model_validated"
+
+    one_inactive, one_observation = run_forced_sources(new_high)
+    # FR(read,later) 只要有一个分片成立就满足候选 OR；但若另一个分片从
+    # coherence 上晚于 later 的写读取，就形成 later→source→read→later，
+    # 被同一查询的 target-acyclicity 约束排除。
+    assert one_observation.result == "unsat", (
+        one_inactive.reason,
+        one_observation.reason,
+    )
 
 
 def test_p16_complete_model_replays_synthetic_lb_witness() -> None:
