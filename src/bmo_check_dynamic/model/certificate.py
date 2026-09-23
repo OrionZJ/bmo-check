@@ -101,11 +101,38 @@ class ReadFromWitness(StrictModel):
     size: int
 
 
+class SymbolicModelVariable(StrictModel):
+    """P16 shadow 查询中一个具名 Z3 变量及其模型取值。"""
+
+    # semantic_id 把 Z3 内部编号映射回访存、排序或 cycle decision。
+    semantic_id: str
+    # smt_name 保留求解器里的变量名，便于独立检查模型快照。
+    smt_name: str
+    # sort 和 value 按 Z3 的稳定文本形式保存，不重建 solver object。
+    sort: str
+    value: str
+
+
+class SymbolicModelSnapshot(StrictModel):
+    """只用于 shadow replay 的完整模型快照，不是正式反例证书。"""
+
+    schema_version: str = "local-symbolic-model-v1"
+    variables: tuple[SymbolicModelVariable, ...]
+    # expected_variable_count 由 encoder 声明，replay 会重新推导并核对。
+    expected_variable_count: int
+    # complete=false 时不得用这份快照验证 FEASIBLE。
+    complete: bool
+    # digest 绑定变量 identity、sort 和取值，防止报告被静默改写。
+    digest: str
+
+
 class CandidateWitness(StrictModel):
     window_id: str
     read_from: tuple[ReadFromWitness, ...] = ()
     coherence: tuple[tuple[str, str], ...] = ()
     source_cycle: tuple[str, ...] = ()
+    # P16 固定复现才保存完整模型；常规运行不额外复制 Z3 模型。
+    model_snapshot: SymbolicModelSnapshot | None = None
     validated: bool = False
     reason: str
 

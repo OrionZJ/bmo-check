@@ -24,7 +24,13 @@ from bmo_check_dynamic.model import (
     CegarModeComparisonReport,
     CegarExperimentMode,
     CegarModeMetrics,
+    GraphFirstLocalQuery,
+    GraphFirstQueryStatus,
+    LocalCycleStatus,
+    LocalWitnessClosureKind,
+    LocalWitnessClosureRecord,
 )
+from bmo_check_dynamic.proof import run_symbolic_shadow
 
 from .cegar import (
     _build_candidate_violation_cycle,
@@ -35,9 +41,13 @@ from .cegar import (
 from .graph_first import (
     _LabeledEdge,
     _build_candidate_graph,
+    _build_local_obligations,
+    _build_local_witness,
     _reduced_edges,
+    _required_local_source_edges,
     _strongly_connected_components,
     characterize_graph_first_window,
+    replay_candidate_cycle,
 )
 from .ppo_reduction import (
     build_ppo_graph_input,
@@ -270,6 +280,142 @@ def _p14_metrics(
     )
 
 
+def _close_local_feasible_candidates(
+    window: AnalysisWindow,
+    certificate: object,
+    candidates,
+    *,
+    control_flow_closed: bool,
+    timeout_ms: int,
+    max_symbolic_terms: int,
+) -> tuple[LocalWitnessClosureRecord, ...]:
+    """用同一 checker contract 把局部 SAT 扩展到完整窗口并独立 replay。"""
+
+    graph = build_ppo_graph_input(window)
+    source_reduced = _reduced_edges(
+        graph.source_edges, certificate.source.removed_edges
+    )
+    target_reduced = _reduced_edges(
+        graph.target_edges, certificate.target.removed_edges
+    )
+    records: list[LocalWitnessClosureRecord] = []
+    for item in candidates:
+        if (
+            item.local_query is None
+            or item.local_query.feasibility_status is not LocalCycleStatus.FEASIBLE
+            or item.candidate_violation_cycle is None
+        ):
+            continue
+        candidate = item.candidate_violation_cycle
+        cycle_edges = tuple(
+            _LabeledEdge(
+                source=edge.source_event,
+                target=edge.target_event,
+                kind=edge.relation_type,
+                relation_id=(edge.relation_ids[0] if edge.relation_ids else ""),
+                relation_ids=edge.relation_ids,
+                witness_path=edge.ppo_reachability_path,
+            )
+            for edge in candidate.ordered_edges
+        )
+        required = frozenset(_required_local_source_edges(cycle_edges))
+        result, observation = run_symbolic_shadow(
+            window,
+            source_ppo=set(source_reduced),
+            target_ppo=set(target_reduced),
+            control_flow_closed=control_flow_closed,
+            timeout_ms=timeout_ms,
+            max_symbolic_terms=max_symbolic_terms,
+            execute_solver=True,
+            required_source_cycle_edges=required,
+            capture_model=True,
+        )
+        status = {
+            "sat": GraphFirstQueryStatus.SAT_CANDIDATE,
+            "unsat": GraphFirstQueryStatus.UNSAT_LOCAL,
+        }.get(observation.result, GraphFirstQueryStatus.UNKNOWN_LOCAL)
+        feasibility = {
+            "sat": LocalCycleStatus.FEASIBLE,
+            "unsat": LocalCycleStatus.INFEASIBLE,
+        }.get(observation.result, LocalCycleStatus.UNKNOWN)
+        query = GraphFirstLocalQuery(
+            status=status,
+            feasibility_status=feasibility,
+            solver_result=observation.result,
+            reason=observation.reason,
+            event_count=len(window.events),
+            source_ppo_edge_count=len(source_reduced),
+            target_ppo_edge_count=len(target_reduced),
+            formula_terms=observation.formula_terms,
+            assertion_count=observation.assertion_count,
+            z3_ast_count=observation.z3_ast_count,
+            build_time_ms=observation.build_time_ms,
+            solver_time_ms=observation.solver_time_ms,
+        )
+        witness = None
+        replay = None
+        witness_started = time.perf_counter()
+        if result.witness is not None:
+            witness = _build_local_witness(
+                candidate,
+                cycle_edges=cycle_edges,
+                local_result=result,
+            )
+        obligations = _build_local_obligations(
+            candidate,
+            cycle_edges=cycle_edges,
+            events=window.events,
+            witness=witness,
+            query_event_ids=tuple(event.event_id for event in window.events),
+        )
+        witness_build_ms = max(
+            0, int((time.perf_counter() - witness_started) * 1000)
+        )
+        replay_ms = 0
+        if witness is not None:
+            replay_started = time.perf_counter()
+            replay = replay_candidate_cycle(
+                graph,
+                certificate,
+                candidate,
+                obligations,
+                witness,
+                source_reduced=source_reduced,
+                target_reduced=target_reduced,
+                events=window.events,
+            )
+            replay_ms = max(0, int((time.perf_counter() - replay_started) * 1000))
+        if observation.result == "unsat":
+            classification = LocalWitnessClosureKind.SPURIOUS_LOCAL_SAT
+        elif observation.result != "sat":
+            classification = LocalWitnessClosureKind.CLOSURE_QUERY_UNKNOWN
+        elif replay is not None and replay.status.value == "accepted":
+            classification = LocalWitnessClosureKind.VALID_COMPLETE_WITNESS
+        else:
+            classification = LocalWitnessClosureKind.WITNESS_REPLAY_REJECTED
+        records.append(
+            LocalWitnessClosureRecord(
+                candidate_id=item.cycle_id,
+                local_event_count=item.local_query.event_count,
+                full_window_event_count=len(window.events),
+                classification=classification,
+                closure_query=query,
+                closure_witness=witness,
+                replay=replay,
+                encoding_ms=observation.build_time_ms,
+                solver_ms=observation.solver_time_ms,
+                witness_build_ms=witness_build_ms,
+                replay_ms=replay_ms,
+                reasons=(
+                    replay.reasons
+                    if replay is not None and replay.reasons
+                    else ((observation.reason,) if observation.reason else ())
+                ),
+            )
+        )
+    return tuple(records)
+
+
 def compare_cegar_modes(
     window: AnalysisWindow,
     *,
@@ -288,6 +434,11 @@ def compare_cegar_modes(
     discovery_only: bool = False,
     include_bounded: bool = False,
     discovery_resource_policy: CandidateDiscoveryResourcePolicy | None = None,
+    include_candidate_records: bool = False,
+    capture_model: bool = False,
+    close_feasible_candidates: bool = False,
+    closure_timeout_ms: int = 5_000,
+    closure_max_symbolic_terms: int = 100_000,
 ) -> CegarModeComparisonReport:
     """用完全相同的边界比较 P11、P12 canonical 和 P12 blocking。"""
 
@@ -351,6 +502,7 @@ def compare_cegar_modes(
             execute_local_solver=execute_local_solver,
             discovery_scheduler="fair_structured",
             evaluate_candidates=not discovery_only,
+            capture_model=capture_model,
         )
         modes.append(_p14_metrics(structured, prepared, started))
 
@@ -375,10 +527,29 @@ def compare_cegar_modes(
             discovery_scheduler="bounded_lazy_p15",
             discovery_resource_policy=bounded_policy,
             evaluate_candidates=not discovery_only,
+            capture_model=capture_model,
         )
         metrics = _p14_metrics(bounded, prepared, started).model_copy(
-            update={"mode": CegarExperimentMode.STRUCTURED_P15}
+            update={
+                "mode": CegarExperimentMode.STRUCTURED_P15,
+                "candidate_records": (
+                    bounded.candidates if include_candidate_records else ()
+                ),
+            }
         )
+        if close_feasible_candidates:
+            metrics = metrics.model_copy(
+                update={
+                    "witness_closures": _close_local_feasible_candidates(
+                        window,
+                        prepared.certificate,
+                        bounded.candidates,
+                        control_flow_closed=control_flow_closed,
+                        timeout_ms=closure_timeout_ms,
+                        max_symbolic_terms=closure_max_symbolic_terms,
+                    )
+                }
+            )
         modes.append(metrics)
 
     candidate_sets = {

@@ -5,6 +5,7 @@ from enum import StrEnum
 from pydantic import Field
 
 from .manifest import StrictModel
+from .certificate import SymbolicModelSnapshot
 
 
 class GraphFirstQueryStatus(StrEnum):
@@ -36,6 +37,28 @@ class CandidateCycleReplayStatus(StrEnum):
     ACCEPTED = "accepted"
     REJECTED = "rejected"
     NOT_RUN = "not_run"
+
+
+class CandidateReplayFailureKind(StrEnum):
+    """局部 witness replay 的失败分类；这些类别不改变正式 verdict。"""
+
+    RF_ASSIGNMENT_INCOMPLETE = "rf_assignment_incomplete"
+    FR_CO_INCONSISTENT = "fr_co_inconsistent"
+    PPO_WITNESS_INVALID = "ppo_witness_invalid"
+    SOURCE_TARGET_SEMANTIC_CONFLICT = "source_target_semantic_conflict"
+    FENCE_RMW_FUTEX_CONSTRAINT_MISSING = "fence_rmw_futex_constraint_missing"
+    BINDING_MISMATCH = "binding_mismatch"
+    WITNESS_SERIALIZATION_ERROR = "witness_serialization_error"
+    LOCAL_MODEL_INCOMPLETE = "local_model_incomplete"
+
+
+class CandidateReplayFailure(StrictModel):
+    """指出被违反的具体 obligation 和 replay predicate。"""
+
+    kind: CandidateReplayFailureKind
+    obligation_id: str
+    predicate: str
+    detail: str
 
 
 class GraphFirstEdge(StrictModel):
@@ -128,6 +151,8 @@ class LocalCycleObligationSet(StrictModel):
     """判断一个候选环所需的局部关系和 global RF context。"""
 
     cycle_id: str
+    # query_event_ids 固定局部 SMT 的事件 universe，replay 可独立重建变量域。
+    query_event_ids: tuple[str, ...] = ()
     selected_rf_relation_ids: tuple[str, ...] = ()
     rf_candidate_domain_ids: tuple[str, ...] = ()
     required_fr_relation_ids: tuple[str, ...] = ()
@@ -150,6 +175,10 @@ class LocalCycleWitness(StrictModel):
     ppo_reachability_witnesses: tuple[tuple[str, ...], ...] = ()
     ordering_assignment: tuple[tuple[str, str], ...] = ()
     cycle_edges: tuple[tuple[str, str], ...] = ()
+    # source_cycle 是 solver 实际选出的 source relation cycle，不等同于候选骨架。
+    source_cycle: tuple[str, ...] = ()
+    # 完整决策变量只在 P16 复现实验中按需保存。
+    model_snapshot: SymbolicModelSnapshot | None = None
     diagnostic_only: bool = True
 
 
@@ -393,6 +422,11 @@ class CandidateCycleReplay(StrictModel):
     boundary_ordering_valid: bool
     source_violation_valid: bool
     target_condition_valid: bool
+    # None 表示旧实验没有保存模型，不能声称完成了模型闭包检查。
+    model_snapshot_valid: bool | None = None
+    full_window_closed: bool | None = None
+    # failures 将聚合原因落到单项 obligation/predicate，便于回归审计。
+    failures: tuple[CandidateReplayFailure, ...] = ()
     reasons: tuple[str, ...] = ()
     diagnostic_only: bool = True
 
@@ -474,6 +508,10 @@ class GraphFirstCandidateCycle(StrictModel):
     local_witness: LocalCycleWitness | None = None
     # 不信任 producer 的独立 replay 结果。
     replay: CandidateCycleReplay | None = None
+    # 分别记录 witness / obligation materialization / independent replay 耗时。
+    witness_build_ms: int = 0
+    obligations_build_ms: int = 0
+    replay_ms: int = 0
     # local UNSAT 时的精确候选阻塞信息。
     blocking_clause: CandidateBlockingClause | None = None
 

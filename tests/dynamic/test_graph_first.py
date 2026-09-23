@@ -7,7 +7,12 @@ from bmo_check_dynamic.analysis import (
     characterize_graph_first_window,
     replay_candidate_cycle,
 )
-from bmo_check_dynamic.model import EventKind, GraphFirstQueryStatus, TraceEvent
+from bmo_check_dynamic.model import (
+    CandidateReplayFailureKind,
+    EventKind,
+    GraphFirstQueryStatus,
+    TraceEvent,
+)
 
 
 def _lb_window() -> AnalysisWindow:
@@ -74,6 +79,121 @@ def test_graph_first_local_query_never_becomes_a_verdict() -> None:
     assert report.candidates[0].replay is not None
     assert report.candidates[0].replay.status.value == "accepted"
     assert not hasattr(report, "verdict")
+
+
+def test_p16_complete_model_replays_synthetic_lb_witness() -> None:
+    report = characterize_graph_first_window(
+        _lb_window(),
+        max_cycle_length=6,
+        max_cycles=1,
+        max_search_states=100,
+        local_timeout_ms=500,
+        local_max_symbolic_terms=10_000,
+        execute_local_solver=True,
+        capture_model=True,
+    )
+
+    item = report.candidates[0]
+    assert item.local_witness is not None
+    assert item.local_witness.model_snapshot is not None
+    assert item.local_witness.model_snapshot.complete is True
+    assert item.replay is not None
+    assert item.replay.model_snapshot_valid is True
+    assert item.replay.full_window_closed is True
+    assert item.replay.status.value == "accepted"
+
+
+def test_p16_local_model_does_not_claim_full_window_closure() -> None:
+    base = _lb_window()
+    window = AnalysisWindow(
+        "synthetic-lb-with-unrelated-event",
+        base.events
+        + (TraceEvent(3, 1, 0, 0x30, EventKind.STORE, 0x3000, 4),),
+        (),
+    )
+    report = characterize_graph_first_window(
+        window,
+        max_cycle_length=6,
+        max_cycles=1,
+        max_search_states=100,
+        local_timeout_ms=500,
+        local_max_symbolic_terms=10_000,
+        execute_local_solver=True,
+        capture_model=True,
+    )
+
+    item = report.candidates[0]
+    assert item.local_query is not None
+    assert item.local_query.feasibility_status.value == "FEASIBLE"
+    assert item.replay is not None
+    assert item.replay.full_window_closed is False
+    assert item.replay.status.value == "rejected"
+    assert any(
+        failure.kind is CandidateReplayFailureKind.LOCAL_MODEL_INCOMPLETE
+        and failure.predicate == "full-window-event-closure"
+        for failure in item.replay.failures
+    )
+
+
+def test_p16_replay_rejects_tampered_model_snapshot() -> None:
+    window = _lb_window()
+    graph = build_ppo_graph_input(window)
+    certificate, reduction_replay = build_ppo_reduction_certificate(graph)
+    assert reduction_replay.accepted
+    report = characterize_graph_first_window(
+        window,
+        reduction_certificate=certificate,
+        max_cycle_length=6,
+        max_cycles=1,
+        max_search_states=100,
+        local_timeout_ms=500,
+        local_max_symbolic_terms=10_000,
+        execute_local_solver=True,
+        capture_model=True,
+    )
+    item = report.candidates[0]
+    assert item.local_witness is not None
+    assert item.local_witness.model_snapshot is not None
+    assert item.local_obligations is not None
+    candidate = item.candidate_violation_cycle
+    assert candidate is not None
+
+    snapshot = item.local_witness.model_snapshot
+    first = snapshot.variables[0]
+    replacement_sort = "Bool" if first.sort == "Int" else "Int"
+    tampered_first = first.model_copy(update={"sort": replacement_sort})
+    tampered_snapshot = snapshot.model_copy(
+        update={
+            "variables": (tampered_first,) + snapshot.variables[1:],
+        }
+    )
+    tampered_witness = item.local_witness.model_copy(
+        update={"model_snapshot": tampered_snapshot}
+    )
+    source_removed = {
+        (edge.source_event, edge.target_event)
+        for edge in certificate.source.removed_edges
+    }
+    target_removed = {
+        (edge.source_event, edge.target_event)
+        for edge in certificate.target.removed_edges
+    }
+    replay = replay_candidate_cycle(
+        graph,
+        certificate,
+        candidate,
+        item.local_obligations,
+        tampered_witness,
+        source_reduced=frozenset(graph.source_edges - source_removed),
+        target_reduced=frozenset(graph.target_edges - target_removed),
+        events=window.events,
+    )
+    assert replay.status.value == "rejected"
+    assert any(
+        failure.kind is CandidateReplayFailureKind.WITNESS_SERIALIZATION_ERROR
+        and failure.predicate in {"model-snapshot-integrity", "model-variable-sorts"}
+        for failure in replay.failures
+    )
 
 
 def test_candidate_replay_rejects_tampered_ppo_witness() -> None:

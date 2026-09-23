@@ -401,6 +401,36 @@ def test_p15_complete_candidate_set_matches_p14_on_small_fixture() -> None:
     }
     assert p15.truncated is False
     assert p15_ids == p14_ids
+    assert p15.discovery_profile is not None
+    assert (
+        p15.discovery_profile.seeds_visited
+        <= p15.discovery_profile.conditional_seed_count
+    )
+    independent = characterize_graph_first_window(
+        window,
+        reduction_certificate=certificate,
+        max_cycle_length=6,
+        max_cycles=32,
+        max_search_states=10_000,
+        execute_local_solver=False,
+        discovery_scheduler="bounded_lazy_p15",
+        discovery_resource_policy=CandidateDiscoveryResourcePolicy(
+            max_in_memory_frontier=10_000,
+            max_search_states=10_000,
+        ),
+        evaluate_candidates=False,
+    )
+    coverage = compare_candidate_coverage(
+        window,
+        independent,
+        certificate=certificate,
+        max_cycle_length=6,
+        max_search_states=10_000,
+        max_candidates=32,
+    )
+    assert coverage.complete is True
+    assert coverage.missing_candidate_ids == ()
+    assert coverage.unexpected_candidate_ids == ()
 
 
 def test_p15_checkpoint_binding_rejects_other_window(tmp_path) -> None:

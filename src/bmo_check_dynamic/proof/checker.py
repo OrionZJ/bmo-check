@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import dataclass, field
 from itertools import islice, permutations, product
 from time import monotonic
@@ -19,6 +20,8 @@ from bmo_check_dynamic.model import (
     EventFlags,
     EventKind,
     ReadFromWitness,
+    SymbolicModelSnapshot,
+    SymbolicModelVariable,
     SymbolicEncodingStats,
     TraceEvent,
     WindowResult,
@@ -695,6 +698,7 @@ def _check_symbolic(
     execute_solver: bool = True,
     profile: SolverDiagnosticProfile = SolverDiagnosticProfile.FULL,
     required_source_cycle_edges: frozenset[Edge] | None = None,
+    capture_model: bool = False,
 ) -> WindowResult:
     deadline = monotonic() + timeout_ms / 1000
     build_started_at = (
@@ -1154,6 +1158,69 @@ def _check_symbolic(
         for order in coherence_orders
         for left, right in zip(order, order[1:])
     )
+    model_snapshot = None
+    if capture_model:
+        semantic_variables: list[tuple[str, z3.ExprRef]] = []
+        semantic_variables.extend(
+            (f"target_rank:{event_id}", variable)
+            for event_id, variable in topological.items()
+        )
+        semantic_variables.extend(
+            (f"coherence_rank:{event_id}", variable)
+            for event_id, variable in co_rank.items()
+        )
+        semantic_variables.extend(
+            (
+                "rf_choice:" + json.dumps(
+                    [event_id, part_index, part.address, part.size],
+                    separators=(",", ":"),
+                ),
+                choice,
+            )
+            for (event_id, part_index), (part, choice, _) in rf_choice.items()
+        )
+        semantic_variables.extend(
+            (f"cycle_node:{event_id}", variable)
+            for event_id, variable in selected_nodes.items()
+        )
+        semantic_variables.extend(
+            (
+                "cycle_edge:" + json.dumps([left, right], separators=(",", ":")),
+                variable,
+            )
+            for (left, right), variable in selected_edges.items()
+        )
+        serialized_variables = tuple(
+            sorted(
+                (
+                    SymbolicModelVariable(
+                        semantic_id=semantic_id,
+                        smt_name=str(variable.decl().name()),
+                        sort=variable.sort().sexpr(),
+                        value=str(model.eval(variable, model_completion=True)),
+                    )
+                    for semantic_id, variable in semantic_variables
+                ),
+                key=lambda item: item.semantic_id,
+            )
+        )
+        model_payload = [item.model_dump(mode="json") for item in serialized_variables]
+        model_digest = hashlib.sha256(
+            json.dumps(
+                model_payload,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        model_snapshot = SymbolicModelSnapshot(
+            variables=serialized_variables,
+            expected_variable_count=len(semantic_variables),
+            complete=(
+                len({item.semantic_id for item in serialized_variables})
+                == len(semantic_variables)
+            ),
+            digest=model_digest,
+        )
     validated = control_flow_closed and _slice_values_match(sliced_rf)
     witness = CandidateWitness(
         window_id=window.window_id,
@@ -1170,6 +1237,7 @@ def _check_symbolic(
             (left.event_id, right.event_id) for left, right in coherence_pairs
         ),
         source_cycle=source_cycle,
+        model_snapshot=model_snapshot,
         validated=validated,
         reason=(
             "target permits an execution rejected by x86-TSO"
@@ -1204,6 +1272,7 @@ def run_symbolic_shadow(
     execute_solver: bool = True,
     profile: SolverDiagnosticProfile = SolverDiagnosticProfile.FULL,
     required_source_cycle_edges: frozenset[Edge] | None = None,
+    capture_model: bool = False,
 ) -> tuple[WindowResult, SymbolicSolverObservation]:
     """用正式 symbolic encoder 跑一侧 shadow，不进入 ``check_window``。
 
@@ -1241,6 +1310,7 @@ def run_symbolic_shadow(
         execute_solver=execute_solver,
         profile=profile,
         required_source_cycle_edges=required_source_cycle_edges,
+        capture_model=capture_model,
     )
     return result, observation.freeze()
 

@@ -351,6 +351,11 @@ def cegar_ab(
     discovery_only: bool = False,
     include_bounded: bool = False,
     discovery_resource_policy=None,
+    include_candidate_records: bool = False,
+    capture_model: bool = False,
+    close_feasible_candidates: bool = False,
+    closure_timeout_ms: int = 5_000,
+    closure_max_symbolic_terms: int = 100_000,
 ) -> CegarExperimentReport:
     """运行 P13/P14 shadow A/B；不进入正式 verdict。"""
 
@@ -371,6 +376,11 @@ def cegar_ab(
         discovery_only=discovery_only,
         include_bounded=include_bounded,
         discovery_resource_policy=discovery_resource_policy,
+        include_candidate_records=include_candidate_records,
+        capture_model=capture_model,
+        close_feasible_candidates=close_feasible_candidates,
+        closure_timeout_ms=closure_timeout_ms,
+        closure_max_symbolic_terms=closure_max_symbolic_terms,
     )
 
 

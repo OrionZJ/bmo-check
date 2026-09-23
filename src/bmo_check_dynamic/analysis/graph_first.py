@@ -22,6 +22,8 @@ from bmo_check_dynamic.model import (
     CandidateDiscoveryResourcePolicy,
     CandidateCycleReplay,
     CandidateCycleReplayStatus,
+    CandidateReplayFailure,
+    CandidateReplayFailureKind,
     CandidateSearchLedger,
     CandidateViolationCycle,
     CandidateViolationEdge,
@@ -169,6 +171,7 @@ def characterize_graph_first_window(
     execute_local_solver: bool = True,
     discovery_scheduler: str = "depth_first",
     evaluate_candidates: bool = True,
+    capture_model: bool = False,
     discovery_resource_policy: CandidateDiscoveryResourcePolicy | None = None,
 ) -> GraphFirstWindowReport:
     """寻找有界候选坏环，并对每个候选做局部 shadow SMT 查询。
@@ -299,6 +302,7 @@ def characterize_graph_first_window(
                 max_symbolic_terms=local_max_symbolic_terms,
                 execute_solver=execute_local_solver,
                 required_source_cycle_edges=required,
+                capture_model=capture_model,
             )
             query = GraphFirstLocalQuery(
                 status=_local_status(observation.result, execute_local_solver),
@@ -314,20 +318,30 @@ def characterize_graph_first_window(
                 build_time_ms=observation.build_time_ms,
                 solver_time_ms=observation.solver_time_ms,
             )
+            witness_started = time.perf_counter()
             local_witness = _build_local_witness(
                 candidate,
                 cycle_edges=cycle_edges,
                 local_result=local_result,
             )
+            witness_build_ms = max(
+                0, int((time.perf_counter() - witness_started) * 1000)
+            )
             # RF/CO 的端点也必须成为 local query 的必要条件；否则 solver
             # 可能用另一条 conditional edge 闭合一个不同的环，而 replay
             # 看到的却仍是 producer 声称的 candidate。
+            obligations_started = time.perf_counter()
             obligations = _build_local_obligations(
                 candidate,
                 cycle_edges=cycle_edges,
                 events=window.events,
                 witness=local_witness,
+                query_event_ids=tuple(event.event_id for event in local_events),
             )
+            obligations_build_ms = max(
+                0, int((time.perf_counter() - obligations_started) * 1000)
+            )
+            replay_started = time.perf_counter()
             replay = replay_candidate_cycle(
                 graph,
                 certificate,
@@ -338,6 +352,7 @@ def characterize_graph_first_window(
                 target_reduced=target_reduced,
                 events=window.events,
             )
+            replay_ms = max(0, int((time.perf_counter() - replay_started) * 1000))
             blocking = (
                 _blocking_clause(candidate, obligations, observation.result)
                 if query.feasibility_status is LocalCycleStatus.INFEASIBLE
@@ -348,6 +363,9 @@ def characterize_graph_first_window(
             local_witness = None
             obligations = None
             replay = None
+            witness_build_ms = 0
+            obligations_build_ms = 0
+            replay_ms = 0
             blocking = None
         reports.append(
             GraphFirstCandidateCycle(
@@ -375,6 +393,9 @@ def characterize_graph_first_window(
                 local_obligations=obligations,
                 local_witness=local_witness,
                 replay=replay,
+                witness_build_ms=witness_build_ms,
+                obligations_build_ms=obligations_build_ms,
+                replay_ms=replay_ms,
                 blocking_clause=blocking,
             )
         )
@@ -2037,6 +2058,7 @@ def _build_local_obligations(
     cycle_edges: tuple[_LabeledEdge, ...],
     events: tuple[TraceEvent, ...],
     witness: LocalCycleWitness | None,
+    query_event_ids: tuple[str, ...] = (),
 ) -> LocalCycleObligationSet:
     values = _candidate_relations(events)
     by_id = {item.relation_id: item for item in values}
@@ -2055,11 +2077,15 @@ def _build_local_obligations(
             )
         }
     selected_rf = tuple(sorted(selected_rf_values))
-    selected_reads = {
-        by_id[item].owner_event_id
-        for item in selected_rf
-        if item in by_id and by_id[item].kind == "rf"
-    }
+    selected_reads = (
+        {read for read, _, _, _ in witness.rf_assignments}
+        if witness is not None
+        else {
+            by_id[item].owner_event_id
+            for item in selected_rf
+            if item in by_id and by_id[item].kind == "rf"
+        }
+    )
     rf_domain = tuple(
         sorted(
             item.relation_id
@@ -2071,6 +2097,7 @@ def _build_local_obligations(
     required_co = tuple(sorted(candidate.co_dependencies))
     return LocalCycleObligationSet(
         cycle_id=candidate.cycle_id,
+        query_event_ids=tuple(sorted(query_event_ids)),
         selected_rf_relation_ids=selected_rf,
         rf_candidate_domain_ids=rf_domain,
         required_fr_relation_ids=required_fr,
@@ -2122,6 +2149,8 @@ def _build_local_witness(
         cycle_edges=tuple(
             (edge.source, edge.target) for edge in cycle_edges
         ),
+        source_cycle=witness.source_cycle,
+        model_snapshot=witness.model_snapshot,
     )
 
 
@@ -2179,6 +2208,489 @@ def _co_reaches(
     return False
 
 
+def _read_parts_for_replay(
+    read: TraceEvent, writes: tuple[TraceEvent, ...]
+) -> tuple[tuple[int, int], ...]:
+    """独立重建 checker 的按字节 read-part 边界，用于校验 witness。"""
+
+    boundaries = {read.address, read.end_address}
+    for write in writes:
+        if write.overlaps(read):
+            boundaries.add(max(read.address, write.address))
+            boundaries.add(min(read.end_address, write.end_address))
+    ordered = sorted(boundaries)
+    return tuple(
+        (left, right - left)
+        for left, right in zip(ordered, ordered[1:])
+        if right > left
+    )
+
+
+def _fr_relation_parts(
+    events: tuple[TraceEvent, ...],
+) -> dict[str, tuple[str, int, int, str]]:
+    """把 FR identity 映射回 read-part，避免用整个 Load 的 RF 代替切片 RF。"""
+
+    memory = tuple(event for event in events if event.kind.is_memory)
+    reads = tuple(event for event in memory if event.kind.is_read)
+    writes = tuple(event for event in memory if event.kind.is_write)
+    result: dict[str, tuple[str, int, int, str]] = {}
+    for read in reads:
+        for part_index, (address, size) in enumerate(
+            _read_parts_for_replay(read, writes)
+        ):
+            end = address + size
+            for later in writes:
+                if (
+                    later.address >= end
+                    or later.end_address <= address
+                    or later.event_id == read.event_id
+                ):
+                    continue
+                relation_id = (
+                    f"fr:{read.event_id}:{part_index}:{later.event_id}:"
+                    f"{address}:{size}"
+                )
+                result[relation_id] = (read.event_id, address, size, later.event_id)
+    return result
+
+
+@dataclass(frozen=True, slots=True)
+class _LocalModelReplay:
+    model_valid: bool
+    full_window_closed: bool
+    rf_valid: bool
+    fr_valid: bool
+    co_valid: bool
+    boundary_valid: bool
+    source_valid: bool
+    target_valid: bool
+    failures: tuple[CandidateReplayFailure, ...]
+
+
+def _replay_local_symbolic_model(
+    candidate: CandidateViolationCycle,
+    obligations: LocalCycleObligationSet,
+    witness: LocalCycleWitness,
+    *,
+    source_reduced: frozenset[Edge],
+    target_reduced: frozenset[Edge],
+    events: tuple[TraceEvent, ...],
+) -> _LocalModelReplay:
+    """独立重建有限编码的 RF/CO/FR 和 cycle 约束，再核验完整模型。"""
+
+    failures: list[CandidateReplayFailure] = []
+
+    def reject(
+        kind: CandidateReplayFailureKind,
+        obligation_id: str,
+        predicate: str,
+        detail: str,
+    ) -> None:
+        failures.append(
+            CandidateReplayFailure(
+                kind=kind,
+                obligation_id=obligation_id,
+                predicate=predicate,
+                detail=detail,
+            )
+        )
+
+    snapshot = witness.model_snapshot
+    if snapshot is None:
+        reject(
+            CandidateReplayFailureKind.LOCAL_MODEL_INCOMPLETE,
+            candidate.cycle_id,
+            "model-snapshot-present",
+            "完整模型未随 witness 保存",
+        )
+        return _LocalModelReplay(False, False, False, False, False, False, False, False, tuple(failures))
+
+    variables = snapshot.variables
+    semantic_ids = [item.semantic_id for item in variables]
+    serialized = [item.model_dump(mode="json") for item in variables]
+    actual_digest = hashlib.sha256(
+        json.dumps(serialized, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    model_valid = (
+        snapshot.schema_version == "local-symbolic-model-v1"
+        and snapshot.complete
+        and snapshot.expected_variable_count == len(variables)
+        and len(set(semantic_ids)) == len(semantic_ids)
+        and actual_digest == snapshot.digest
+        and witness.cycle_id == candidate.cycle_id == obligations.cycle_id
+    )
+    if not model_valid:
+        reject(
+            CandidateReplayFailureKind.WITNESS_SERIALIZATION_ERROR,
+            candidate.cycle_id,
+            "model-snapshot-integrity",
+            "模型快照版本、完整标记、变量唯一性、数量、摘要或候选绑定不匹配",
+        )
+
+    event_by_id = {event.event_id: event for event in events}
+    query_ids = tuple(obligations.query_event_ids)
+    query_events = tuple(
+        sorted(
+            (event_by_id[item] for item in query_ids if item in event_by_id),
+            key=lambda event: (event.thread_id, event.sequence, event.event_id),
+        )
+    )
+    query_set = set(query_ids)
+    full_window_closed = (
+        bool(query_ids)
+        and len(query_set) == len(query_ids)
+        and query_set == set(event_by_id)
+        and len(query_events) == len(events)
+    )
+    if len(query_events) != len(query_ids):
+        model_valid = False
+        reject(
+            CandidateReplayFailureKind.BINDING_MISMATCH,
+            candidate.cycle_id,
+            "query-event-binding",
+            "局部查询引用了输入窗口中不存在的事件",
+        )
+    if not full_window_closed:
+        reject(
+            CandidateReplayFailureKind.LOCAL_MODEL_INCOMPLETE,
+            candidate.cycle_id,
+            "full-window-event-closure",
+            f"局部 SAT 只覆盖 {len(query_set)} / {len(event_by_id)} 个窗口事件；未覆盖事件的 RF/FR/CO 与 target cycle 尚未证明",
+        )
+
+    values = {item.semantic_id: item.value for item in variables}
+    memory = tuple(event for event in query_events if event.kind.is_memory)
+    reads = tuple(event for event in memory if event.kind.is_read)
+    writes = tuple(event for event in memory if event.kind.is_write)
+    expected_semantics = {
+        *(f"target_rank:{event.event_id}" for event in query_events),
+        *(f"cycle_node:{event.event_id}" for event in query_events),
+        *(f"coherence_rank:{event.event_id}" for event in writes),
+    }
+    read_parts: list[tuple[TraceEvent, int, int, tuple[TraceEvent, ...]]] = []
+    for read in reads:
+        for part_index, (address, size) in enumerate(_read_parts_for_replay(read, writes)):
+            candidates = tuple(
+                write
+                for write in writes
+                if write.address <= address
+                and write.end_address >= address + size
+                and not (write.thread_id == read.thread_id and write.sequence >= read.sequence)
+            )
+            read_parts.append((read, address, size, candidates))
+            expected_semantics.add(
+                "rf_choice:" + json.dumps(
+                    [read.event_id, part_index, address, size], separators=(",", ":")
+                )
+            )
+
+    local_source = {edge for edge in source_reduced if edge[0] in query_set and edge[1] in query_set}
+    local_target = {edge for edge in target_reduced if edge[0] in query_set and edge[1] in query_set}
+    conditional_pairs: set[Edge] = set()
+    local_relations = _candidate_relations(query_events)
+    for relation in local_relations:
+        if relation.kind == "rf":
+            writer, read = relation.event_ids
+            if event_by_id[writer].thread_id != event_by_id[read].thread_id:
+                conditional_pairs.add((writer, read))
+        elif relation.kind in {"fr", "coherence"}:
+            conditional_pairs.add(relation.event_ids)
+    cycle_edge_pairs = local_source | conditional_pairs
+    expected_semantics.update(
+        "cycle_edge:" + json.dumps([left, right], separators=(",", ":"))
+        for left, right in cycle_edge_pairs
+    )
+    variable_by_semantic = {item.semantic_id: item for item in variables}
+    expected_integer_ids = {
+        item
+        for item in expected_semantics
+        if item.startswith(("target_rank:", "coherence_rank:", "rf_choice:"))
+    }
+    expected_boolean_ids = expected_semantics - expected_integer_ids
+    serialized_smt_names = [item.smt_name for item in variables]
+    sorts_valid = (
+        len(set(serialized_smt_names)) == len(serialized_smt_names)
+        and all(
+            variable_by_semantic[item].sort == "Int"
+            for item in expected_integer_ids & set(variable_by_semantic)
+        )
+        and all(
+            variable_by_semantic[item].sort == "Bool"
+            for item in expected_boolean_ids & set(variable_by_semantic)
+        )
+    )
+    if not sorts_valid:
+        model_valid = False
+        reject(
+            CandidateReplayFailureKind.WITNESS_SERIALIZATION_ERROR,
+            candidate.cycle_id,
+            "model-variable-sorts",
+            "模型变量名重复或变量 sort 与独立重建的 Int/Bool 清单不符",
+        )
+    if set(semantic_ids) != expected_semantics:
+        model_valid = False
+        missing = sorted(expected_semantics - set(semantic_ids))
+        extra = sorted(set(semantic_ids) - expected_semantics)
+        reject(
+            CandidateReplayFailureKind.LOCAL_MODEL_INCOMPLETE,
+            candidate.cycle_id,
+            "decision-variable-inventory",
+            f"模型决策变量清单与独立重建的编码不符；missing={missing[:8]}, extra={extra[:8]}",
+        )
+
+    def integer_value(semantic_id: str) -> int | None:
+        raw = values.get(semantic_id)
+        try:
+            return int(raw) if raw is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    def boolean_value(semantic_id: str) -> bool | None:
+        raw = values.get(semantic_id)
+        if raw is None or raw.lower() not in {"true", "false"}:
+            return None
+        return raw.lower() == "true"
+
+    selected_by_part: dict[tuple[str, int, int], str | None] = {}
+    rf_valid = True
+    expected_rf_assignments: set[tuple[str, str | None, int, int]] = set()
+    fr_parts = _fr_relation_parts(query_events)
+    for read, address, size, candidates in read_parts:
+        part_index = sum(
+            1
+            for prior_read, prior_address, prior_size, _ in read_parts
+            if prior_read.event_id == read.event_id
+            and (prior_address, prior_size) < (address, size)
+        )
+        semantic_id = "rf_choice:" + json.dumps(
+            [read.event_id, part_index, address, size], separators=(",", ":")
+        )
+        choice = integer_value(semantic_id)
+        if choice is None or choice < -1 or choice >= len(candidates):
+            rf_valid = False
+            reject(
+                CandidateReplayFailureKind.RF_ASSIGNMENT_INCOMPLETE,
+                semantic_id,
+                "rf-choice-domain",
+                f"RF choice 缺失或超出完整候选域 {semantic_id}={values.get(semantic_id)!r}",
+            )
+            continue
+        source = candidates[choice].event_id if choice >= 0 else None
+        selected_by_part[(read.event_id, address, size)] = source
+        expected_rf_assignments.add((read.event_id, source, address, size))
+    actual_rf_assignments = {
+        (read, write, address, size) for read, write, address, size in witness.rf_assignments
+    }
+    if len(actual_rf_assignments) != len(witness.rf_assignments) or actual_rf_assignments != expected_rf_assignments:
+        rf_valid = False
+        reject(
+            CandidateReplayFailureKind.WITNESS_SERIALIZATION_ERROR,
+            candidate.cycle_id,
+            "rf-model-projection",
+            "序列化的 RF witness 与完整模型里的每个 read-part choice 不一致",
+        )
+
+    co_rank: dict[str, int] = {}
+    co_valid = True
+    for write in writes:
+        rank = integer_value(f"coherence_rank:{write.event_id}")
+        if rank is None:
+            co_valid = False
+            reject(CandidateReplayFailureKind.FR_CO_INCONSISTENT, f"co:{write.event_id}", "co-rank-present", "缺少写事件的 coherence rank")
+        else:
+            co_rank[write.event_id] = rank
+    remaining = set(range(len(writes)))
+    overlap_groups: list[tuple[TraceEvent, ...]] = []
+    while remaining:
+        seed = remaining.pop()
+        component = {seed}
+        pending = [seed]
+        while pending:
+            current = pending.pop()
+            attached = {other for other in remaining if writes[current].overlaps(writes[other])}
+            remaining.difference_update(attached)
+            component.update(attached)
+            pending.extend(attached)
+        overlap_groups.append(tuple(writes[index] for index in sorted(component)))
+    expected_co_chain: set[Edge] = set()
+    for group in overlap_groups:
+        ranks = [co_rank[item.event_id] for item in group if item.event_id in co_rank]
+        if len(ranks) != len(group) or sorted(ranks) != list(range(len(group))):
+            co_valid = False
+            reject(CandidateReplayFailureKind.FR_CO_INCONSISTENT, candidate.cycle_id, "co-rank-total-order", "overlap-connected writes do not have a complete distinct coherence order")
+            continue
+        ordered = tuple(sorted(group, key=lambda item: co_rank[item.event_id]))
+        expected_co_chain.update((left.event_id, right.event_id) for left, right in zip(ordered, ordered[1:]))
+    for left in writes:
+        for right in writes:
+            if (
+                left.thread_id == right.thread_id
+                and left.sequence < right.sequence
+                and left.overlaps(right)
+                and left.event_id in co_rank
+                and right.event_id in co_rank
+                and co_rank[left.event_id] >= co_rank[right.event_id]
+            ):
+                co_valid = False
+                reject(CandidateReplayFailureKind.FR_CO_INCONSISTENT, f"co:{left.event_id}->{right.event_id}", "same-thread-co-order", "coherence rank reverses same-thread overlapping stores")
+    if set(witness.co_assignments) != expected_co_chain:
+        co_valid = False
+        reject(CandidateReplayFailureKind.WITNESS_SERIALIZATION_ERROR, candidate.cycle_id, "co-model-projection", "序列化的 CO rank chain 与完整模型不一致")
+
+    active_rf: set[Edge] = set()
+    active_fr: set[Edge] = set()
+    active_co: set[Edge] = set()
+    fr_valid = True
+    for (read_id, address, size), source_id in selected_by_part.items():
+        read = event_by_id[read_id]
+        part_end = address + size
+        for later in writes:
+            if later.address >= part_end or later.end_address <= address or later.event_id == read_id:
+                continue
+            if source_id is None:
+                active_fr.add((read_id, later.event_id))
+            elif (
+                source_id in co_rank
+                and later.event_id in co_rank
+                and event_by_id[source_id].overlaps(later)
+                and co_rank[source_id] < co_rank[later.event_id]
+            ):
+                active_fr.add((read_id, later.event_id))
+    for (read_id, address, size), source_id in selected_by_part.items():
+        if source_id is not None and event_by_id[source_id].thread_id != event_by_id[read_id].thread_id:
+            active_rf.add((source_id, read_id))
+    for left in writes:
+        for right in writes:
+            if (
+                left.event_id != right.event_id
+                and left.overlaps(right)
+                and left.event_id in co_rank
+                and right.event_id in co_rank
+                and co_rank[left.event_id] < co_rank[right.event_id]
+            ):
+                active_co.add((left.event_id, right.event_id))
+
+    active_conditional = active_rf | active_fr | active_co
+    source_edges = local_source | active_conditional
+    source_cycle = find_cycle(source_edges)
+    source_valid = bool(source_cycle)
+    if witness.source_cycle and witness.source_cycle != source_cycle:
+        # 有多个合法环时只要求序列化的环本身每条边有效且闭合。
+        source_valid = (
+            len(witness.source_cycle) > 1
+            and witness.source_cycle[0] == witness.source_cycle[-1]
+            and all(
+                (left, right) in source_edges
+                for left, right in zip(witness.source_cycle, witness.source_cycle[1:])
+            )
+        )
+    for edge in candidate.ordered_edges:
+        if edge.relation_type == "rf":
+            matching = set(edge.rf_candidate_ids or edge.relation_ids) & {
+                relation.relation_id
+                for relation in local_relations
+                if relation.kind == "rf"
+                and selected_by_part.get((relation.owner_event_id, relation.address, relation.size))
+                == relation.event_ids[0]
+            }
+            if not matching:
+                source_valid = False
+                reject(CandidateReplayFailureKind.RF_ASSIGNMENT_INCOMPLETE, ",".join(edge.rf_candidate_ids or edge.relation_ids), "candidate-rf-activation", "候选 cycle 的 RF label 未被模型实际选中")
+        elif edge.relation_type == "fr":
+            if not (set(edge.fr_consequence_ids or edge.relation_ids) & {
+                relation_id for relation_id, (_, _, _, later) in fr_parts.items()
+                if relation_id in obligations.required_fr_relation_ids
+                and (fr_parts[relation_id][0], later) in active_fr
+            }):
+                source_valid = False
+                reject(CandidateReplayFailureKind.FR_CO_INCONSISTENT, ",".join(edge.fr_consequence_ids or edge.relation_ids), "candidate-fr-activation", "候选 cycle 的 FR label 未由选定 RF/CO 派生")
+        elif edge.relation_type == "coherence" and (edge.source_event, edge.target_event) not in active_co:
+            source_valid = False
+            reject(CandidateReplayFailureKind.FR_CO_INCONSISTENT, ",".join(edge.co_dependency_ids or edge.relation_ids), "candidate-co-activation", "候选 cycle 的 CO label 未由模型 coherence order 派生")
+    required_pairs = {
+        (edge.source_event, edge.target_event)
+        for edge in candidate.ordered_edges
+        if edge.relation_type != "ppo_reachability"
+    }
+    selected_model_edges = {
+        pair
+        for pair in cycle_edge_pairs
+        if boolean_value("cycle_edge:" + json.dumps(list(pair), separators=(",", ":"))) is True
+    }
+    selected_node_values = {
+        event.event_id: boolean_value(f"cycle_node:{event.event_id}")
+        for event in query_events
+    }
+    if any(value is None for value in selected_node_values.values()):
+        source_valid = False
+        reject(CandidateReplayFailureKind.WITNESS_SERIALIZATION_ERROR, candidate.cycle_id, "cycle-node-model-values", "cycle node selector 缺少 Bool 模型值")
+    for event_id in selected_node_values:
+        incoming = sum(right == event_id for _, right in selected_model_edges)
+        outgoing = sum(left == event_id for left, _ in selected_model_edges)
+        expected_degree = 1 if selected_node_values[event_id] else 0
+        if incoming != expected_degree or outgoing != expected_degree:
+            source_valid = False
+            reject(CandidateReplayFailureKind.SOURCE_TARGET_SEMANTIC_CONFLICT, f"cycle-node:{event_id}", "balanced-cycle-degree", "模型 cycle selector 的入/出度不符合 checker 的 balanced-cycle 约束")
+    if not required_pairs <= selected_model_edges:
+        source_valid = False
+        reject(CandidateReplayFailureKind.SOURCE_TARGET_SEMANTIC_CONFLICT, candidate.cycle_id, "required-cycle-edge-selection", "Z3 模型没有选择候选骨架要求的全部 source cycle edges")
+    model_cycle = find_cycle(selected_model_edges)
+    if not model_cycle:
+        source_valid = False
+        reject(CandidateReplayFailureKind.SOURCE_TARGET_SEMANTIC_CONFLICT, candidate.cycle_id, "selected-source-cycle", "完整模型中选择的 source edge 集没有形成闭环")
+    for left, right in selected_model_edges:
+        if (left, right) not in source_edges:
+            source_valid = False
+            reject(CandidateReplayFailureKind.SOURCE_TARGET_SEMANTIC_CONFLICT, f"edge:{left}->{right}", "selected-edge-activation", "模型选择了未被 PPO/RF/FR/CO 条件激活的 source edge")
+    if any(boolean_value("cycle_edge:" + json.dumps([left, right], separators=(",", ":"))) is None for left, right in cycle_edge_pairs):
+        source_valid = False
+        reject(CandidateReplayFailureKind.WITNESS_SERIALIZATION_ERROR, candidate.cycle_id, "cycle-edge-model-values", "cycle edge selector 缺少 Bool 模型值")
+    target_rank = {
+        event.event_id: integer_value(f"target_rank:{event.event_id}")
+        for event in query_events
+    }
+    target_edges = local_target | active_conditional
+    target_valid = all(value is not None for value in target_rank.values())
+    for left, right in target_edges:
+        if target_rank.get(left) is None or target_rank.get(right) is None or target_rank[left] >= target_rank[right]:
+            target_valid = False
+            reject(CandidateReplayFailureKind.SOURCE_TARGET_SEMANTIC_CONFLICT, f"edge:{left}->{right}", "target-rank-order", "模型 target rank 未满足激活的 target ordering edge")
+    if find_cycle(target_edges):
+        target_valid = False
+        reject(CandidateReplayFailureKind.SOURCE_TARGET_SEMANTIC_CONFLICT, candidate.cycle_id, "target-acyclicity", "由完整 RF/FR/CO witness 重建的 target relation graph 含环")
+
+    boundary_valid = set(candidate.fence_rmw_futex_dependencies) <= query_set
+    if not boundary_valid:
+        reject(CandidateReplayFailureKind.FENCE_RMW_FUTEX_CONSTRAINT_MISSING, candidate.cycle_id, "boundary-query-closure", "Fence/RMW/FUTEX dependency 不在 local solver event universe")
+    for read in reads:
+        if read.kind.name != "ATOMIC_RMW":
+            continue
+        for _, address, size, _ in (part for part in read_parts if part[0].event_id == read.event_id):
+            source_id = selected_by_part.get((read.event_id, address, size), "__unassigned__")
+            if source_id == "__unassigned__" or read.event_id not in co_rank:
+                boundary_valid = False
+                reject(CandidateReplayFailureKind.FENCE_RMW_FUTEX_CONSTRAINT_MISSING, f"rmw:{read.event_id}:{address}:{size}", "rmw-rf-co", "RMW read lacks a closed RF/CO assignment")
+            elif source_id is None and co_rank[read.event_id] != 0:
+                boundary_valid = False
+                reject(CandidateReplayFailureKind.FENCE_RMW_FUTEX_CONSTRAINT_MISSING, f"rmw:{read.event_id}:{address}:{size}", "rmw-initial-co", "RMW reading initial state is not first in coherence")
+            elif source_id is not None and co_rank.get(read.event_id) != co_rank.get(source_id, -2) + 1:
+                boundary_valid = False
+                reject(CandidateReplayFailureKind.FENCE_RMW_FUTEX_CONSTRAINT_MISSING, f"rmw:{read.event_id}:{address}:{size}", "rmw-immediate-predecessor", "RMW read source is not the immediate coherence predecessor")
+
+    return _LocalModelReplay(
+        model_valid=model_valid,
+        full_window_closed=full_window_closed,
+        rf_valid=rf_valid,
+        fr_valid=fr_valid,
+        co_valid=co_valid,
+        boundary_valid=boundary_valid,
+        source_valid=source_valid,
+        target_valid=target_valid,
+        failures=tuple(failures),
+    )
+
+
 def replay_candidate_cycle(
     graph,
     certificate,
@@ -2193,9 +2705,32 @@ def replay_candidate_cycle(
     """独立校验候选环；不复用 local solver 的内部状态。"""
 
     reasons: list[str] = []
+    failures: list[CandidateReplayFailure] = []
+
+    def reject(
+        kind: CandidateReplayFailureKind,
+        obligation_id: str,
+        predicate: str,
+        detail: str,
+    ) -> None:
+        reasons.append(detail)
+        failures.append(
+            CandidateReplayFailure(
+                kind=kind,
+                obligation_id=obligation_id,
+                predicate=predicate,
+                detail=detail,
+            )
+        )
+
     reduction_replay = replay_ppo_reduction(graph, certificate)
     if not reduction_replay.accepted:
-        reasons.append("PPO reduction certificate replay failed")
+        reject(
+            CandidateReplayFailureKind.BINDING_MISMATCH,
+            candidate.cycle_id,
+            "ppo-certificate-replay",
+            "PPO reduction certificate replay failed: " + "; ".join(reduction_replay.reasons),
+        )
     expected_source = _reduced_edges(
         graph.source_edges, certificate.source.removed_edges
     )
@@ -2203,18 +2738,18 @@ def replay_candidate_cycle(
         graph.target_edges, certificate.target.removed_edges
     )
     if expected_source != source_reduced:
-        reasons.append("source PPO input does not match certificate replay")
+        reject(CandidateReplayFailureKind.BINDING_MISMATCH, candidate.cycle_id, "source-ppo-binding", "source PPO input does not match certificate replay")
     if expected_target != target_reduced:
-        reasons.append("target PPO input does not match certificate replay")
+        reject(CandidateReplayFailureKind.BINDING_MISMATCH, candidate.cycle_id, "target-ppo-binding", "target PPO input does not match certificate replay")
     cycle_closed = bool(candidate.cycle_nodes) and candidate.cycle_nodes[0] == candidate.cycle_nodes[-1]
     if not cycle_closed:
-        reasons.append("candidate cycle nodes are not closed")
+        reject(CandidateReplayFailureKind.SOURCE_TARGET_SEMANTIC_CONFLICT, candidate.cycle_id, "cycle-closure", "candidate cycle nodes are not closed")
     edge_pairs = [(edge.source_event, edge.target_event) for edge in candidate.ordered_edges]
     if edge_pairs and any(
         left[1] != right[0] for left, right in zip(edge_pairs, edge_pairs[1:])
     ):
         cycle_closed = False
-        reasons.append("candidate edge order is not contiguous")
+        reject(CandidateReplayFailureKind.SOURCE_TARGET_SEMANTIC_CONFLICT, candidate.cycle_id, "edge-contiguity", "candidate edge order is not contiguous")
     ppo_valid = True
     for edge in candidate.ordered_edges:
         if edge.relation_type != "ppo_reachability":
@@ -2224,7 +2759,7 @@ def replay_candidate_cycle(
             (left, right) in source_reduced for left, right in zip(path, path[1:])
         ):
             ppo_valid = False
-            reasons.append(f"missing PPO witness for {edge.source_event}->{edge.target_event}")
+            reject(CandidateReplayFailureKind.PPO_WITNESS_INVALID, f"ppo:{edge.source_event}->{edge.target_event}", "reduced-edge-path", f"missing PPO witness for {edge.source_event}->{edge.target_event}")
     event_by_id = {event.event_id: event for event in events}
     relations = {item.relation_id: item for item in _candidate_relations(events)}
     rf_valid = True
@@ -2232,16 +2767,13 @@ def replay_candidate_cycle(
         relation = relations.get(relation_id)
         if relation is None or relation.kind != "rf":
             rf_valid = False
-            reasons.append(f"RF candidate is absent: {relation_id}")
+            reject(CandidateReplayFailureKind.RF_ASSIGNMENT_INCOMPLETE, relation_id, "candidate-domain-membership", f"RF candidate is absent: {relation_id}")
         elif event_by_id[relation.event_ids[0]].thread_id == event_by_id[relation.event_ids[1]].thread_id:
             rf_valid = False
-            reasons.append(f"RF candidate is not cross-thread: {relation_id}")
+            reject(CandidateReplayFailureKind.RF_ASSIGNMENT_INCOMPLETE, relation_id, "cross-thread-rf", f"RF candidate is not cross-thread: {relation_id}")
     if candidate.rf_dependencies and not obligations.selected_rf_relation_ids:
         rf_valid = False
-        reasons.append("candidate RF edge has no witness assignment")
-    if not set(obligations.selected_rf_relation_ids) <= set(candidate.rf_dependencies):
-        rf_valid = False
-        reasons.append("RF witness selected a relation outside the candidate edge")
+        reject(CandidateReplayFailureKind.RF_ASSIGNMENT_INCOMPLETE, candidate.cycle_id, "candidate-rf-assignment", "candidate RF edge has no witness assignment")
     assignments = witness.rf_assignments if witness is not None else ()
     by_part: dict[tuple[str, int, int], str | None] = {}
     rf_exclusive = witness is not None and obligations.rf_exclusivity_preserved
@@ -2250,16 +2782,12 @@ def replay_candidate_cycle(
         previous = by_part.setdefault(key, write)
         if previous != write:
             rf_exclusive = False
-            reasons.append(f"RF part has multiple assignments: {read}:{address}:{size}")
+            reject(CandidateReplayFailureKind.RF_ASSIGNMENT_INCOMPLETE, f"rf:{read}:{address}:{size}", "exactly-one", f"RF part has multiple assignments: {read}:{address}:{size}")
     if witness is None:
         rf_exclusive = False
-        reasons.append("local solver did not provide an RF witness")
+        reject(CandidateReplayFailureKind.RF_ASSIGNMENT_INCOMPLETE, candidate.cycle_id, "solver-model-witness", "local solver did not provide an RF witness")
     assigned_reads = {read for read, _, _, _ in assignments}
-    selected_reads = {
-        relations[item].owner_event_id
-        for item in obligations.selected_rf_relation_ids
-        if item in relations and relations[item].kind == "rf"
-    }
+    selected_reads = {read for read, _, _, _ in assignments}
     expected_domain = {
         item.relation_id
         for item in relations.values()
@@ -2267,60 +2795,92 @@ def replay_candidate_cycle(
     }
     if set(obligations.rf_candidate_domain_ids) != expected_domain:
         rf_exclusive = False
-        reasons.append("RF candidate domain is incomplete or has extra relations")
+        reject(CandidateReplayFailureKind.RF_ASSIGNMENT_INCOMPLETE, candidate.cycle_id, "complete-rf-domain", "RF candidate domain is incomplete or has extra relations")
     if not selected_reads <= assigned_reads:
         rf_exclusive = False
-        reasons.append("RF witness does not assign every selected read")
+        reject(CandidateReplayFailureKind.RF_ASSIGNMENT_INCOMPLETE, candidate.cycle_id, "rf-read-assignment", "RF witness does not assign every selected read")
     assigned_pairs = {(write, read) for read, write, _, _ in assignments if write is not None}
-    selected_pairs = {
-        relations[item].event_ids
-        for item in obligations.selected_rf_relation_ids
-        if item in relations and relations[item].kind == "rf"
-    }
-    if not selected_pairs <= assigned_pairs:
-        rf_valid = False
-        reasons.append("RF witness does not realize every selected candidate")
+    selected_cycle_rf = set(candidate.rf_dependencies) & set(obligations.selected_rf_relation_ids)
+    for edge in candidate.ordered_edges:
+        if edge.relation_type != "rf":
+            continue
+        edge_ids = set(edge.rf_candidate_ids or edge.relation_ids)
+        realized = edge_ids & selected_cycle_rf
+        if not realized:
+            rf_valid = False
+            reject(CandidateReplayFailureKind.RF_ASSIGNMENT_INCOMPLETE, ",".join(sorted(edge_ids)) or candidate.cycle_id, "candidate-edge-rf-selection", f"candidate RF edge {edge.source_event}->{edge.target_event} is not selected by the witness")
+        selected_pairs = {
+            relations[item].event_ids
+            for item in realized
+            if item in relations and relations[item].kind == "rf"
+        }
+        if not selected_pairs <= assigned_pairs:
+            rf_valid = False
+            reject(CandidateReplayFailureKind.RF_ASSIGNMENT_INCOMPLETE, ",".join(sorted(realized)) or candidate.cycle_id, "rf-witness-source", "RF witness does not realize the candidate edge's selected source")
 
     co_pairs = witness.co_assignments if witness is not None else ()
     fr_valid = True
-    selected_writes = {read: write for read, write, _, _ in assignments}
+    selected_writes = {
+        (read, address, size): write
+        for read, write, address, size in assignments
+    }
+    fr_parts = _fr_relation_parts(events)
     for relation_id in obligations.required_fr_relation_ids:
         relation = relations.get(relation_id)
-        if relation is None or relation.kind != "fr":
+        part = fr_parts.get(relation_id)
+        if relation is None or relation.kind != "fr" or part is None:
             fr_valid = False
-            reasons.append(f"FR consequence is absent: {relation_id}")
+            reject(CandidateReplayFailureKind.FR_CO_INCONSISTENT, relation_id, "fr-relation-inventory", f"FR consequence is absent: {relation_id}")
             continue
-        read_id, later_id = relation.event_ids
-        source_id = selected_writes.get(read_id)
-        source = event_by_id.get(source_id) if source_id is not None else None
+        read_id, address, size, later_id = part
+        source_id = selected_writes.get((read_id, address, size), "__unassigned__")
         later = event_by_id.get(later_id)
-        if source is None or later is None or not source.overlaps(later):
+        read = event_by_id.get(read_id)
+        if source_id == "__unassigned__":
             fr_valid = False
-            reasons.append(f"FR source does not overlap later write: {relation_id}")
-        elif source_id == later_id or not _co_reaches(co_pairs, source_id, later_id):
+            reject(CandidateReplayFailureKind.RF_ASSIGNMENT_INCOMPLETE, relation_id, "fr-read-part-rf", f"FR obligation has no RF assignment for its read-part: {relation_id}")
+        elif (
+            read is None
+            or later is None
+            or address >= later.end_address
+            or address + size <= later.address
+        ):
             fr_valid = False
-            reasons.append(f"FR witness lacks the required CO order: {relation_id}")
+            reject(CandidateReplayFailureKind.FR_CO_INCONSISTENT, relation_id, "fr-byte-overlap", f"FR relation does not overlap its read-part and later write: {relation_id}")
+        elif source_id is None:
+            # 读初始值时，初始写在 coherence 中先于所有普通写。
+            pass
+        else:
+            source = event_by_id.get(source_id)
+            if source is None or not source.overlaps(later):
+                fr_valid = False
+                reject(CandidateReplayFailureKind.FR_CO_INCONSISTENT, relation_id, "fr-source-overlap", f"selected RF source does not overlap the later write: {relation_id}")
+            elif source_id == later_id or not _co_reaches(co_pairs, source_id, later_id):
+                fr_valid = False
+                reject(CandidateReplayFailureKind.FR_CO_INCONSISTENT, relation_id, "fr-co-order", f"FR witness lacks the required CO order: {relation_id}")
 
     co_valid = True
     for left_id, right_id in co_pairs:
         left, right = event_by_id.get(left_id), event_by_id.get(right_id)
-        if left is None or right is None or not left.overlaps(right):
+        # co_assignments 是 overlap-connected 写的 rank 顺序见证；相邻 rank
+        # 项本身可以不重叠，真正的 CO edge 只由重叠且 rank 有序的 pair 派生。
+        if left is None or right is None or not left.kind.is_write or not right.kind.is_write:
             co_valid = False
-            reasons.append(f"CO pair is not overlapping: {left_id}->{right_id}")
+            reject(CandidateReplayFailureKind.FR_CO_INCONSISTENT, f"co:{left_id}->{right_id}", "co-rank-witness-events", f"CO rank witness references a missing/non-write event: {left_id}->{right_id}")
     if find_cycle(set(co_pairs)):
         co_valid = False
-        reasons.append("CO witness contains a cycle")
+        reject(CandidateReplayFailureKind.FR_CO_INCONSISTENT, candidate.cycle_id, "co-acyclicity", "CO witness contains a cycle")
     for relation_id in obligations.required_co_relation_ids:
         relation = relations.get(relation_id)
         if relation is None or relation.kind != "coherence":
             co_valid = False
-            reasons.append(f"CO candidate is absent: {relation_id}")
+            reject(CandidateReplayFailureKind.FR_CO_INCONSISTENT, relation_id, "co-relation-inventory", f"CO candidate is absent: {relation_id}")
         elif not _co_reaches(co_pairs, relation.event_ids[0], relation.event_ids[1]):
             co_valid = False
-            reasons.append(f"CO witness lacks the required order: {relation_id}")
+            reject(CandidateReplayFailureKind.FR_CO_INCONSISTENT, relation_id, "co-rank-order", f"CO witness lacks the required order: {relation_id}")
     boundary_valid = all(item in event_by_id for item in candidate.fence_rmw_futex_dependencies)
     if not boundary_valid:
-        reasons.append("boundary dependency references an unknown event")
+        reject(CandidateReplayFailureKind.FENCE_RMW_FUTEX_CONSTRAINT_MISSING, candidate.cycle_id, "boundary-event-presence", "boundary dependency references an unknown event")
 
     local_source_ids = set(candidate.cycle_nodes)
     for edge in candidate.ordered_edges:
@@ -2340,7 +2900,7 @@ def replay_candidate_cycle(
         for edge in candidate.ordered_edges
     ) and bool(find_cycle(local_source_edges))
     if not source_valid:
-        reasons.append("candidate does not close a source-side cycle")
+        reject(CandidateReplayFailureKind.SOURCE_TARGET_SEMANTIC_CONFLICT, candidate.cycle_id, "source-bad-cycle", "candidate does not close a source-side cycle")
     target_edges = set(target_reduced)
     if witness is not None:
         target_edges.update(
@@ -2349,10 +2909,44 @@ def replay_candidate_cycle(
             if edge.relation_type != "ppo_reachability"
         )
         target_edges.update(witness.fr_consequences)
-        target_edges.update(witness.co_assignments)
+        target_edges.update(
+            (left_id, right_id)
+            for left_id, right_id in witness.co_assignments
+            if left_id in event_by_id
+            and right_id in event_by_id
+            and event_by_id[left_id].overlaps(event_by_id[right_id])
+        )
     target_valid = not bool(find_cycle(target_edges))
     if not target_valid:
-        reasons.append("target ordering condition has a cycle")
+        reject(CandidateReplayFailureKind.SOURCE_TARGET_SEMANTIC_CONFLICT, candidate.cycle_id, "target-acyclicity", "target ordering condition has a cycle")
+
+    model_result = None
+    if witness is not None and witness.model_snapshot is not None:
+        model_result = _replay_local_symbolic_model(
+            candidate,
+            obligations,
+            witness,
+            source_reduced=source_reduced,
+            target_reduced=target_reduced,
+            events=events,
+        )
+        failures.extend(model_result.failures)
+        reasons.extend(item.detail for item in model_result.failures)
+        rf_valid = model_result.rf_valid
+        rf_exclusive = model_result.rf_valid
+        fr_valid = model_result.fr_valid
+        co_valid = model_result.co_valid
+        boundary_valid = model_result.boundary_valid
+        source_valid = model_result.source_valid
+        target_valid = model_result.target_valid
+    if candidate.unresolved_dependencies:
+        reject(
+            CandidateReplayFailureKind.FENCE_RMW_FUTEX_CONSTRAINT_MISSING,
+            candidate.cycle_id,
+            "unresolved-boundary-or-relation",
+            "candidate contains unresolved dependencies: "
+            + ", ".join(candidate.unresolved_dependencies),
+        )
 
     accepted = (
         witness is not None
@@ -2365,6 +2959,10 @@ def replay_candidate_cycle(
         and boundary_valid
         and source_valid
         and target_valid
+        and (
+            model_result is None
+            or (model_result.model_valid and model_result.full_window_closed)
+        )
         and not candidate.unresolved_dependencies
     )
     status = (
@@ -2386,6 +2984,9 @@ def replay_candidate_cycle(
         boundary_ordering_valid=boundary_valid,
         source_violation_valid=source_valid,
         target_condition_valid=target_valid,
+        model_snapshot_valid=(model_result.model_valid if model_result is not None else None),
+        full_window_closed=(model_result.full_window_closed if model_result is not None else None),
+        failures=tuple(dict.fromkeys(failures)),
         reasons=tuple(dict.fromkeys(reasons)),
     )
 

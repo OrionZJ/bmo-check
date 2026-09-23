@@ -4,6 +4,8 @@ from .certificate import (
     DynamicCertificate,
     DynamicCertificateBinding,
     ReadFromWitness,
+    SymbolicModelSnapshot,
+    SymbolicModelVariable,
     TraceScope,
     TraceVerdict,
     WindowResult,
@@ -112,6 +114,8 @@ from .graph_first import (
     CandidateBlockingConstraint,
     CandidateCycleReplay,
     CandidateCycleReplayStatus,
+    CandidateReplayFailure,
+    CandidateReplayFailureKind,
     CandidateSpaceProfile,
     CandidateDiscoveryProfile,
     CandidateDiscoveryResourcePolicy,
@@ -143,6 +147,8 @@ from .cegar_experiment import (
     CegarExperimentReport,
     CegarModeComparisonReport,
     CegarModeMetrics,
+    LocalWitnessClosureKind,
+    LocalWitnessClosureRecord,
 )
 
 __all__ = [
@@ -155,6 +161,8 @@ __all__ = [
     "EventKind",
     "InstructionSiteEvidence",
     "ReadFromWitness",
+    "SymbolicModelSnapshot",
+    "SymbolicModelVariable",
     "TraceEvent",
     "TraceManifest",
     "TraceLifecycleJoin",
@@ -247,6 +255,8 @@ __all__ = [
     "GraphFirstQueryStatus",
     "LocalCycleStatus",
     "CandidateCycleReplayStatus",
+    "CandidateReplayFailure",
+    "CandidateReplayFailureKind",
     "GraphFirstEdge",
     "CandidateViolationEdge",
     "CandidateViolationCycle",
@@ -275,6 +285,8 @@ __all__ = [
     "BlockingReplayReport",
     "CandidateCoverageReport",
     "CegarModeMetrics",
+    "LocalWitnessClosureKind",
+    "LocalWitnessClosureRecord",
     "CegarModeComparisonReport",
     "CegarExperimentReport",
 ]

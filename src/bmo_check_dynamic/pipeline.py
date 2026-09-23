@@ -1562,6 +1562,11 @@ def cegar_mode_comparison_trace(
     discovery_only: bool = False,
     include_bounded: bool = False,
     discovery_resource_policy: CandidateDiscoveryResourcePolicy | None = None,
+    include_candidate_records: bool = False,
+    capture_model: bool = False,
+    close_feasible_candidates: bool = False,
+    closure_timeout_ms: int = 5_000,
+    closure_max_symbolic_terms: int = 100_000,
 ) -> CegarExperimentReport:
     """对真实 trace 的每个窗口执行 P13/P14 shadow A/B。"""
 
@@ -1602,6 +1607,11 @@ def cegar_mode_comparison_trace(
                 discovery_only=discovery_only,
                 include_bounded=include_bounded,
                 discovery_resource_policy=discovery_resource_policy,
+                include_candidate_records=include_candidate_records,
+                capture_model=capture_model,
+                close_feasible_candidates=close_feasible_candidates,
+                closure_timeout_ms=closure_timeout_ms,
+                closure_max_symbolic_terms=closure_max_symbolic_terms,
             )
             for window in windows
         )
@@ -1621,6 +1631,8 @@ def cegar_mode_comparison_trace(
             CegarExperimentReport(
                 generated_at=datetime.now(timezone.utc).isoformat(),
                 trace_id=manifest.trace_id,
+                trace_sha256=(trace_digest(trace_dir) if capture_model else None),
+                contract_sha256=(_file_digest(dbt_contract) if capture_model else None),
                 trace_complete=bool(getattr(validation, "structurally_complete", False)),
                 analysis_reached_windows=True,
                 reports=reports,
@@ -1640,6 +1652,8 @@ def cegar_mode_comparison_trace(
     return CegarExperimentReport(
         generated_at=datetime.now(timezone.utc).isoformat(),
         trace_id=analyzed.scope.trace_ids[0],
+        trace_sha256=(trace_digest(trace_dir) if capture_model else None),
+        contract_sha256=(_file_digest(dbt_contract) if capture_model else None),
         trace_complete=analyzed.trace_complete,
         analysis_reached_windows=False,
         reasons=analyzed.unknown_reasons,

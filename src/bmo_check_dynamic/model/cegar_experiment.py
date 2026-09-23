@@ -5,7 +5,13 @@ from enum import StrEnum
 from pydantic import Field
 
 from .manifest import StrictModel
-from .graph_first import CandidateDiscoveryProfile
+from .graph_first import (
+    CandidateCycleReplay,
+    CandidateDiscoveryProfile,
+    GraphFirstCandidateCycle,
+    GraphFirstLocalQuery,
+    LocalCycleWitness,
+)
 
 
 class CegarExperimentMode(StrEnum):
@@ -48,6 +54,34 @@ class CandidateCoverageReport(StrictModel):
     diagnostic_only: bool = True
 
 
+class LocalWitnessClosureKind(StrEnum):
+    """全窗口闭包查询对局部 FEASIBLE 的诊断分类。"""
+
+    VALID_COMPLETE_WITNESS = "VALID_COMPLETE_WITNESS"
+    SPURIOUS_LOCAL_SAT = "SPURIOUS_LOCAL_SAT"
+    CLOSURE_QUERY_UNKNOWN = "CLOSURE_QUERY_UNKNOWN"
+    WITNESS_REPLAY_REJECTED = "WITNESS_REPLAY_REJECTED"
+    NOT_RUN = "NOT_RUN"
+
+
+class LocalWitnessClosureRecord(StrictModel):
+    """把局部候选扩展到完整窗口后得到的可独立审核结果。"""
+
+    candidate_id: str
+    local_event_count: int
+    full_window_event_count: int
+    classification: LocalWitnessClosureKind
+    closure_query: GraphFirstLocalQuery
+    closure_witness: LocalCycleWitness | None = None
+    replay: CandidateCycleReplay | None = None
+    encoding_ms: int = 0
+    solver_ms: int | None = None
+    witness_build_ms: int = 0
+    replay_ms: int = 0
+    reasons: tuple[str, ...] = ()
+    diagnostic_only: bool = True
+
+
 class CegarModeMetrics(StrictModel):
     """一次模式运行的可比较指标；不表示正式 verdict。"""
 
@@ -64,6 +98,10 @@ class CegarModeMetrics(StrictModel):
     duplicate_candidates: int = 0
     # 用稳定 canonical skeleton identity 比较模式，不依赖候选遍历编号。
     candidate_skeleton_ids: tuple[str, ...] = ()
+    # 仅在固定候选复现时保存逐候选骨架、模型、witness 与 replay。
+    candidate_records: tuple[GraphFirstCandidateCycle, ...] = ()
+    # 对局部 FEASIBLE 重新加入完整窗口约束后的 shadow-only replay。
+    witness_closures: tuple[LocalWitnessClosureRecord, ...] = ()
     discovery_profile: CandidateDiscoveryProfile | None = None
     same_rf_variants: int = 0
     ppo_witness_variants: int = 0
@@ -114,6 +152,9 @@ class CegarExperimentReport(StrictModel):
     schema_version: str = "cegar-experiment-v1"
     generated_at: str
     trace_id: str | None = None
+    # 固定查询 artifact 绑定原始轨迹和 DBT contract，避免只凭 fixture 名称复用。
+    trace_sha256: str | None = None
+    contract_sha256: str | None = None
     trace_complete: bool | None = None
     analysis_reached_windows: bool = False
     reports: tuple[CegarModeComparisonReport, ...] = ()

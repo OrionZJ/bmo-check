@@ -339,6 +339,11 @@ def _cegar_ab(args: argparse.Namespace) -> int:
         ),
         discovery_only=args.discovery_only,
         include_bounded=args.include_bounded,
+        include_candidate_records=args.include_candidate_records,
+        capture_model=args.capture_model,
+        close_feasible_candidates=args.close_feasible_candidates,
+        closure_timeout_ms=args.closure_timeout_ms,
+        closure_max_symbolic_terms=args.closure_max_symbolic_terms,
         discovery_resource_policy=(
             CandidateDiscoveryResourcePolicy(
                 max_in_memory_frontier=args.max_in_memory_frontier,
@@ -1095,6 +1100,23 @@ def build_parser() -> argparse.ArgumentParser:
     cegar_ab.add_argument("--max-local-queries", type=int, default=1_000)
     cegar_ab.add_argument("--local-timeout-ms", type=int, default=1_000)
     cegar_ab.add_argument("--local-max-symbolic-terms", type=int, default=100_000)
+    cegar_ab.add_argument(
+        "--include-candidate-records",
+        action="store_true",
+        help="persist full candidate skeleton, local witness, and replay details",
+    )
+    cegar_ab.add_argument(
+        "--capture-model",
+        action="store_true",
+        help="persist every local SMT decision variable/value for shadow replay",
+    )
+    cegar_ab.add_argument(
+        "--close-feasible-candidates",
+        action="store_true",
+        help="re-solve local FEASIBLE candidates with the complete window constraints",
+    )
+    cegar_ab.add_argument("--closure-timeout-ms", type=int, default=5_000)
+    cegar_ab.add_argument("--closure-max-symbolic-terms", type=int, default=100_000)
     cegar_ab.add_argument("--encoding-only", action="store_true")
     cegar_ab.add_argument(
         "--include-structured",
