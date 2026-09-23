@@ -13,6 +13,10 @@ from bmo_check_dynamic.analysis import (
     run_global_constraint_validation,
 )
 from bmo_check_dynamic.analysis.cycle_relevance import _candidate_relations
+from bmo_check_dynamic.analysis.global_constraint_validation import (
+    _close_fr_and_co_dependencies,
+    _close_rf_fr_and_co_dependencies,
+)
 from bmo_check_dynamic.model import (
     CandidateViolationCycle,
     CandidateViolationEdge,
@@ -43,6 +47,39 @@ def _lb_window() -> AnalysisWindow:
         TraceEvent(2, 2, 0, 0x21, EventKind.STORE, 0x2000, 4),
     )
     return AnalysisWindow("p17-lb-fixture", events, ())
+
+
+def test_thread_span_closure_adds_rf_sources_even_without_new_fr_or_co_events() -> None:
+    events = (
+        TraceEvent(1, 1, 0, 0x10, EventKind.LOAD, 0x1000, 4),
+        TraceEvent(1, 2, 0, 0x11, EventKind.LOAD, 0x2000, 4),
+        TraceEvent(2, 1, 0, 0x20, EventKind.STORE, 0x2000, 4),
+    )
+    event_by_id = {event.event_id: event for event in events}
+    selected = {"t1:e1", "t1:e2"}
+    rf_sources_by_read = {"t1:e2": {"t2:e1"}}
+    fr_targets_by_read: dict[str, set[str]] = {}
+    overlap_component_by_write = {"t2:e1": {"t2:e1"}}
+
+    # P17 的旧 while 条件只看 FR/CO 是否新增事件；此例没有 FR/CO 新节点，
+    # 但 thread span 刚加入的第二个 read 仍必须带入它在全窗口的 RF 来源。
+    assert _close_fr_and_co_dependencies(
+        set(selected),
+        event_by_id=event_by_id,
+        fr_targets_by_read=fr_targets_by_read,
+        overlap_component_by_write=overlap_component_by_write,
+    ) == set()
+
+    added = _close_rf_fr_and_co_dependencies(
+        selected,
+        event_by_id=event_by_id,
+        rf_sources_by_read=rf_sources_by_read,
+        fr_targets_by_read=fr_targets_by_read,
+        overlap_component_by_write=overlap_component_by_write,
+    )
+
+    assert added == {"t2:e1"}
+    assert "t2:e1" in selected
 
 
 def test_frozen_p15_mode_keeps_window_and_certificate_metadata() -> None:

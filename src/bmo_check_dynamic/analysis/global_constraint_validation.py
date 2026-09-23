@@ -209,6 +209,33 @@ def _close_fr_and_co_dependencies(
     return selected - before
 
 
+def _close_rf_fr_and_co_dependencies(
+    selected: set[str],
+    *,
+    event_by_id: dict[str, TraceEvent],
+    rf_sources_by_read: dict[str, set[str]],
+    fr_targets_by_read: dict[str, set[str]],
+    overlap_component_by_write: dict[str, set[str]],
+) -> set[str]:
+    """把 RF 来源、FR 目标和 CO component 一直补到稳定。"""
+
+    before = set(selected)
+    while True:
+        added_rf_sources = _add_rf_source_dependencies(
+            selected,
+            event_by_id=event_by_id,
+            rf_sources_by_read=rf_sources_by_read,
+        )
+        added_fr_co = _close_fr_and_co_dependencies(
+            selected,
+            event_by_id=event_by_id,
+            fr_targets_by_read=fr_targets_by_read,
+            overlap_component_by_write=overlap_component_by_write,
+        )
+        if not added_rf_sources and not added_fr_co:
+            return selected - before
+
+
 def _coverage_for_scope(
     *,
     candidate: GraphFirstCandidateCycle,
@@ -579,17 +606,13 @@ def run_progressive_candidate_validation(
         if event_by_id[event_id].kind.is_read
     }:
         selected.update(fr_targets_by_read.get(read_id, ()))
-    while _close_fr_and_co_dependencies(
+    _close_rf_fr_and_co_dependencies(
         selected,
         event_by_id=event_by_id,
+        rf_sources_by_read=rf_sources_by_read,
         fr_targets_by_read=fr_targets_by_read,
         overlap_component_by_write=overlap_component_by_write,
-    ):
-        _add_rf_source_dependencies(
-            selected,
-            event_by_id=event_by_id,
-            rf_sources_by_read=rf_sources_by_read,
-        )
+    )
     execute_round(2, "fr_later_writes_and_coherence_components", selected - before)
 
     # 线程内隔着未纳入 event 的 PPO 或 boundary 仍可能形成约束，先补入相关线程跨度。
@@ -609,17 +632,13 @@ def run_progressive_candidate_validation(
                 event.event_id
                 for event in thread_events[min(positions) : max(positions) + 1]
             )
-    while _close_fr_and_co_dependencies(
+    _close_rf_fr_and_co_dependencies(
         selected,
         event_by_id=event_by_id,
+        rf_sources_by_read=rf_sources_by_read,
         fr_targets_by_read=fr_targets_by_read,
         overlap_component_by_write=overlap_component_by_write,
-    ):
-        _add_rf_source_dependencies(
-            selected,
-            event_by_id=event_by_id,
-            rf_sources_by_read=rf_sources_by_read,
-        )
+    )
     execute_round(3, "thread_order_and_boundary_spans", selected - before)
 
     before = set(selected)
