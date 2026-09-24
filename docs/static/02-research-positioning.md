@@ -1,133 +1,24 @@
-# 02 — Research Positioning
+# 02 — Static Route Positioning
 
-## 1. 不应声称的新颖点
+本文件只说明 BMoCheck 静态分析路线的范围，不再承担整个项目的总研究定位。
+总研究问题、动态主线、相关工作和长期研究计划以
+[`docs/research/positioning.md`](../research/positioning.md) 为准。
 
-不要声称首次：
+静态路线的目标是在没有源码的情况下，从 ELF、实际依赖库、线程/同步事实和
+DBT6 `mo-off` contract 中构造静态证明。只有完整的静态 `ProofFact` 闭包才能
+支持 `SAFE`；输入不完整、依赖未恢复或义务未闭合时保留 `UNKNOWN`。
 
-```text
-比较两个内存模型的程序行为
-```
+本路线与当前近期工作有明确边界：
 
-已有 portability / robustness checking。
+- P19 属于动态验证路线的二进制依赖与执行证据闭合，不是静态 `SAFE` 能力扩展。
+- Litmus Pattern → Principle → Static Diagnostic Rule 是长期研究提案，尚未
+  形成已验证的静态诊断规则。
+- 动态 ObservedFact 和 DiagnosticHint 可以定位静态缺口，但不能进入静态证明或
+  关闭 `UnknownFact`。
+- “一个具体程序可能可以使用 `mo-off`”仍是待由静态证明支持的目标，不由一次
+  运行、有限次 TRACE_SAFE 或 litmus 结果直接推出。
 
-不要声称首次：
-
-```text
-用 FSM 优化 Fence
-```
-
-CrossMapping 等已有工作已做。
-
-不要声称首次：
-
-```text
-按应用选择不同 TSO 强度
-```
-
-实际系统已有 compatibility profile / memory-order levels。
-
----
-
-## 2. 目标研究缺口
-
-本项目聚焦以下组合：
-
-```text
-real x86 ELF
-+ concrete runtime libraries
-+ binary-level indirect control flow
-+ actual synchronization implementation
-+ DBT-specific lowering
-+ communication pruning
-+ portability checking
-```
-
-最终回答：
-
-```text
-Can this concrete binary safely run with DBT6 mo-off?
-```
-
----
-
-## 3. 与 CrossMapping-like FSM 的关系
-
-FSM：
-
-```text
-假设必须保持 TSO
-    ↓
-追踪 ordering obligation
-    ↓
-选择最弱足够 Fence
-```
-
-Verifier：
-
-```text
-分析具体程序
-    ↓
-判断这些额外 TSO ordering 是否真正影响跨线程通信
-```
-
-最终：
-
-```text
-SAFE -> mo-off
-otherwise -> mo-fsm
-```
-
----
-
-## 4. 与 PORTHOS-style checker 的关系
-
-我们不发明 portability 定义。
-
-采用现有思想：
-
-```text
-TargetBehaviors ⊆ SourceBehaviors ?
-```
-
-真正的研究挑战是：
-
-> 如何从真实 ELF 得到一个足够小、又不漏掉相关行为的 shared-memory slice。
-
----
-
-## 5. 候选贡献
-
-### Contribution 1
-
-Binary-level DBT-aware frontend。
-
-### Contribution 2
-
-Concrete library synchronization summaries：
-
-```text
-API semantics
-vs
-actual x86 implementation
-vs
-DBT target ordering
-```
-
-### Contribution 3
-
-Communication pruning：
-
-```text
-ThreadLocal
-ReadOnly
-DisjointPartition
-AtomicCovered
-```
-
-### Contribution 4
-
-Program-level `mo-off` certification。
-
-### Contribution 5
-
-与现有 `mo-fsm` 的安全组合。
+历史上列出的 CrossMapping、Fency/PORTHOS-style checking、程序级通信切片和
+`mo-fsm` 组合仅作为研究背景与候选比较方向，不表示这些组合已经完成或构成
+BMoCheck 的已证实新颖性。来源和待核实项集中记录在
+[`docs/research/related-work.md`](../research/related-work.md)。

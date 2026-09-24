@@ -50,3 +50,17 @@ results remain the frozen baseline. No large PARSEC/open_posix campaign was run 
 of this code-level closure; those runs remain resource-controlled evaluation inputs.
 
 每个阶段都以“不完整证据只能产生 UNKNOWN”为共同验收条件。
+
+## Memory-model solver research: P1–P18
+
+P1–P18 的候选搜索、PPO 压缩、全局约束和固定候选求解记录见
+[`symbolic-scaling.md`](symbolic-scaling.md)、P16、P17 和
+[`P18 固定候选环报告`](p18-fixed-candidate-global-solving.md)。P18 已完成
+固定十个候选的 shadow study；六个 `SAT` 仅代表完整窗口符号模型，不是已验证的
+真实执行反例，候选空间也没有穷尽。
+
+下一项近期计划为 [P19：二进制依赖恢复与执行证据闭合](p19-binary-dependence-and-execution-evidence.md)。
+当前它仍是 plan-only；不要在本索引更新时将其描述为已实现或已实验。
+
+两条研究路线、Origami/Kling 相关工作状态，以及 Litmus Pattern → Principle →
+Diagnostic Rule 的长期提案，统一见 [`docs/research/README.md`](../../research/README.md)。

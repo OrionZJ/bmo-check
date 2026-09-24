@@ -176,6 +176,9 @@ uv run pytest
 [migration plan](docs/architecture/migration-plan.md)。
 
 动态路线文档位于 `docs/dynamic/`，原静态研究位于 `docs/static/`。
+当前总研究定位、相关工作和后续路线见
+[Research Notes](docs/research/README.md)；近期二进制依赖与执行证据计划见
+[P19](docs/exec-plans/active/p19-binary-dependence-and-execution-evidence.md)。
 D1/D2 首个严格闭环的逐项证据位于
 `docs/exec-plans/active/d1-d2-acceptance.md`。
 PARSEC 3.0 全程序实验位于 `docs/dynamic/08-parsec-all-programs.md`。

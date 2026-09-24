@@ -126,6 +126,14 @@ native build output
 A small fixture may be versioned only when it has an explicit schema version, a
 reproduction path and a reviewed reason that a synthetic fixture is insufficient.
 
+## Research direction and plans
+
+Use [`docs/research/README.md`](docs/research/README.md) for the canonical
+research positioning, related-work ledger, and proposed Litmus-to-diagnostic
+route. P1–P18 measurements remain scoped to their linked experiment records.
+P19 is a plan only until explicitly started; it must close dependence and
+execution evidence without changing the formal verdict or DBT6 contract.
+
 ## Current commands
 
 ```text

@@ -1,33 +1,29 @@
-# 14 — Roadmap
+# 14 — Static Route Roadmap
 
-## MVP：五个合并阶段
+本路线图仅跟踪静态二进制分析能力。早期 MVP 阶段列表保留在 Git 历史中，
+不再视为当前项目的整体路线或 P19 的验收标准。总研究计划见
+[`docs/research/README.md`](../research/README.md)。
 
-```text
-M0 foundation + binary facts
-M1 program recovery + synchronization
-M2 shared state + communication slicing
-M3 portability proof + verdict
-M4 PARSEC evaluation
-```
+## 当前边界
 
-MVP 最终应能：
+- 静态 `SAFE` 仍要求仓库级 soundness contract 所定义的完整静态证明闭包。
+- 静态分析目前仍有多类 recovery/provenance precision gap；不能因动态工作流或
+  P18 模型结果而声称这些 gap 已关闭。
+- 原 E3.1 thread/lifecycle 改进保持暂停。恢复前需依据 hybrid diagnostics、
+  canneal 证据和 2,595-ELF baseline 重新选择高价值通用能力。
+- 长期的静态诊断规则路线见
+  [`Pattern → Principle → Static Diagnostic Rule`](../research/pattern-to-diagnostic-roadmap.md)，
+  当前不实施。
 
-1. fingerprint executable 与实际动态库闭包；
-2. 恢复 x86 memory/atomic/control-flow facts；
-3. 显式保留 unresolved indirect 和 unknown thread entry；
-4. 分析实际 pthread 同步实现及 DBT lowering；
-5. 分类基础 ThreadLocal、ReadOnly 和 Disjoint；
-6. 构建带 proof object 的 shared-memory slice；
-7. 在受支持的有限切片上寻找 target-only execution；
-8. 输出 SAFE、UNKNOWN 或 COUNTEREXAMPLE 并解释原因；
-9. 在 blackscholes、swaptions、dedup、canneal 上评估。
+## 后续静态工作准入条件
 
-## MVP 之后
+未来每个静态 precision 改进应先指定一个根因及明确的证明事实，然后：
 
-- libgomp/OpenMP；
-- 更完整的 C++ vtable 和 heap field sensitivity；
-- 更强 affine/Z3 partition；
-- runtime indirect target guard；
-- region-level certificate；
-- SAFE certificate 驱动的外部 DBT launcher；
-- 不只 off/fsm，自动选择更细 memory-order policy。
+1. 用合成正例、反例和 Unknown 传播测试刻画原行为；
+2. 定义新增 `ProofFact` 的来源、身份、适用范围和独立 replay 条件；
+3. 用通用分析能力实现，不按 benchmark、litmus 名称或一次 trace 特判；
+4. 对相同的 2,595-ELF corpus 重跑并按 root blocker 比较；
+5. 保持 E2.5 correctness baseline、certificate soundness 和动态证据隔离。
+
+选择下一项静态能力之前，先 review 现有 measurement 和研究文档；不得把减少
+`UNKNOWN` 数量本身当作正确性证据。
